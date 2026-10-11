@@ -94,12 +94,15 @@ function rebuild(prepared) {
   try {
     const meshes = prepared || makeMeshes(objects);
     dispose();
-    group.position.set(0, 0, 0);
     meshes.forEach((m) => group.add(m));
     const warnings = meshes.flatMap((m) => m.geometry.userData.warnings || []);
-    const box = new THREE.Box3().setFromObject(group),
-      center = box.getCenter(new THREE.Vector3());
-    group.position.sub(center);
+    // Center a newly imported document once. Editing one object's depth must
+    // leave the document origin, camera and every other object's position fixed.
+    if (prepared) {
+      group.position.set(0, 0, 0);
+      const box = new THREE.Box3().setFromObject(group);
+      group.position.sub(box.getCenter(new THREE.Vector3()));
+    }
     $("mesh-info").textContent =
       `${objects.length} OBJECTS · ${group.children.reduce((n, m) => n + m.geometry.getAttribute("position").count, 0).toLocaleString()} VERTICES`;
     notice([...new Set(warnings)].join(" / "));
@@ -175,103 +178,209 @@ function sync() {
   $("color-value").textContent = o.color.toUpperCase();
   curveDraw();
 }
-function curveDraw() {
-  const curve = Number($("curve").value),
-    points = selectedObject()?.settings.curvePoints;
-  let d = "";
-  for (let i = 0; i <= 40; i++) {
-    const t = i / 40;
-    let y = (1 - curve) * t + curve * (1 - Math.cos((t * Math.PI) / 2));
-    if (points) {
-      const right = points.findIndex((p) => p.x >= t);
-      const l = points[Math.max(0, right - 1)],
-        r = points[Math.max(0, right)];
-      y = r.x === l.x ? r.y : l.y + ((r.y - l.y) * (t - l.x)) / (r.x - l.x);
-    }
-    d += `${i ? "L" : "M"}${10 + 200 * t} ${55 - 45 * y} `;
-  }
-  $("curve-path").setAttribute("d", d);
-  const mid = points?.[1] || {
-    x: 0.5,
-    y: (1 - curve) * 0.5 + curve * (1 - Math.cos(Math.PI / 4)),
-  };
-  document
-    .querySelector(".curve-display circle")
-    .setAttribute("cx", 10 + 200 * mid.x);
-  document
-    .querySelector(".curve-display circle")
-    .setAttribute("cy", 55 - 45 * mid.y);
-}
+let selectedCurvePoint = 1;
+let curveObject = null;
 const curveEditor = document.querySelector(".curve-display svg");
 curveEditor.setAttribute("role", "slider");
 curveEditor.setAttribute(
   "aria-label",
-  "ベベル断面の中央制御点。ドラッグまたは上下キーで調整",
+  "ベベル断面の制御点。ダブルクリックで追加、ドラッグまたは矢印キーで調整、Deleteで削除",
 );
 curveEditor.setAttribute("tabindex", "0");
 curveEditor.insertAdjacentHTML(
   "afterend",
-  '<small style="grid-column:1/-1;color:#8b97a6;margin-bottom:6px">横：高さ / 縦：オフセット · 制御点をドラッグ</small>',
+  '<div class="curve-tools"><button id="curve-add" class="subtle">＋ 頂点を追加</button><button id="curve-delete" class="subtle">頂点を削除</button><small>ダブルクリックで追加 · ドラッグで調整<br>矢印キーで移動 · Deleteで削除（両端は固定）</small></div>',
 );
+function standardCurveY(x) {
+  const curve = Number($("curve").value);
+  return (1 - curve) * x + curve * (1 - Math.cos((x * Math.PI) / 2));
+}
+function editableCurvePoints() {
+  return (
+    selectedObject()?.settings.curvePoints || [
+      { x: 0, y: 0 },
+      { x: 0.5, y: standardCurveY(0.5) },
+      { x: 1, y: 1 },
+    ]
+  );
+}
+function curveDraw() {
+  const o = selectedObject();
+  if (curveObject !== o) {
+    curveObject = o;
+    selectedCurvePoint = 1;
+    curveDragging = false;
+  }
+  const points = editableCurvePoints();
+  selectedCurvePoint = Math.min(selectedCurvePoint, points.length - 1);
+  const d = o?.settings.curvePoints
+    ? points
+        .map((p, i) => `${i ? "L" : "M"}${10 + 200 * p.x} ${55 - 45 * p.y}`)
+        .join(" ")
+    : Array.from(
+        { length: 41 },
+        (_, i) =>
+          `${i ? "L" : "M"}${10 + (200 * i) / 40} ${55 - 45 * standardCurveY(i / 40)}`,
+      ).join(" ");
+  $("curve-path").setAttribute("d", d);
+  curveEditor.querySelectorAll("circle").forEach((circle) => circle.remove());
+  points.forEach((p, i) => {
+    const circle = document.createElementNS(
+      "http://www.w3.org/2000/svg",
+      "circle",
+    );
+    circle.setAttribute("cx", 10 + 200 * p.x);
+    circle.setAttribute("cy", 55 - 45 * p.y);
+    circle.setAttribute("r", i === selectedCurvePoint ? 5 : 3.5);
+    circle.dataset.curvePoint = i;
+    circle.classList.toggle("selected", i === selectedCurvePoint);
+    circle.classList.toggle("endpoint", i === 0 || i === points.length - 1);
+    curveEditor.append(circle);
+  });
+  $("curve-add").disabled = !o || points.length >= 16;
+  $("curve-delete").disabled =
+    !o || selectedCurvePoint === 0 || selectedCurvePoint === points.length - 1;
+  const p = points[selectedCurvePoint];
+  curveEditor.setAttribute("aria-valuemin", "0");
+  curveEditor.setAttribute("aria-valuemax", "1");
+  curveEditor.setAttribute("aria-valuenow", p.y);
+  curveEditor.setAttribute(
+    "aria-valuetext",
+    `頂点 ${selectedCurvePoint + 1} / ${points.length}、高さ ${p.x.toFixed(2)}、オフセット ${p.y.toFixed(2)}`,
+  );
+}
 let curveDragging = false;
-function editCurve(e) {
+function curveCoordinates(e) {
+  const point = new DOMPoint(e.clientX, e.clientY).matrixTransform(
+    curveEditor.getScreenCTM().inverse(),
+  );
+  return {
+    x: Math.max(0, Math.min(1, (point.x - 10) / 200)),
+    y: Math.max(0, Math.min(1, (55 - point.y) / 45)),
+  };
+}
+function commitCurve(points) {
   const o = selectedObject();
   if (!o) return;
-  const rect = curveEditor.getBoundingClientRect(),
-    x = Math.max(
-      0.05,
-      Math.min(0.95, (((e.clientX - rect.left) / rect.width) * 220 - 10) / 200),
-    ),
-    y = Math.max(
-      0,
-      Math.min(1, (55 - ((e.clientY - rect.top) / rect.height) * 66) / 45),
-    );
   const clearedUV = clearShapeUV(o);
-  o.settings.curvePoints = [
-    { x: 0, y: 0 },
-    { x, y },
-    { x: 1, y: 1 },
-  ];
+  o.settings.curvePoints = points;
   curveDraw();
   rebuild();
   if (clearedUV) notice("形状の変更に伴い UV 頂点修正をクリアしました。");
 }
+function moveCurvePoint(position) {
+  const points = editableCurvePoints().map((p) => ({ ...p }));
+  const i = selectedCurvePoint;
+  if (i <= 0 || i >= points.length - 1) return;
+  points[i] = {
+    x: Math.max(
+      points[i - 1].x + 0.01,
+      Math.min(points[i + 1].x - 0.01, position.x),
+    ),
+    y: Math.max(points[i - 1].y, Math.min(points[i + 1].y, position.y)),
+  };
+  commitCurve(points);
+}
+function addCurvePoint(position) {
+  if (!selectedObject()) return;
+  const points = editableCurvePoints().map((p) => ({ ...p }));
+  if (points.length >= 16) return;
+  let index;
+  if (position) {
+    index = points.findIndex((p) => p.x > position.x);
+    if (index < 1 || points[index].x - points[index - 1].x < 0.02) return;
+  } else {
+    index = points.reduce(
+      (best, p, i) =>
+        i && p.x - points[i - 1].x > points[best].x - points[best - 1].x
+          ? i
+          : best,
+      1,
+    );
+    const l = points[index - 1],
+      r = points[index];
+    position = {
+      x: (l.x + r.x) / 2,
+      y: selectedObject().settings.curvePoints
+        ? (l.y + r.y) / 2
+        : standardCurveY((l.x + r.x) / 2),
+    };
+  }
+  const l = points[index - 1],
+    r = points[index];
+  position = {
+    x: Math.max(l.x + 0.01, Math.min(r.x - 0.01, position.x)),
+    y: Math.max(l.y, Math.min(r.y, position.y)),
+  };
+  points.splice(index, 0, position);
+  selectedCurvePoint = index;
+  commitCurve(points);
+}
+function deleteCurvePoint() {
+  const points = editableCurvePoints().map((p) => ({ ...p }));
+  if (selectedCurvePoint <= 0 || selectedCurvePoint >= points.length - 1)
+    return;
+  points.splice(selectedCurvePoint, 1);
+  selectedCurvePoint = Math.min(selectedCurvePoint, points.length - 2);
+  commitCurve(points);
+}
+$("curve-add").onclick = () => addCurvePoint();
+$("curve-delete").onclick = deleteCurvePoint;
+curveEditor.ondblclick = (e) => {
+  e.preventDefault();
+  addCurvePoint(curveCoordinates(e));
+};
 curveEditor.onpointerdown = (e) => {
-  curveDragging = true;
-  curveEditor.setPointerCapture(e.pointerId);
-  editCurve(e);
+  if (!selectedObject()) return;
+  const hit = e.target.closest("[data-curve-point]");
+  if (hit) selectedCurvePoint = Number(hit.dataset.curvePoint);
+  else {
+    const position = curveCoordinates(e),
+      points = editableCurvePoints();
+    selectedCurvePoint = points.reduce(
+      (best, p, i) =>
+        Math.hypot((p.x - position.x) * 200, (p.y - position.y) * 45) <
+        Math.hypot(
+          (points[best].x - position.x) * 200,
+          (points[best].y - position.y) * 45,
+        )
+          ? i
+          : best,
+      0,
+    );
+  }
+  curveEditor.focus();
+  curveDraw();
+  const points = editableCurvePoints();
+  curveDragging =
+    selectedCurvePoint > 0 && selectedCurvePoint < points.length - 1;
+  if (curveDragging) curveEditor.setPointerCapture(e.pointerId);
 };
 curveEditor.onpointermove = (e) => {
-  if (curveDragging) editCurve(e);
+  if (curveDragging) moveCurvePoint(curveCoordinates(e));
 };
-curveEditor.onpointerup = () => {
-  curveDragging = false;
-};
-curveEditor.onpointercancel = () => {
+curveEditor.onpointerup = curveEditor.onpointercancel = () => {
   curveDragging = false;
 };
 curveEditor.onkeydown = (e) => {
-  if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+  if (!selectedObject()) return;
+  if (e.key === "Delete" || e.key === "Backspace") {
     e.preventDefault();
-    const o = selectedObject();
-    if (!o) return;
-    const clearedUV = clearShapeUV(o);
-    const mid = o.settings.curvePoints?.[1] || { x: 0.5, y: 0.5 };
-    o.settings.curvePoints = [
-      { x: 0, y: 0 },
-      {
-        x: mid.x,
-        y: Math.max(
-          0,
-          Math.min(1, mid.y + (e.key === "ArrowUp" ? 0.05 : -0.05)),
-        ),
-      },
-      { x: 1, y: 1 },
-    ];
-    curveDraw();
-    rebuild();
-    if (clearedUV) notice("形状の変更に伴い UV 頂点修正をクリアしました。");
+    deleteCurvePoint();
+    return;
   }
+  if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key))
+    return;
+  e.preventDefault();
+  const point = editableCurvePoints()[selectedCurvePoint];
+  moveCurvePoint({
+    x:
+      point.x +
+      (e.key === "ArrowRight" ? 0.01 : e.key === "ArrowLeft" ? -0.01 : 0),
+    y:
+      point.y +
+      (e.key === "ArrowUp" ? 0.05 : e.key === "ArrowDown" ? -0.05 : 0),
+  });
 };
 async function load(text, name) {
   try {
@@ -342,7 +451,10 @@ Object.keys(defaults).forEach((key) => {
   input.oninput = () => {
     const o = selectedObject();
     if (!o) return;
-    if (key === "curve") delete o.settings.curvePoints;
+    if (key === "curve") {
+      delete o.settings.curvePoints;
+      selectedCurvePoint = 1;
+    }
     if (input.type === "checkbox") o.settings[key] = input.checked;
     else {
       const n = Number(input.value);
@@ -379,6 +491,7 @@ $("reset").onclick = () => {
   const o = selectedObject();
   if (o) {
     o.settings = { ...defaults };
+    selectedCurvePoint = 1;
     sync();
     rebuild();
     fit();

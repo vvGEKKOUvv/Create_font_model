@@ -412,3 +412,40 @@ test("UV vertex edits affect matching keys only and precede transforms", () => {
   }
   assert.throws(() => buildMesh(shape, { uvEdits: { [selected]: [NaN, 0] } }));
 });
+
+test("multi-vertex profile preserves narrow bends at low bevel resolution", () => {
+  const curvePoints = [
+    { x: 0, y: 0 },
+    { x: 0.13, y: 0.05 },
+    { x: 0.19, y: 0.7 },
+    { x: 0.73, y: 0.85 },
+    { x: 1, y: 1 },
+  ];
+  const geometry = buildMesh(rectangleWithHole(), {
+    depth: 8,
+    bevelSize: 1,
+    bevelSegments: 2,
+    curvePoints,
+  });
+  const vertices = triangleVertices(geometry).flat();
+  for (const point of curvePoints) {
+    for (const z of [point.x, 8 - point.x]) {
+      assert.ok(
+        vertices.some(
+          (v) =>
+            Math.abs(v[2] - z) < 1e-6 &&
+            Math.abs(v[0] - (1 - point.y)) < 1e-6 &&
+            Math.abs(v[1] + (1 - point.y)) < 1e-6,
+        ),
+        `control bend (${point.x}, ${point.y}) survives on both bevel ends`,
+      );
+    }
+  }
+  assert.ok(
+    vertices.some((v) => Math.abs(v[2] - 0.5) < 1e-6),
+    "uniform samples remain between custom control points",
+  );
+  assert.ok(
+    Array.from(geometry.attributes.position.array).every(Number.isFinite),
+  );
+});

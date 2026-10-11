@@ -606,3 +606,35 @@ h3 span {
   cursor: crosshair;
   touch-action: none;
 }
+
+.curve-tools {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 5px 0 8px;
+}
+.curve-tools small {
+  flex-basis: 100%;
+  color: #a0acba;
+  line-height: 1.6;
+}
+.curve-tools button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.curve-display circle {
+  cursor: grab;
+}
+.curve-display circle.selected {
+  stroke: #ffffff;
+  stroke-width: 1.5;
+}
+.curve-display circle.endpoint {
+  fill: #76858f;
+  cursor: default;
+}
+.curve-display svg:focus-visible {
+  outline: 1px solid #b6ee75;
+  outline-offset: 3px;
+}

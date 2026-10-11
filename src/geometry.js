@@ -299,9 +299,11 @@ export function buildMesh(shape, settings = {}) {
     Math.min(32, Math.floor(Number(settings.bevelSegments) || 8)),
   );
   const curve = THREE.MathUtils.clamp(Number(settings.curve) || 0, 0, 1);
+  if (Array.isArray(settings.curvePoints) && settings.curvePoints.length > 16)
+    throw new Error("ベベルカーブの頂点は両端を含めて最大 16 個です。");
   const points = Array.isArray(settings.curvePoints)
     ? settings.curvePoints
-        .map((p) => ({ x: Number(p.x), y: Number(p.y) }))
+        .map((p) => ({ x: Number(p?.x), y: Number(p?.y) }))
         .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y))
         .sort((a, b) => a.x - b.x)
     : [];
@@ -323,6 +325,10 @@ export function buildMesh(shape, settings = {}) {
     warnings.push(
       "ベベルカーブは両端 (0,0)・(1,1) と単調増加の制御点が必要です。標準カーブを使用しました。",
     );
+  if (usePoints) {
+    points[0] = { x: 0, y: 0 };
+    points[points.length - 1] = { x: 1, y: 1 };
+  }
   const profile = (t) => {
     if (!usePoints)
       return (1 - curve) * t + curve * (1 - Math.cos((t * Math.PI) / 2));
@@ -334,19 +340,27 @@ export function buildMesh(shape, settings = {}) {
       b = points[i];
     return a.y + ((b.y - a.y) * (t - a.x)) / (b.x - a.x);
   };
+  // Include every control point so a narrow bend survives low segment counts.
+  // Share the same samples on both ends, with a single level at depth / 2.
+  const samples = [
+    ...new Set([
+      ...Array.from({ length: segments + 1 }, (_, i) => i / segments),
+      ...(usePoints ? points.map((p) => p.x) : []),
+    ]),
+  ].sort((a, b) => a - b);
   const levels = bevel
-    ? Array.from({ length: segments + 1 }, (_, i) => ({
-        z: (bevel * i) / segments,
-        inset: bevel * (1 - profile(i / segments)),
+    ? samples.map((t) => ({
+        z: bevel * t,
+        inset: bevel * (1 - profile(t)),
       }))
     : [{ z: 0, inset: 0 }];
   if (depth - bevel - levels.at(-1).z > EPS)
     levels.push({ z: depth - bevel, inset: 0 });
   if (bevel)
-    for (let i = segments - 1; i >= 0; i--)
+    for (let i = samples.length - 2; i >= 0; i--)
       levels.push({
-        z: depth - (bevel * i) / segments,
-        inset: bevel * (1 - profile(i / segments)),
+        z: depth - bevel * samples[i],
+        inset: bevel * (1 - profile(samples[i])),
       });
   const positions = [],
     uvs = [],

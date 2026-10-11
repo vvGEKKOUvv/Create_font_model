@@ -51,6 +51,29 @@ try {
   });
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
+  // Observe actual scene transforms without adding production-only test hooks.
+  await page.route("**/src/main.js", async (route) => {
+    const response = await route.fetch();
+    const source = await response.text();
+    assert(source.includes("renderer.render(scene, camera);"));
+    await route.fulfill({
+      response,
+      body: source.replace(
+        "renderer.render(scene, camera);",
+        `scene.updateMatrixWorld(true);
+       window.__sceneSnapshot = {
+         objects: group.children.map(mesh => ({
+           matrix: mesh.matrixWorld.toArray(),
+           depth: mesh.geometry.boundingBox.max.z - mesh.geometry.boundingBox.min.z,
+           point: new THREE.Vector3().fromBufferAttribute(mesh.geometry.attributes.position, 0).applyMatrix4(mesh.matrixWorld).toArray()
+         })),
+         camera: camera.matrixWorld.toArray(),
+         target: controls.target.toArray()
+       };
+       renderer.render(scene, camera);`,
+      ),
+    });
+  });
   await page.goto("http://127.0.0.1:5184");
   await expect(page.locator("#object-count")).toHaveText("2");
   await expect(page.locator("#viewport canvas")).toBeVisible();
@@ -111,7 +134,30 @@ try {
     lines(changed["model.obj"], "v "),
   );
   await page.locator('[data-object="1"]').click();
+  const beforeDepth = await page.evaluate(() => window.__sceneSnapshot);
   await page.locator("#depth").fill("40");
+  await expect
+    .poll(
+      async () =>
+        (await page.evaluate(() => window.__sceneSnapshot)).objects[1].depth,
+    )
+    .not.toBe(beforeDepth.objects[1].depth);
+  const afterDepth = await page.evaluate(() => window.__sceneSnapshot);
+  assert.deepEqual(
+    afterDepth.objects[0],
+    beforeDepth.objects[0],
+    "Changing selected depth must keep the other mesh at its actual world position",
+  );
+  assert.deepEqual(
+    afterDepth.camera,
+    beforeDepth.camera,
+    "Editing depth preserves the camera",
+  );
+  assert.deepEqual(
+    afterDepth.target,
+    beforeDepth.target,
+    "Editing depth preserves orbit target",
+  );
   await page.locator('[data-object="0"]').click();
   await expect(page.locator("#depth")).toHaveValue("24");
   await page.locator('[data-object="1"]').click();
@@ -130,6 +176,56 @@ try {
     lines(colored["model.obj"], "v "),
     lines(customized["model.obj"], "v "),
   );
+  const points = page.locator("circle[data-curve-point]");
+  await expect(points).toHaveCount(3);
+  const curveBox = await curve.boundingBox();
+  await curve.dblclick({
+    position: { x: curveBox.width * 0.7, y: curveBox.height * 0.35 },
+  });
+  await expect(points).toHaveCount(4);
+  const added = await exported();
+  assert.notDeepEqual(
+    lines(added["model.obj"], "v "),
+    lines(customized["model.obj"], "v "),
+    "Adding a bevel vertex changes exported geometry",
+  );
+  const selectedPoint = page.locator("circle[data-curve-point].selected");
+  const pointBox = await selectedPoint.boundingBox();
+  await page.mouse.move(
+    pointBox.x + pointBox.width / 2,
+    pointBox.y + pointBox.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    pointBox.x + pointBox.width / 2 + 8,
+    pointBox.y + pointBox.height / 2 - 5,
+    { steps: 3 },
+  );
+  await page.mouse.up();
+  const dragged = await exported();
+  assert.notDeepEqual(
+    lines(dragged["model.obj"], "v "),
+    lines(added["model.obj"], "v "),
+    "Dragging an added bevel vertex changes geometry",
+  );
+  const storedCurve = await page.locator("#curve-path").getAttribute("d");
+  await page.locator('[data-object="0"]').click();
+  await expect(points).toHaveCount(3);
+  await page.locator('[data-object="1"]').click();
+  await expect(points).toHaveCount(4);
+  assert.equal(
+    await page.locator("#curve-path").getAttribute("d"),
+    storedCurve,
+    "Each object retains its own added profile vertices",
+  );
+  await points.nth(2).click();
+  await page.locator("#curve-delete").click();
+  await expect(points).toHaveCount(3);
+  await page.locator("#curve-add").click();
+  await expect(points).toHaveCount(4);
+  await curve.focus();
+  await page.keyboard.press("Delete");
+  await expect(points).toHaveCount(3);
   await page.locator("#file").setInputFiles({
     name: "rectangle.svg",
     mimeType: "image/svg+xml",
