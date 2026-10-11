@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Shape, Path } from "three";
+import { Shape, Path, Matrix4 } from "three";
 import { DOMParser } from "@xmldom/xmldom";
 import { parseSvg, buildMesh, exportObj } from "../src/geometry.js";
 
@@ -114,22 +114,55 @@ test("extrusion without bevel preserves a pointed vertex", () => {
   );
 });
 
-test("bevel curve control changes intermediate geometry", () => {
-  const shape = rectangleWithHole();
-  const settings = { depth: 8, bevelSize: 1, bevelSegments: 6 };
-  const linear = buildMesh(shape, { ...settings, curve: 0 });
-  const curved = buildMesh(shape, { ...settings, curve: 1 });
-  assert.equal(
-    linear.getAttribute("position").count,
-    curved.getAttribute("position").count,
+test("vertex modes and Bezier handles change intermediate bevel geometry", () => {
+  const settings = { depth: 8, bevelSize: 1, bevelSegments: 8 };
+  const points = [
+    { x: 0, y: 0 },
+    { x: 0.5, y: 0.4 },
+    { x: 1, y: 1 },
+  ];
+  const linear = buildMesh(rectangleWithHole(), {
+    ...settings,
+    curvePoints: points,
+  });
+  const curved = buildMesh(rectangleWithHole(), {
+    ...settings,
+    curvePoints: [
+      points[0],
+      {
+        ...points[1],
+        mode: "bezier",
+        in: { x: 0.3, y: 0.05 },
+        out: { x: 0.7, y: 0.8 },
+      },
+      points[2],
+    ],
+  });
+  const moved = buildMesh(rectangleWithHole(), {
+    ...settings,
+    curvePoints: [
+      points[0],
+      {
+        ...points[1],
+        mode: "bezier",
+        in: { x: 0.3, y: 0.25 },
+        out: { x: 0.7, y: 0.6 },
+      },
+      points[2],
+    ],
+  });
+  assert.notDeepEqual(
+    Array.from(linear.attributes.position.array),
+    Array.from(curved.attributes.position.array),
   );
   assert.notDeepEqual(
-    Array.from(linear.getAttribute("position").array),
-    Array.from(curved.getAttribute("position").array),
+    Array.from(moved.attributes.position.array),
+    Array.from(curved.attributes.position.array),
   );
-  assert.ok(
-    Array.from(curved.getAttribute("position").array).every(Number.isFinite),
-  );
+  for (const geometry of [linear, curved, moved])
+    assert.ok(
+      Array.from(geometry.attributes.position.array).every(Number.isFinite),
+    );
 });
 
 test("UV transform applies rotation, scale, and translation without moving geometry", () => {
@@ -448,4 +481,52 @@ test("multi-vertex profile preserves narrow bends at low bevel resolution", () =
   assert.ok(
     Array.from(geometry.attributes.position.array).every(Number.isFinite),
   );
+});
+
+function objVectors(obj, prefix) {
+  return obj
+    .split("\n")
+    .filter((line) => line.startsWith(prefix))
+    .map((line) => line.slice(prefix.length).split(/\s+/).map(Number));
+}
+test("OBJ applies object translation and pivoted rotation to vertices", () => {
+  const geometry = buildMesh(rectangleWithHole(), { depth: 5, bevelSize: 0 });
+  const matrix = new Matrix4()
+    .makeTranslation(30, 40, 2)
+    .multiply(new Matrix4().makeRotationZ(Math.PI / 2))
+    .multiply(new Matrix4().makeTranslation(-10, 10, -2.5));
+  const { obj } = exportObj([{ name: "pivot", geometry, matrix }]);
+  const vertices = objVectors(obj, "v "),
+    p = geometry.attributes.position;
+  vertices.forEach((v, i) => {
+    const expected = [
+      30 - (p.getY(i) + 10),
+      40 + (p.getX(i) - 10),
+      p.getZ(i) - 0.5,
+    ];
+    expected.forEach((value, axis) =>
+      assert.ok(Math.abs(v[axis] - value) < 1e-5),
+    );
+  });
+});
+test("OBJ normals use inverse transpose for rotated nonuniform scale", () => {
+  const geometry = buildMesh(rectangleWithHole(), {
+    depth: 5,
+    bevelSize: 1,
+    bevelSegments: 4,
+  });
+  const matrix = new Matrix4()
+    .makeRotationZ(Math.PI / 2)
+    .multiply(new Matrix4().makeScale(2, 3, 4));
+  const { obj } = exportObj([{ geometry, matrix }]);
+  const exported = objVectors(obj, "vn "),
+    n = geometry.attributes.normal;
+  exported.forEach((v, i) => {
+    const expected = [-n.getY(i) / 3, n.getX(i) / 2, n.getZ(i) / 4],
+      length = Math.hypot(...expected);
+    expected.forEach((value, axis) =>
+      assert.ok(Math.abs(v[axis] - value / length) < 1e-5),
+    );
+    assert.ok(Math.abs(Math.hypot(...v) - 1) < 1e-5);
+  });
 });

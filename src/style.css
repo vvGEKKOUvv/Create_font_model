@@ -8,6 +8,59 @@
   font-size: 13px;
   color-scheme: dark;
 }
+.transform-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 10px;
+  color: #9ca8b6;
+}
+.transform-toolbar button {
+  border: 1px solid #36414d;
+  border-radius: 4px;
+  padding: 7px 10px;
+  color: #c2cbd5;
+  background: #20262e;
+}
+.transform-toolbar button.active {
+  background: #b6ee75;
+  color: #233417;
+  border-color: #b6ee75;
+}
+.transform-toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+.transform-toolbar input {
+  accent-color: #b6ee75;
+}
+.transform-fields {
+  display: grid;
+  grid-template-columns: 55px repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  align-items: center;
+  margin: 12px 0;
+  font-size: 10px;
+  color: #9ba7b5;
+}
+.transform-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.transform-fields input {
+  width: 100%;
+  min-width: 0;
+  background: #1a2027;
+  color: #d5dce4;
+  border: 1px solid #363e48;
+  border-radius: 4px;
+  padding: 6px 4px;
+}
 * {
   box-sizing: border-box;
 }
@@ -637,4 +690,125 @@ h3 span {
 .curve-display svg:focus-visible {
   outline: 1px solid #b6ee75;
   outline-offset: 3px;
+}
+
+/* The curve editor needs room for individual handles. */
+@media (min-width: 1000px) {
+  main { height: calc(100vh - 80px); min-height: 650px; }
+  aside { min-height: 0; overflow-y: auto; }
+  .workspace { min-height: 0; }
+  #viewport { height: auto; min-height: 180px; }
+  .uv-panel { flex-shrink: 0; }
+}
+@media (min-width: 1000px) {
+  main {
+    grid-template-columns: 230px minmax(280px, 1fr) 340px;
+  }
+  .right-panel {
+    padding: 26px 18px;
+  }
+}
+.curve-display.bevel-editor {
+  display: block;
+  padding: 10px;
+  font-size: 11px;
+}
+.bevel-editor .curve-tools {
+  margin: 0 0 12px;
+  gap: 8px;
+}
+.bevel-editor button,
+.bevel-editor select,
+.curve-dialog button {
+  background: #252e36;
+  color: #d5dce4;
+  border: 1px solid #44515e;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font: inherit;
+}
+.bevel-editor .curve-tools label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  color: #b9c2cd;
+}
+.curve-display.bevel-editor svg {
+  display: block;
+  width: 100%;
+  height: 260px;
+  cursor: crosshair;
+  touch-action: none;
+}
+.bevel-editor .curve-grid {
+  fill: none;
+  stroke: #34404c;
+  stroke-width: 1;
+}
+.bevel-editor .curve-line {
+  fill: none;
+  stroke: #b6ee75;
+  stroke-width: 2;
+}
+.bevel-editor .curve-handle-line {
+  stroke: #eab96d;
+  stroke-width: 1.5;
+}
+.curve-display.bevel-editor circle.curve-handle {
+  fill: #eab96d;
+  stroke: #161d24;
+  stroke-width: 2;
+}
+.curve-display.bevel-editor circle.selected {
+  stroke: white;
+  stroke-width: 2;
+}
+.curve-display.bevel-editor circle.endpoint {
+  cursor: pointer;
+}
+.bevel-editor .curve-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: #98a5b3;
+}
+.bevel-editor .curve-help {
+  font-size: 10px;
+  line-height: 1.8;
+  color: #98a5b3;
+  margin-bottom: 0;
+}
+.curve-dialog {
+  width: min(760px, 94vw);
+  padding: 20px;
+  border: 1px solid #566675;
+  border-radius: 10px;
+  color: #dce2e8;
+  background: #141b22;
+}
+.curve-dialog::backdrop {
+  background: #000a;
+}
+.curve-dialog-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.curve-dialog .bevel-editor svg {
+  height: min(450px, 57vh);
+}
+.curve-dialog #curve-expand {
+  display: none;
+}
+@media (max-width: 500px) {
+  main {
+    grid-template-columns: 1fr;
+  }
+  .left-panel,
+  .right-panel {
+    grid-column: 1;
+    grid-row: auto;
+  }
 }

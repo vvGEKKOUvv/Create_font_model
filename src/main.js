@@ -1,13 +1,15 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { parseSvg, buildMesh, exportObj } from "./geometry.js";
+import { defaultProfile } from "./bevel-profile.js";
+import { createBevelEditor } from "./bevel-editor.js";
+import { createTransformTools, prepareObjectMesh } from "./transform-tools.js";
 import "./style.css";
 
 const defaults = {
   depth: 24,
   bevelSize: 3,
   bevelSegments: 5,
-  curve: 0.5,
   sharpCorners: true,
   hollow: false,
   wallThickness: 4,
@@ -18,7 +20,7 @@ const defaults = {
   uvRotation: 0,
 };
 const app = document.querySelector("#app");
-app.innerHTML = `<header><a class="brand" href="./"><span class="brand-icon">◈</span> PATH<span class="brand-slash">/</span>FORM</a><span class="tagline">パスから、かたちへ。</span><span class="header-label">SVG → 3D STUDIO</span><button id="export" class="primary">↓ OBJ を書き出す</button></header><main><aside class="left-panel"><div class="panel-heading"><span>01 / SOURCE</span><span class="status-dot">●</span></div><h1>輪郭から始めよう。</h1><p class="muted intro">ベクターパスを読み込んで、<br>自由に立体をつくる。</p><label class="dropzone" id="dropzone"><input type="file" id="file" accept=".svg,image/svg+xml" hidden/><span class="upload-icon"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 15v6h16v-6"/></svg></span><strong>SVG をドロップ</strong><span>またはクリックして選択</span><small>Illustrator：SVG 形式で保存</small></label><button class="sample-button" id="sample">◈ サンプルを読み込む <span>↗</span></button><div class="section-line"></div><div class="panel-heading"><span>OBJECTS</span><span id="object-count">0</span></div><div id="objects"></div><div class="source-note"><span class="tiny-label">SUPPORTED FORMAT</span><p>閉じた SVG パス・複合パスに対応。<br>文字はアウトライン化してください。</p></div></aside><section class="workspace"><div class="viewport-heading"><span><i class="live-dot"></i> LIVE PREVIEW</span><button id="fit" class="subtle">⊡ 全体表示</button></div><div id="viewport"></div><div class="view-caption"><span>ドラッグで回転 · スクロールでズーム · 右ドラッグで移動</span><span id="mesh-info">—</span></div><div id="message" role="status"></div><div class="uv-panel"><div class="uv-heading"><span>UV MAP <small>展開・調整</small></span><span class="tiny-label">UV 座標を確認</span></div><div class="uv-tools"><label><input type="checkbox" id="uv-edit-mode"/> UV 頂点編集</label><button id="uv-clear" class="subtle">UV 修正をクリア ↺</button><span>頂点をドラッグ · 同じ UV 座標をまとめて編集</span></div><canvas id="uv-canvas" width="700" height="180" aria-label="UV 展開。頂点編集を有効にして頂点をドラッグ"></canvas><div class="uv-inputs">${field("uvScaleX", "スケール X", 1, 0.01, 20, 0.1, false)}${field("uvScaleY", "スケール Y", 1, 0.01, 20, 0.1, false)}${field("uvOffsetX", "移動 U", 0, -20, 20, 0.1, false)}${field("uvOffsetY", "移動 V", 0, -20, 20, 0.1, false)}${field("uvRotation", "回転 °", 0, -360, 360, 1, false)}</div></div></section><aside class="right-panel"><div class="panel-heading"><span>02 / SHAPE</span><button id="reset" class="subtle">リセット ↺</button></div><h2>かたちを調整</h2><p id="selected-name" class="muted">オブジェクトを選択</p><section class="control-section"><h3>押し出し <span>EXTRUDE</span></h3>${field("depth", "奥行き", 24, 1, 100, 1)}</section><section class="control-section"><h3>ベベル <span>BEVEL</span></h3>${field("bevelSize", "幅", 3, 0, 20, 0.1)}${field("bevelSegments", "分割数", 5, 1, 16, 1)}${field("curve", "カーブ形状", 0.5, 0, 1, 0.01)}<div class="curve-display"><svg viewBox="0 0 220 66"><path d="M10 55H210M10 10V55" class="curve-axis"/><path id="curve-path" d="M10 55 Q110 55 210 10"/><circle cx="210" cy="10" r="4"/></svg><span>角張る</span><span>丸みをつける</span></div><label class="toggle-row"><span>尖った角を保持</span><input id="sharpCorners" type="checkbox" checked/><i></i></label><p class="control-note">ベベル幅は輪郭に合わせて自動制限。<br>細い形状では小さい値を推奨します。</p></section><section class="control-section"><h3>内側をくり抜く <span>HOLLOW</span></h3><label class="toggle-row"><span>中空にする</span><input id="hollow" type="checkbox"/><i></i></label>${field("wallThickness", "壁の厚み", 4, 0.1, 30, 0.1)}</section><section class="control-section"><h3>マテリアル <span>MATERIAL</span></h3><label class="color-row"><input type="color" id="color" value="#b6ee75"/><span id="color-value">#B6EE75</span><span class="muted">カラー</span></label></section><p class="footer-note">OBJ + MTL として出力<br>オブジェクトごとのカラーを保存</p></aside></main>`;
+app.innerHTML = `<header><a class="brand" href="./"><span class="brand-icon">◈</span> PATH<span class="brand-slash">/</span>FORM</a><span class="tagline">パスから、かたちへ。</span><span class="header-label">SVG → 3D STUDIO</span><button id="export" class="primary">↓ OBJ を書き出す</button></header><main><aside class="left-panel"><div class="panel-heading"><span>01 / SOURCE</span><span class="status-dot">●</span></div><h1>輪郭から始めよう。</h1><p class="muted intro">ベクターパスを読み込んで、<br>自由に立体をつくる。</p><label class="dropzone" id="dropzone"><input type="file" id="file" accept=".svg,image/svg+xml" hidden/><span class="upload-icon"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 15v6h16v-6"/></svg></span><strong>SVG をドロップ</strong><span>またはクリックして選択</span><small>Illustrator：SVG 形式で保存</small></label><button class="sample-button" id="sample">◈ サンプルを読み込む <span>↗</span></button><div class="section-line"></div><div class="panel-heading"><span>OBJECTS</span><span id="object-count">0</span></div><div id="objects"></div><div class="source-note"><span class="tiny-label">SUPPORTED FORMAT</span><p>閉じた SVG パス・複合パスに対応。<br>文字はアウトライン化してください。</p></div></aside><section class="workspace"><div class="viewport-heading"><span><i class="live-dot"></i> LIVE PREVIEW</span><button id="fit" class="subtle">⊡ 全体表示</button></div><div id="viewport"></div><div class="view-caption"><span>ドラッグで回転 · スクロールでズーム · 右ドラッグで移動</span><span id="mesh-info">—</span></div><div id="message" role="status"></div><div class="uv-panel"><div class="uv-heading"><span>UV MAP <small>展開・調整</small></span><span class="tiny-label">UV 座標を確認</span></div><div class="uv-tools"><label><input type="checkbox" id="uv-edit-mode"/> UV 頂点編集</label><button id="uv-clear" class="subtle">UV 修正をクリア ↺</button><span>頂点をドラッグ · 同じ UV 座標をまとめて編集</span></div><canvas id="uv-canvas" width="700" height="180" aria-label="UV 展開。頂点編集を有効にして頂点をドラッグ"></canvas><div class="uv-inputs">${field("uvScaleX", "スケール X", 1, 0.01, 20, 0.1, false)}${field("uvScaleY", "スケール Y", 1, 0.01, 20, 0.1, false)}${field("uvOffsetX", "移動 U", 0, -20, 20, 0.1, false)}${field("uvOffsetY", "移動 V", 0, -20, 20, 0.1, false)}${field("uvRotation", "回転 °", 0, -360, 360, 1, false)}</div></div></section><aside class="right-panel"><div class="panel-heading"><span>02 / SHAPE</span><button id="reset" class="subtle">リセット ↺</button></div><h2>かたちを調整</h2><p id="selected-name" class="muted">オブジェクトを選択</p><section class="control-section"><h3>押し出し <span>EXTRUDE</span></h3>${field("depth", "奥行き", 24, 1, 100, 1)}</section><section class="control-section"><h3>ベベル <span>BEVEL</span></h3>${field("bevelSize", "幅", 3, 0, 20, 0.1)}${field("bevelSegments", "分割数", 5, 1, 16, 1)}<div class="curve-display"></div><label class="toggle-row"><span>尖った角を保持</span><input id="sharpCorners" type="checkbox" checked/><i></i></label><p class="control-note">ベベル幅は輪郭に合わせて自動制限。<br>細い形状では小さい値を推奨します。</p></section><section class="control-section"><h3>内側をくり抜く <span>HOLLOW</span></h3><label class="toggle-row"><span>中空にする</span><input id="hollow" type="checkbox"/><i></i></label>${field("wallThickness", "壁の厚み", 4, 0.1, 30, 0.1)}</section><section class="control-section"><h3>マテリアル <span>MATERIAL</span></h3><label class="color-row"><input type="color" id="color" value="#b6ee75"/><span id="color-value">#B6EE75</span><span class="muted">カラー</span></label></section><p class="footer-note">OBJ + MTL として出力<br>オブジェクトごとのカラーを保存</p></aside></main>`;
 function field(id, label, value, min, max, step, range = true) {
   return `<label class="field ${range ? "" : "compact"}"><span>${label}</span><input id="${id}" type="number" min="${min}" max="${max}" step="${step}" value="${value}"/>${range ? `<input data-range="${id}" type="range" min="${min}" max="${max}" step="${step}" value="${value}"/>` : ""}</label>`;
 }
@@ -59,6 +61,25 @@ function notice(text, error = false) {
 function selectedObject() {
   return objects[selected];
 }
+const transformTools = createTransformTools({
+  scene,
+  camera,
+  renderer,
+  orbit: controls,
+  group,
+  getObjects: () => objects,
+  getSelected: () => selected,
+  onSelect: (index) => {
+    selected = index;
+    uvSelectedKey = null;
+    uvDragKey = null;
+    list();
+    sync();
+    drawUV();
+    transformTools.sync();
+  },
+});
+const transformControls = transformTools.controls;
 function dispose() {
   group.children.slice().forEach((m) => {
     group.remove(m);
@@ -79,6 +100,7 @@ function makeMeshes(entries) {
       });
       const mesh = new THREE.Mesh(geometry, material);
       mesh.userData.objectId = o.id;
+      prepareObjectMesh(mesh, o);
       meshes.push(mesh);
     });
     return meshes;
@@ -93,6 +115,7 @@ function makeMeshes(entries) {
 function rebuild(prepared) {
   try {
     const meshes = prepared || makeMeshes(objects);
+    transformTools.detach();
     dispose();
     meshes.forEach((m) => group.add(m));
     const warnings = meshes.flatMap((m) => m.geometry.userData.warnings || []);
@@ -106,6 +129,7 @@ function rebuild(prepared) {
     $("mesh-info").textContent =
       `${objects.length} OBJECTS · ${group.children.reduce((n, m) => n + m.geometry.getAttribute("position").count, 0).toLocaleString()} VERTICES`;
     notice([...new Set(warnings)].join(" / "));
+    transformTools.sync();
     drawUV();
     return true;
   } catch (e) {
@@ -147,6 +171,7 @@ function list() {
         uvDragKey = null;
         list();
         sync();
+        transformTools.sync();
         drawUV();
       }),
   );
@@ -178,210 +203,22 @@ function sync() {
   $("color-value").textContent = o.color.toUpperCase();
   curveDraw();
 }
-let selectedCurvePoint = 1;
-let curveObject = null;
-const curveEditor = document.querySelector(".curve-display svg");
-curveEditor.setAttribute("role", "slider");
-curveEditor.setAttribute(
-  "aria-label",
-  "ベベル断面の制御点。ダブルクリックで追加、ドラッグまたは矢印キーで調整、Deleteで削除",
+const bevelEditor = createBevelEditor(
+  document.querySelector(".curve-display"),
+  {
+    getObject: selectedObject,
+    onChange: () => {
+      const o = selectedObject();
+      if (!o) return;
+      const cleared = clearShapeUV(o);
+      rebuild();
+      if (cleared) notice("形状の変更に伴い UV 頂点修正をクリアしました。");
+    },
+  },
 );
-curveEditor.setAttribute("tabindex", "0");
-curveEditor.insertAdjacentHTML(
-  "afterend",
-  '<div class="curve-tools"><button id="curve-add" class="subtle">＋ 頂点を追加</button><button id="curve-delete" class="subtle">頂点を削除</button><small>ダブルクリックで追加 · ドラッグで調整<br>矢印キーで移動 · Deleteで削除（両端は固定）</small></div>',
-);
-function standardCurveY(x) {
-  const curve = Number($("curve").value);
-  return (1 - curve) * x + curve * (1 - Math.cos((x * Math.PI) / 2));
-}
-function editableCurvePoints() {
-  return (
-    selectedObject()?.settings.curvePoints || [
-      { x: 0, y: 0 },
-      { x: 0.5, y: standardCurveY(0.5) },
-      { x: 1, y: 1 },
-    ]
-  );
-}
 function curveDraw() {
-  const o = selectedObject();
-  if (curveObject !== o) {
-    curveObject = o;
-    selectedCurvePoint = 1;
-    curveDragging = false;
-  }
-  const points = editableCurvePoints();
-  selectedCurvePoint = Math.min(selectedCurvePoint, points.length - 1);
-  const d = o?.settings.curvePoints
-    ? points
-        .map((p, i) => `${i ? "L" : "M"}${10 + 200 * p.x} ${55 - 45 * p.y}`)
-        .join(" ")
-    : Array.from(
-        { length: 41 },
-        (_, i) =>
-          `${i ? "L" : "M"}${10 + (200 * i) / 40} ${55 - 45 * standardCurveY(i / 40)}`,
-      ).join(" ");
-  $("curve-path").setAttribute("d", d);
-  curveEditor.querySelectorAll("circle").forEach((circle) => circle.remove());
-  points.forEach((p, i) => {
-    const circle = document.createElementNS(
-      "http://www.w3.org/2000/svg",
-      "circle",
-    );
-    circle.setAttribute("cx", 10 + 200 * p.x);
-    circle.setAttribute("cy", 55 - 45 * p.y);
-    circle.setAttribute("r", i === selectedCurvePoint ? 5 : 3.5);
-    circle.dataset.curvePoint = i;
-    circle.classList.toggle("selected", i === selectedCurvePoint);
-    circle.classList.toggle("endpoint", i === 0 || i === points.length - 1);
-    curveEditor.append(circle);
-  });
-  $("curve-add").disabled = !o || points.length >= 16;
-  $("curve-delete").disabled =
-    !o || selectedCurvePoint === 0 || selectedCurvePoint === points.length - 1;
-  const p = points[selectedCurvePoint];
-  curveEditor.setAttribute("aria-valuemin", "0");
-  curveEditor.setAttribute("aria-valuemax", "1");
-  curveEditor.setAttribute("aria-valuenow", p.y);
-  curveEditor.setAttribute(
-    "aria-valuetext",
-    `頂点 ${selectedCurvePoint + 1} / ${points.length}、高さ ${p.x.toFixed(2)}、オフセット ${p.y.toFixed(2)}`,
-  );
+  bevelEditor.sync();
 }
-let curveDragging = false;
-function curveCoordinates(e) {
-  const point = new DOMPoint(e.clientX, e.clientY).matrixTransform(
-    curveEditor.getScreenCTM().inverse(),
-  );
-  return {
-    x: Math.max(0, Math.min(1, (point.x - 10) / 200)),
-    y: Math.max(0, Math.min(1, (55 - point.y) / 45)),
-  };
-}
-function commitCurve(points) {
-  const o = selectedObject();
-  if (!o) return;
-  const clearedUV = clearShapeUV(o);
-  o.settings.curvePoints = points;
-  curveDraw();
-  rebuild();
-  if (clearedUV) notice("形状の変更に伴い UV 頂点修正をクリアしました。");
-}
-function moveCurvePoint(position) {
-  const points = editableCurvePoints().map((p) => ({ ...p }));
-  const i = selectedCurvePoint;
-  if (i <= 0 || i >= points.length - 1) return;
-  points[i] = {
-    x: Math.max(
-      points[i - 1].x + 0.01,
-      Math.min(points[i + 1].x - 0.01, position.x),
-    ),
-    y: Math.max(points[i - 1].y, Math.min(points[i + 1].y, position.y)),
-  };
-  commitCurve(points);
-}
-function addCurvePoint(position) {
-  if (!selectedObject()) return;
-  const points = editableCurvePoints().map((p) => ({ ...p }));
-  if (points.length >= 16) return;
-  let index;
-  if (position) {
-    index = points.findIndex((p) => p.x > position.x);
-    if (index < 1 || points[index].x - points[index - 1].x < 0.02) return;
-  } else {
-    index = points.reduce(
-      (best, p, i) =>
-        i && p.x - points[i - 1].x > points[best].x - points[best - 1].x
-          ? i
-          : best,
-      1,
-    );
-    const l = points[index - 1],
-      r = points[index];
-    position = {
-      x: (l.x + r.x) / 2,
-      y: selectedObject().settings.curvePoints
-        ? (l.y + r.y) / 2
-        : standardCurveY((l.x + r.x) / 2),
-    };
-  }
-  const l = points[index - 1],
-    r = points[index];
-  position = {
-    x: Math.max(l.x + 0.01, Math.min(r.x - 0.01, position.x)),
-    y: Math.max(l.y, Math.min(r.y, position.y)),
-  };
-  points.splice(index, 0, position);
-  selectedCurvePoint = index;
-  commitCurve(points);
-}
-function deleteCurvePoint() {
-  const points = editableCurvePoints().map((p) => ({ ...p }));
-  if (selectedCurvePoint <= 0 || selectedCurvePoint >= points.length - 1)
-    return;
-  points.splice(selectedCurvePoint, 1);
-  selectedCurvePoint = Math.min(selectedCurvePoint, points.length - 2);
-  commitCurve(points);
-}
-$("curve-add").onclick = () => addCurvePoint();
-$("curve-delete").onclick = deleteCurvePoint;
-curveEditor.ondblclick = (e) => {
-  e.preventDefault();
-  addCurvePoint(curveCoordinates(e));
-};
-curveEditor.onpointerdown = (e) => {
-  if (!selectedObject()) return;
-  const hit = e.target.closest("[data-curve-point]");
-  if (hit) selectedCurvePoint = Number(hit.dataset.curvePoint);
-  else {
-    const position = curveCoordinates(e),
-      points = editableCurvePoints();
-    selectedCurvePoint = points.reduce(
-      (best, p, i) =>
-        Math.hypot((p.x - position.x) * 200, (p.y - position.y) * 45) <
-        Math.hypot(
-          (points[best].x - position.x) * 200,
-          (points[best].y - position.y) * 45,
-        )
-          ? i
-          : best,
-      0,
-    );
-  }
-  curveEditor.focus();
-  curveDraw();
-  const points = editableCurvePoints();
-  curveDragging =
-    selectedCurvePoint > 0 && selectedCurvePoint < points.length - 1;
-  if (curveDragging) curveEditor.setPointerCapture(e.pointerId);
-};
-curveEditor.onpointermove = (e) => {
-  if (curveDragging) moveCurvePoint(curveCoordinates(e));
-};
-curveEditor.onpointerup = curveEditor.onpointercancel = () => {
-  curveDragging = false;
-};
-curveEditor.onkeydown = (e) => {
-  if (!selectedObject()) return;
-  if (e.key === "Delete" || e.key === "Backspace") {
-    e.preventDefault();
-    deleteCurvePoint();
-    return;
-  }
-  if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key))
-    return;
-  e.preventDefault();
-  const point = editableCurvePoints()[selectedCurvePoint];
-  moveCurvePoint({
-    x:
-      point.x +
-      (e.key === "ArrowRight" ? 0.01 : e.key === "ArrowLeft" ? -0.01 : 0),
-    y:
-      point.y +
-      (e.key === "ArrowUp" ? 0.05 : e.key === "ArrowDown" ? -0.05 : 0),
-  });
-};
 async function load(text, name) {
   try {
     const parsed = parseSvg(text);
@@ -393,7 +230,7 @@ async function load(text, name) {
       ...o,
       name: o.name || `パス ${i + 1}`,
       color: safeColor(o.color),
-      settings: { ...defaults },
+      settings: { ...defaults, curvePoints: defaultProfile() },
     }));
     const meshes = makeMeshes(next);
     objects = next;
@@ -451,10 +288,6 @@ Object.keys(defaults).forEach((key) => {
   input.oninput = () => {
     const o = selectedObject();
     if (!o) return;
-    if (key === "curve") {
-      delete o.settings.curvePoints;
-      selectedCurvePoint = 1;
-    }
     if (input.type === "checkbox") o.settings[key] = input.checked;
     else {
       const n = Number(input.value);
@@ -490,8 +323,7 @@ $("fit").onclick = fit;
 $("reset").onclick = () => {
   const o = selectedObject();
   if (o) {
-    o.settings = { ...defaults };
-    selectedCurvePoint = 1;
+    o.settings = { ...defaults, curvePoints: defaultProfile() };
     sync();
     rebuild();
     fit();
@@ -516,6 +348,7 @@ $("export").onclick = () => {
       name: o.name,
       color: o.color,
       geometry: meshes[i].geometry,
+      matrix: meshes[i].matrix,
     }));
     try {
       const { obj, mtl } = exportObj(items);

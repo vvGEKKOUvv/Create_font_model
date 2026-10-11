@@ -68,6 +68,13 @@ try {
            point: new THREE.Vector3().fromBufferAttribute(mesh.geometry.attributes.position, 0).applyMatrix4(mesh.matrixWorld).toArray()
          })),
          camera: camera.matrixWorld.toArray(),
+         orbitEnabled: controls.enabled,
+         gizmo: {axis:transformControls.axis, dragging:transformControls.dragging, mode:transformControls.mode, position:transformControls.object?.position.toArray(), handles: transformControls._gizmo.gizmo.translate.children.filter(h=>h.name==='X' && h.visible && h.isMesh).map(h=> {
+           h.geometry.computeBoundingBox();
+           const p=h.geometry.boundingBox.getCenter(new THREE.Vector3()).applyMatrix4(h.matrixWorld).project(camera);
+           const rect=renderer.domElement.getBoundingClientRect();
+           return {x:rect.left+(p.x+1)*rect.width/2,y:rect.top+(1-p.y)*rect.height/2};
+         })},
          target: controls.target.toArray()
        };
        renderer.render(scene, camera);`,
@@ -162,6 +169,88 @@ try {
   await expect(page.locator("#depth")).toHaveValue("24");
   await page.locator('[data-object="1"]').click();
   await expect(page.locator("#depth")).toHaveValue("40");
+  const initialTransforms = await page.evaluate(() => window.__sceneSnapshot);
+  await page.locator("#position-x").fill("12");
+  await page.locator("#rotation-z").fill("35");
+  await page.locator("#scale-x").fill("1.5");
+  await expect
+    .poll(
+      async () =>
+        (await page.evaluate(() => window.__sceneSnapshot)).objects[1].matrix,
+    )
+    .not.toEqual(initialTransforms.objects[1].matrix);
+  const transformedMesh = await page.evaluate(() => window.__sceneSnapshot);
+  assert.deepEqual(
+    transformedMesh.objects[0],
+    initialTransforms.objects[0],
+    "Transform only affects selected object",
+  );
+  const transformedExport = await exported();
+  await page.locator("#depth").fill("42");
+  await expect(page.locator("#position-x")).toHaveValue("12");
+  await expect(page.locator("#rotation-z")).toHaveValue("35");
+  await expect(page.locator("#scale-x")).toHaveValue("1.5");
+  await page.locator("#depth").fill("40");
+  const rebuiltExport = await exported();
+  assert.deepEqual(
+    lines(transformedExport["model.obj"], "v "),
+    lines(rebuiltExport["model.obj"], "v "),
+    "Rebuilding preserves transforms and OBJ coordinates",
+  );
+  await page.locator('[data-object="0"]').click();
+  await expect(page.locator("#position-x")).toHaveValue("0");
+  await page.locator('[data-object="1"]').click();
+  await expect(page.locator("#position-x")).toHaveValue("12");
+  for (const mode of ["rotate", "scale", "translate"]) {
+    await page.locator(`#transform-${mode}`).click();
+    await expect
+      .poll(
+        async () =>
+          (await page.evaluate(() => window.__sceneSnapshot)).gizmo.mode,
+      )
+      .toBe(mode);
+  }
+  await page.locator("#transform-reset").click();
+  await expect(page.locator("#position-x")).toHaveValue("0");
+  await expect(page.locator("#rotation-z")).toHaveValue("0");
+  await expect(page.locator("#scale-x")).toHaveValue("1");
+  const beforeGizmo = await page.evaluate(() => window.__sceneSnapshot);
+  let gizmoDragged = false;
+  for (const handle of beforeGizmo.gizmo.handles) {
+    await page.mouse.move(handle.x, handle.y);
+    const hover = await page.evaluate(() => window.__sceneSnapshot.gizmo.axis);
+    if (hover !== "X") continue;
+    await page.mouse.down();
+    await expect
+      .poll(
+        async () =>
+          (await page.evaluate(() => window.__sceneSnapshot)).orbitEnabled,
+      )
+      .toBe(false);
+    await page.mouse.move(handle.x + 35, handle.y, { steps: 8 });
+    await page.mouse.up();
+    await expect
+      .poll(
+        async () =>
+          (await page.evaluate(() => window.__sceneSnapshot)).orbitEnabled,
+      )
+      .toBe(true);
+    gizmoDragged = true;
+    break;
+  }
+  assert(gizmoDragged, "An actual X manipulator drag must be tested");
+  const afterGizmo = await page.evaluate(() => window.__sceneSnapshot);
+  assert.notDeepEqual(
+    afterGizmo.objects[1].matrix,
+    beforeGizmo.objects[1].matrix,
+    "Dragging X manipulator moves selected object",
+  );
+  assert.deepEqual(
+    afterGizmo.objects[0],
+    beforeGizmo.objects[0],
+    "Manipulator preserves unselected object",
+  );
+  await page.locator("#transform-reset").click();
   await page.locator("#color").evaluate((el) => {
     el.value = "#ff0000";
     el.dispatchEvent(new Event("input", { bubbles: true }));
@@ -169,6 +258,21 @@ try {
   const colored = await exported();
   assert.match(colored["model.mtl"], /newmtl material_2\nKd 1 0 0/);
   const curve = page.locator(".curve-display svg");
+  assert(
+    (await page.locator("#curve").count()) === 0,
+    "Scalar curve shape control is removed",
+  );
+  const normalCurveBox = await curve.boundingBox();
+  assert(
+    normalCurveBox.height >= 150,
+    "Curve editor offers a larger default editing area",
+  );
+  await page.locator("#curve-expand").click();
+  await expect
+    .poll(async () => (await curve.boundingBox()).width)
+    .toBeGreaterThan(normalCurveBox.width);
+  await page.locator(".curve-dialog-heading button").click();
+  await page.locator("circle[data-curve-point]").nth(1).click();
   await curve.focus();
   await page.keyboard.press("ArrowUp");
   const customized = await exported();
@@ -190,6 +294,7 @@ try {
     "Adding a bevel vertex changes exported geometry",
   );
   const selectedPoint = page.locator("circle[data-curve-point].selected");
+  await selectedPoint.scrollIntoViewIfNeeded();
   const pointBox = await selectedPoint.boundingBox();
   await page.mouse.move(
     pointBox.x + pointBox.width / 2,
@@ -208,6 +313,32 @@ try {
     lines(added["model.obj"], "v "),
     "Dragging an added bevel vertex changes geometry",
   );
+  await page.locator("#curve-point-mode").selectOption("bezier");
+  await expect(page.locator("[data-curve-handle]")).toHaveCount(2);
+  const beforeHandle = await exported();
+  await page.locator('[data-curve-handle="in"]').scrollIntoViewIfNeeded();
+  const handleBox = await page
+    .locator('[data-curve-handle="in"]')
+    .boundingBox();
+  await page.mouse.move(
+    handleBox.x + handleBox.width / 2,
+    handleBox.y + handleBox.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    handleBox.x + handleBox.width / 2,
+    handleBox.y + handleBox.height / 2 - 18,
+    { steps: 4 },
+  );
+  await page.mouse.up();
+  const afterHandle = await exported();
+  assert.notDeepEqual(
+    lines(beforeHandle["model.obj"], "v "),
+    lines(afterHandle["model.obj"], "v "),
+    "Dragging a Bezier handle changes actual exported geometry",
+  );
+  await page.locator("#curve-point-mode").selectOption("linear");
+  await expect(page.locator("[data-curve-handle]")).toHaveCount(0);
   const storedCurve = await page.locator("#curve-path").getAttribute("d");
   await page.locator('[data-object="0"]').click();
   await expect(points).toHaveCount(3);
@@ -250,7 +381,7 @@ try {
       depth: 24,
       bevelSize: 3,
       bevelSegments: 5,
-      curve: 0.5,
+      curvePoints: (await import("/src/bevel-profile.js")).defaultProfile(),
       sharpCorners: true,
       hollow: true,
       wallThickness: 4,
@@ -304,7 +435,7 @@ try {
     .toBe(true);
   assert.deepEqual(errors, []);
   console.log(
-    "Browser smoke passed: WebGL, SVG import, independent settings, curve editing, UV transforms and vertex drag/reset, material, hollow, OBJ/MTL downloads, invalid input preservation, mobile layout.",
+    "Browser smoke passed: WebGL, SVG import, selected-object transform controls and actual gizmo drag, transform persistence/export, enlarged curve editor, per-vertex linear/Bezier and handle drag, UV transforms and vertex drag/reset, material, hollow, OBJ/MTL downloads, invalid input preservation, mobile layout.",
   );
 } finally {
   if (browser) await browser.close();

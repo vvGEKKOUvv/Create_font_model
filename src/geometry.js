@@ -1,6 +1,8 @@
 import * as THREE from "three";
 import { SVGLoader } from "three/addons/loaders/SVGLoader.js";
 
+import { normalizeProfile, evaluateProfile } from "./bevel-profile.js";
+
 const EPS = 1e-7;
 export function parseSvg(text) {
   if (typeof text !== "string" || !/<svg[\s>]/i.test(text))
@@ -299,53 +301,39 @@ export function buildMesh(shape, settings = {}) {
     Math.min(32, Math.floor(Number(settings.bevelSegments) || 8)),
   );
   const curve = THREE.MathUtils.clamp(Number(settings.curve) || 0, 0, 1);
-  if (Array.isArray(settings.curvePoints) && settings.curvePoints.length > 16)
-    throw new Error("ベベルカーブの頂点は両端を含めて最大 16 個です。");
-  const points = Array.isArray(settings.curvePoints)
-    ? settings.curvePoints
-        .map((p) => ({ x: Number(p?.x), y: Number(p?.y) }))
-        .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y))
-        .sort((a, b) => a.x - b.x)
-    : [];
-  const usePoints =
-    points.length >= 2 &&
-    Math.abs(points[0].x) < EPS &&
-    Math.abs(points[0].y) < EPS &&
-    Math.abs(points.at(-1).x - 1) < EPS &&
-    Math.abs(points.at(-1).y - 1) < EPS &&
-    points.every(
-      (p, i) =>
-        p.x >= 0 &&
-        p.x <= 1 &&
-        p.y >= 0 &&
-        p.y <= 1 &&
-        (!i || (p.x > points[i - 1].x && p.y >= points[i - 1].y)),
-    );
-  if (points.length && !usePoints)
-    warnings.push(
-      "ベベルカーブは両端 (0,0)・(1,1) と単調増加の制御点が必要です。標準カーブを使用しました。",
-    );
-  if (usePoints) {
-    points[0] = { x: 0, y: 0 };
-    points[points.length - 1] = { x: 1, y: 1 };
+  let points = [];
+  if (Array.isArray(settings.curvePoints) && settings.curvePoints.length) {
+    if (settings.curvePoints.length > 16)
+      throw new Error("ベベルカーブの頂点は両端を含めて最大 16 個です。");
+    try {
+      points = normalizeProfile(settings.curvePoints);
+    } catch (error) {
+      warnings.push(`${error.message} 標準カーブを使用しました。`);
+    }
   }
-  const profile = (t) => {
-    if (!usePoints)
-      return (1 - curve) * t + curve * (1 - Math.cos((t * Math.PI) / 2));
-    const i = Math.max(
-      1,
-      points.findIndex((p) => p.x >= t),
-    );
-    const a = points[i - 1],
-      b = points[i];
-    return a.y + ((b.y - a.y) * (t - a.x)) / (b.x - a.x);
-  };
+  const usePoints = points.length >= 2;
+  const profile = (t) =>
+    usePoints
+      ? evaluateProfile(points, t)
+      : (1 - curve) * t + curve * (1 - Math.cos((t * Math.PI) / 2));
+  const bezierSamples = [];
+  if (usePoints)
+    for (let i = 0; i < points.length - 1; i++) {
+      const a = points[i],
+        b = points[i + 1];
+      if (a.mode !== "bezier" && b.mode !== "bezier") continue;
+      // Curved segments need intermediate rings even with a low division setting.
+      const count = Math.max(8, Math.ceil(segments * (b.x - a.x)));
+      for (let j = 1; j < count; j++)
+        bezierSamples.push(a.x + ((b.x - a.x) * j) / count);
+    }
   // Include every control point so a narrow bend survives low segment counts.
   // Share the same samples on both ends, with a single level at depth / 2.
   const samples = [
     ...new Set([
       ...Array.from({ length: segments + 1 }, (_, i) => i / segments),
       ...(usePoints ? points.map((p) => p.x) : []),
+      ...bezierSamples,
     ]),
   ].sort((a, b) => a - b);
   const levels = bevel
@@ -510,16 +498,33 @@ export function exportObj(items) {
     );
     const material = `material_${index + 1}`,
       color = new THREE.Color(item.color || "#ffffff");
+    const matrix = item.matrix || new THREE.Matrix4();
+    if (
+      !matrix.elements.every(Number.isFinite) ||
+      Math.abs(matrix.determinant()) < 1e-12
+    )
+      throw new Error(
+        "書き出すオブジェクトの変換が不正です。スケールを確認してください。",
+      );
+    const normalMatrix = new THREE.Matrix3().getNormalMatrix(matrix);
+    const point = new THREE.Vector3(),
+      normal = new THREE.Vector3();
     obj.push(`o ${name}`, `usemtl ${material}`);
-    for (let i = 0; i < p.count; i++)
-      obj.push(`v ${p.getX(i)} ${p.getY(i)} ${p.getZ(i)}`);
+    for (let i = 0; i < p.count; i++) {
+      point.fromBufferAttribute(p, i).applyMatrix4(matrix);
+      obj.push(`v ${point.x} ${point.y} ${point.z}`);
+    }
     for (let i = 0; i < p.count; i++)
       obj.push(`vt ${uv?.getX(i) || 0} ${uv?.getY(i) || 0}`);
-    for (let i = 0; i < p.count; i++)
-      obj.push(`vn ${n?.getX(i) ?? 0} ${n?.getY(i) ?? 0} ${n?.getZ(i) ?? 1}`);
+    for (let i = 0; i < p.count; i++) {
+      normal
+        .set(n?.getX(i) ?? 0, n?.getY(i) ?? 0, n?.getZ(i) ?? 1)
+        .applyNormalMatrix(normalMatrix);
+      obj.push(`vn ${normal.x} ${normal.y} ${normal.z}`);
+    }
     for (let i = 0; i < p.count; i += 3)
       obj.push(
-        `f ${[base + i, base + i + 1, base + i + 2].map((v) => `${v}/${v}/${v}`).join(" ")}`,
+        `f ${(matrix.determinant() < 0 ? [base + i, base + i + 2, base + i + 1] : [base + i, base + i + 1, base + i + 2]).map((v) => `${v}/${v}/${v}`).join(" ")}`,
       );
     mtl.push(
       `newmtl ${material}`,
