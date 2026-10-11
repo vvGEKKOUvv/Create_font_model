@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 180">
+  <path id="Ring" fill="#b6ee75" fill-rule="evenodd"
+    d="M80 15A70 70 0 0 1 80 155A70 70 0 0 1 80 15Z M80 47A38 38 0 0 0 80 123A38 38 0 0 0 80 47Z"/>
+  <path id="Arrow" fill="#d9dfe6" d="M175 70H225V35L285 90L225 145V110H175Z"/>
+</svg>
