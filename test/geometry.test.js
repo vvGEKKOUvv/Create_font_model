@@ -9,6 +9,8 @@ import {
   applyUvSettings,
 } from "../src/geometry.js";
 
+import { moveProfileHandle } from "../src/bevel-profile.js";
+
 globalThis.DOMParser = DOMParser;
 
 test("Illustrator SVG external DTD is accepted without entity expansion", () => {
@@ -932,4 +934,130 @@ test("full-width ridge bevel preserves compound holes and automatic hollow walls
     }
     geometry.dispose();
   }
+});
+
+test("Bezier handle modes preserve independence or aligned tangent", () => {
+  const points = [
+    { x: 0, y: 0 },
+    {
+      x: 0.5,
+      y: 0.5,
+      mode: "bezier",
+      handleMode: "free",
+      in: { x: 0.3, y: 0.4 },
+      out: { x: 0.7, y: 0.6 },
+    },
+    { x: 1, y: 1 },
+  ];
+  const free = moveProfileHandle(points, 1, "in", { x: 0.3, y: 0.2 })[1];
+  assert.deepEqual(free.out, points[1].out);
+  points[1].handleMode = "aligned";
+  const p = moveProfileHandle(points, 1, "in", { x: 0.3, y: 0.2 })[1],
+    a = [p.in.x - p.x, p.in.y - p.y],
+    b = [p.out.x - p.x, p.out.y - p.y];
+  assert.ok(Math.abs(a[0] * b[1] - a[1] * b[0]) < 1e-12);
+  assert.ok(a[0] * b[0] + a[1] * b[1] < 0);
+  assert.ok(Math.abs(Math.hypot(...b) - Math.hypot(0.2, 0.1)) < 1e-12);
+});
+
+test("independent lateral bevel keeps axial meeting depth and increases front inset", () => {
+  const shape = denseRectangle(100, 4);
+  const narrow = buildMesh(shape, {
+    depth: 8,
+    bevelSize: 4,
+    bevelWidth: 4,
+    curvePoints: ridgeProfile,
+  });
+  const wide = buildMesh(shape, {
+    depth: 8,
+    bevelSize: 4,
+    bevelWidth: 49.99,
+    curvePoints: ridgeProfile,
+  });
+  for (const geometry of [narrow, wide]) {
+    assertClosedFiniteSolid(geometry);
+    assert.equal(geometry.userData.effectiveBevelDepth, 4);
+  }
+  assert.ok(wide.userData.effectiveBevel > 49.9);
+  assert.ok(wide.userData.effectiveBevel > narrow.userData.effectiveBevel * 10);
+  const frontArea = (geometry) =>
+    triangleVertices(geometry)
+      .filter((t) => t.every((p) => Math.abs(p[2]) < 1e-6))
+      .reduce(
+        (sum, [a, b, c]) =>
+          sum +
+          Math.abs(
+            (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]),
+          ) /
+            2,
+        0,
+      );
+  assert.ok(frontArea(wide) < frontArea(narrow) / 1000);
+  assert.throws(() => buildMesh(shape, { bevelWidth: NaN }));
+});
+
+test("continued bevel crosses narrow-stroke collisions to join wider front faces", () => {
+  const shape = parseSvg(
+    '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0H10V60H90V100H0Z"/></svg>',
+  ).objects[0].shape;
+  const normal = buildMesh(shape, {
+    depth: 8,
+    bevelSize: 4,
+    bevelWidth: 20,
+    curvePoints: ridgeProfile,
+  });
+  const continued = buildMesh(shape, {
+    depth: 8,
+    bevelSize: 4,
+    bevelWidth: 20,
+    bevelContinue: true,
+    curvePoints: ridgeProfile,
+  });
+  assert.ok(normal.userData.effectiveBevel < 5.01);
+  assert.equal(continued.userData.continuedBevel, true);
+  assert.equal(continued.userData.effectiveBevel, 20);
+  assert.equal(continued.userData.effectiveBevelDepth, 4);
+  assertClosedFiniteSolid(continued);
+  const front = triangleVertices(continued).filter((t) =>
+    t.every((p) => Math.abs(p[2]) < 1e-6),
+  );
+  assert.equal(
+    front.length,
+    0,
+    "maximum front bevel has no flat front cap even after narrow leg collision",
+  );
+  assert.ok(
+    triangleVertices(continued)
+      .flat()
+      .some(
+        (p) =>
+          Math.abs(p[0] - 5) < 1e-6 &&
+          Math.abs(p[1] + 65) < 1e-6 &&
+          p[2] > 0 &&
+          p[2] < 4,
+      ),
+    "narrow ridge rises before wider ridge",
+  );
+});
+
+test("continued bevel rejects returning profiles while ordinary bevel allows them", () => {
+  const shape = denseRectangle(100, 4);
+  const settings = {
+    depth: 8,
+    bevelSize: 4,
+    bevelWidth: 20,
+    curvePoints: [
+      { x: 0, y: 0 },
+      { x: 0.3, y: 0.8 },
+      { x: 0.6, y: 0.2 },
+      { x: 1, y: 1 },
+    ],
+  };
+  assert.throws(
+    () => buildMesh(shape, { ...settings, bevelContinue: true }),
+    /戻らない/,
+  );
+  assertClosedFiniteSolid(
+    buildMesh(shape, { ...settings, bevelContinue: false }),
+  );
 });

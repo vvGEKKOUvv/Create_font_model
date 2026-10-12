@@ -1,5 +1,58 @@
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 const mix = (a, b, t) => a + (b - a) * t;
+function boundedHandle(p, ux, uy, length, lowX, highX) {
+  let distance = Math.max(0, length);
+  if (ux > 0) distance = Math.min(distance, (highX - p.x) / ux);
+  if (ux < 0) distance = Math.min(distance, (lowX - p.x) / ux);
+  if (uy > 0) distance = Math.min(distance, (1 - p.y) / uy);
+  if (uy < 0) distance = Math.min(distance, -p.y / uy);
+  return { x: p.x + ux * distance, y: p.y + uy * distance };
+}
+function shortenHandle(p, name, x) {
+  const h = p[name];
+  if (p.handleMode !== "aligned") {
+    h.x = x;
+    return;
+  }
+  const t =
+    Math.abs(h.x - p.x) > 1e-12 ? clamp((x - p.x) / (h.x - p.x), 0, 1) : 0;
+  h.x = mix(p.x, h.x, t);
+  h.y = mix(p.y, h.y, t);
+}
+export function moveProfileHandle(input, index, name, pos) {
+  const points = normalizeProfile(input),
+    p = points[index];
+  if (
+    !p ||
+    !["in", "out"].includes(name) ||
+    (name === "in" && index === 0) ||
+    (name === "out" && index === points.length - 1)
+  )
+    return points;
+  const low = name === "in" ? points[index - 1].x : p.x;
+  const high = name === "out" ? points[index + 1].x : p.x;
+  p[name] = {
+    x: clamp(Number(pos.x), low, high),
+    y: clamp(Number(pos.y), 0, 1),
+  };
+  if (p.handleMode === "aligned" && index > 0 && index < points.length - 1) {
+    const other = name === "in" ? "out" : "in";
+    const length = Math.hypot(p[other].x - p.x, p[other].y - p.y);
+    const dx = p[name].x - p.x,
+      dy = p[name].y - p.y,
+      distance = Math.hypot(dx, dy);
+    if (distance > 1e-12)
+      p[other] = boundedHandle(
+        p,
+        -dx / distance,
+        -dy / distance,
+        length,
+        other === "in" ? points[index - 1].x : p.x,
+        other === "out" ? points[index + 1].x : p.x,
+      );
+  }
+  return normalizeProfile(points);
+}
 export function defaultProfile() {
   return [
     { x: 0, y: 0, mode: "linear" },
@@ -24,6 +77,7 @@ export function normalizeProfile(input) {
       x: Number(p?.x),
       y: Number(p?.y),
       mode: p?.mode ?? "linear",
+      handleMode: p?.handleMode === "aligned" ? "aligned" : "free",
     }))
     .sort((a, b) => a.x - b.x);
   if (
@@ -61,11 +115,44 @@ export function normalizeProfile(input) {
   };
   for (let i = 0; i < points.length; i++) {
     const p = points[i];
+    const rawIn = p.in,
+      rawOut = p.out;
     p.in = i ? handle(p.in, points[i - 1], p, 2 / 3) : { x: p.x, y: p.y };
     p.out =
       i < points.length - 1
         ? handle(p.out, p, points[i + 1], 1 / 3)
         : { x: p.x, y: p.y };
+    if (p.handleMode === "aligned" && i > 0 && i < points.length - 1) {
+      const a = rawIn || p.in,
+        b = rawOut || p.out;
+      const dx = Number(b.x) - p.x,
+        dy = Number(b.y) - p.y;
+      const fallbackX = p.x - Number(a.x),
+        fallbackY = p.y - Number(a.y);
+      const length = Math.hypot(dx, dy),
+        fallbackLength = Math.hypot(fallbackX, fallbackY);
+      const ux =
+        length > 1e-12
+          ? dx / length
+          : fallbackLength > 1e-12
+            ? fallbackX / fallbackLength
+            : 1;
+      const uy =
+        length > 1e-12
+          ? dy / length
+          : fallbackLength > 1e-12
+            ? fallbackY / fallbackLength
+            : 0;
+      p.in = boundedHandle(
+        p,
+        -ux,
+        -uy,
+        Math.hypot(Number(a.x) - p.x, Number(a.y) - p.y),
+        points[i - 1].x,
+        p.x,
+      );
+      p.out = boundedHandle(p, ux, uy, length, p.x, points[i + 1].x);
+    }
   }
   // Ordered x controls keep height invertible; y may form recessed profiles.
   for (let i = 0; i < points.length - 1; i++) {
@@ -81,10 +168,12 @@ export function normalizeProfile(input) {
         : { x: mix(a.x, b.x, 2 / 3), y: mix(a.y, b.y, 2 / 3) };
     for (const axis of ["x"])
       if (left[axis] > right[axis]) {
-        if (a.mode === "bezier" && b.mode === "bezier")
-          left[axis] = right[axis] = (left[axis] + right[axis]) / 2;
-        else if (a.mode === "bezier") left[axis] = right[axis];
-        else right[axis] = left[axis];
+        if (a.mode === "bezier" && b.mode === "bezier") {
+          const target = (left[axis] + right[axis]) / 2;
+          shortenHandle(a, "out", target);
+          shortenHandle(b, "in", target);
+        } else if (a.mode === "bezier") shortenHandle(a, "out", right[axis]);
+        else shortenHandle(b, "in", left[axis]);
       }
   }
   return points;

@@ -2,12 +2,14 @@ import {
   defaultProfile,
   evaluateProfile,
   normalizeProfile,
+  moveProfileHandle,
 } from "./bevel-profile.js";
 export function createBevelEditor(host, { getObject, onChange }) {
   host.classList.add("bevel-editor");
-  host.innerHTML = `<div class="curve-tools"><button id="curve-add">＋ 頂点を追加</button><button id="curve-delete">頂点を削除</button><button id="curve-expand">拡大 ↗</button><label>選択頂点 <select id="curve-point-mode"><option value="linear">リニア</option><option value="bezier">ベジェ</option></select></label></div><svg viewBox="0 0 480 280" tabindex="0" role="group" aria-label="ベベル曲線エディター"></svg><div class="curve-labels"><span>側面 → 表面（高さ）</span><span>ベベル幅 ↑</span></div><p class="curve-help">クリックで頂点追加 · 頂点／ハンドルをドラッグ<br>矢印キーで移動 · Delで削除（両端位置は固定）</p>`;
+  host.innerHTML = `<div class="curve-tools"><button id="curve-add">＋ 頂点を追加</button><button id="curve-delete">頂点を削除</button><button id="curve-expand">拡大 ↗</button><label>選択頂点 <select id="curve-point-mode"><option value="linear">リニア</option><option value="bezier">ベジェ</option></select></label><label>ハンドル <select id="curve-handle-mode"><option value="free">左右独立</option><option value="aligned">一直線</option></select></label></div><svg viewBox="0 0 480 280" tabindex="0" role="group" aria-label="ベベル曲線エディター"></svg><div class="curve-labels"><span>側面 → 表面（高さ）</span><span>ベベル幅 ↑</span></div><p class="curve-help">クリックで頂点追加 · 頂点／ハンドルをドラッグ<br>矢印キーで移動 · Delで削除（両端位置は固定）</p>`;
   const svg = host.querySelector("svg"),
-    mode = host.querySelector("select"),
+    mode = host.querySelector("#curve-point-mode"),
+    handleMode = host.querySelector("#curve-handle-mode"),
     add = host.querySelector("#curve-add"),
     del = host.querySelector("#curve-delete");
   svg.setAttribute("preserveAspectRatio", "none");
@@ -63,6 +65,9 @@ export function createBevelEditor(host, { getObject, onChange }) {
         (drawing += `<circle data-curve-point="${i}" class="${i === selected ? "selected " : ""}${i === 0 || i === p.length - 1 ? "endpoint" : ""}" cx="${px(v.x)}" cy="${py(v.y)}" r="7"><title>頂点 ${i + 1}：${v.mode === "bezier" ? "ベジェ" : "リニア"}</title></circle>`),
     );
     svg.innerHTML = drawing;
+    handleMode.value = v.handleMode;
+    handleMode.disabled =
+      !o || v.mode !== "bezier" || selected === 0 || selected === p.length - 1;
     mode.value = v.mode;
     mode.disabled = !o;
     add.disabled = !o || p.length >= 16;
@@ -72,15 +77,8 @@ export function createBevelEditor(host, { getObject, onChange }) {
     const p = points(),
       v = p[selected];
     if (drag?.handle) {
-      const h = drag.handle;
-      v[h] = {
-        x: clamp(
-          pos.x,
-          h === "in" ? p[selected - 1].x : v.x,
-          h === "out" ? p[selected + 1].x : v.x,
-        ),
-        y: pos.y,
-      };
+      save(moveProfileHandle(p, selected, drag.handle, pos));
+      return;
     } else {
       if (!selected || selected === p.length - 1) return;
       const x = clamp(
@@ -92,7 +90,7 @@ export function createBevelEditor(host, { getObject, onChange }) {
         dx = x - v.x,
         dy = y - v.y;
       for (const h of ["in", "out"])
-        if (v[h]) v[h] = { x: v[h].x + dx, y: clamp(v[h].y + dy) };
+        if (v[h]) v[h] = { x: v[h].x + dx, y: v[h].y + dy };
       v.x = x;
       v.y = y;
     }
@@ -129,6 +127,12 @@ export function createBevelEditor(host, { getObject, onChange }) {
   };
   del.onclick = () => {
     remove();
+    svg.focus();
+  };
+  handleMode.onchange = () => {
+    const p = points();
+    p[selected].handleMode = handleMode.value;
+    save(p);
     svg.focus();
   };
   mode.onchange = () => {

@@ -12,6 +12,7 @@
     "test:browser": "node scripts/browser-smoke.mjs"
   },
   "dependencies": {
+    "straight-skeleton": "1.1.0",
     "three": "0.180.0"
   },
   "devDependencies": {

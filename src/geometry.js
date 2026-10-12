@@ -4,6 +4,7 @@ import { SVGLoader } from "three/addons/loaders/SVGLoader.js";
 import { prepareContours } from "./path-reduction.js";
 
 import { normalizeProfile, evaluateProfile } from "./bevel-profile.js";
+import { prepareBevelRoof, triangulateBevelRoof } from "./bevel-roof.js";
 
 const EPS = 1e-7;
 export function parseSvg(text) {
@@ -241,6 +242,7 @@ export function buildMesh(shape, settings = {}) {
     "reductionTolerance",
     "depth",
     "bevelSize",
+    "bevelWidth",
     "bevelSegments",
     "curve",
     "wallThickness",
@@ -266,7 +268,11 @@ export function buildMesh(shape, settings = {}) {
   const warnings = [...prepared.warnings];
   const sharp = settings.sharpCorners !== false;
   const requestedWall = Math.max(0.000001, Number(settings.wallThickness) || 3);
-  const fullWidth = settings.bevelFullWidth === true;
+  const explicitWidth = settings.bevelWidth !== undefined;
+  const requestedBevelWidth = explicitWidth
+    ? Math.max(0, Number(settings.bevelWidth))
+    : 0;
+  const fullWidth = settings.bevelFullWidth === true || explicitWidth;
   const variantKey = fullWidth
     ? `full:${!!settings.hollow}:${requestedWall}:${sharp}`
     : `${!!settings.hollow}:${requestedWall}:${sharp}:${Math.max(0, Number(settings.bevelSize) || 0)}:${Math.min(depth, 2 * Math.max(0, Number(settings.bevelSize) || 0))}`;
@@ -348,7 +354,13 @@ export function buildMesh(shape, settings = {}) {
           else high = middle;
         }
         // Do not collapse to an exact line: keep caps and triangles manifold.
-        const coordinateScale = Math.max(1, Math.abs(box.min.x), Math.abs(box.min.y), Math.abs(box.max.x), Math.abs(box.max.y));
+        const coordinateScale = Math.max(
+          1,
+          Math.abs(box.min.x),
+          Math.abs(box.min.y),
+          Math.abs(box.max.x),
+          Math.abs(box.max.y),
+        );
         const residual = Math.max(low * 0.0001, coordinateScale * 2 ** -23 * 2);
         maximumBevelWidth = Math.max(0, low - residual);
       } else
@@ -389,20 +401,51 @@ export function buildMesh(shape, settings = {}) {
   }
   rings = variant.rings;
   const { box, effectiveWallThickness } = variant;
-  const bevel = fullWidth
-    ? variant.maximumBevelWidth *
-      THREE.MathUtils.clamp(
-        Math.max(0, Number(settings.bevelSize) || 0) / (depth / 2),
-        0,
-        1,
-      )
-    : variant.bevel;
+  let roof = null;
+  if (settings.bevelContinue === true && Number(settings.bevelSize) > 0) {
+    try {
+      roof = prepareBevelRoof(rings);
+    } catch (error) {
+      warnings.push(`${error.message} 通常ベベルを使用しました。`);
+    }
+  }
+  const bevel = roof
+    ? explicitWidth
+      ? Math.min(requestedBevelWidth, roof.maximumWidth)
+      : roof.maximumWidth *
+        THREE.MathUtils.clamp(
+          Math.max(0, Number(settings.bevelSize) || 0) / (depth / 2),
+          0,
+          1,
+        )
+    : explicitWidth
+      ? Math.min(requestedBevelWidth, variant.maximumBevelWidth)
+      : fullWidth
+        ? variant.maximumBevelWidth *
+          THREE.MathUtils.clamp(
+            Math.max(0, Number(settings.bevelSize) || 0) / (depth / 2),
+            0,
+            1,
+          )
+        : variant.bevel;
   // Inset safety restricts the lateral width, independently of axial reach.
   const bevelHeight =
     bevel > 0
       ? Math.min(Math.max(0, Number(settings.bevelSize) || 0), depth / 2)
       : 0;
-  warnings.push(...variant.warnings);
+  warnings.push(
+    ...variant.warnings.filter(
+      (message) => !roof || !message.includes("ベベル"),
+    ),
+  );
+  if (
+    !roof &&
+    explicitWidth &&
+    requestedBevelWidth > variant.maximumBevelWidth + EPS
+  )
+    warnings.push(
+      "輪郭の交差を防ぐため、ベベル幅を安全な最大幅に制限しました。",
+    );
   const segments = Math.max(
     1,
     Math.min(32, Math.floor(Number(settings.bevelSegments) || 8)),
@@ -494,62 +537,123 @@ export function buildMesh(shape, settings = {}) {
   };
   const width = Math.max(EPS, box.max.x - box.min.x),
     height = Math.max(EPS, box.max.y - box.min.y);
-  for (const level of [levels[0], levels.at(-1)]) {
-    surfaceGroup = level === levels[0] ? 0 : 1;
-    const contour = rings.map((p) => offset(p, level.inset, sharp));
-    const flat = contour.flat();
-    for (const indices of THREE.ShapeUtils.triangulateShape(
-      contour[0],
-      contour.slice(1),
-    )) {
-      const order = level === levels[0] ? [...indices].reverse() : indices;
-      const p = order.map(
-        (i) => new THREE.Vector3(flat[i].x, flat[i].y, level.z),
-      );
-      const capSlot = level === levels[0] ? 0 : 1;
-      const uv = order.map(
-        (i) =>
-          new THREE.Vector2(
-            (capSlot + 0.02 + (0.96 * (flat[i].x - box.min.x)) / width) / 3,
-            0.02 + (0.96 * (flat[i].y - box.min.y)) / height,
-          ),
-      );
-      triangle(...p, ...uv);
+  let roofTriangles = null;
+  if (roof && bevel > EPS) {
+    try {
+      roofTriangles = triangulateBevelRoof(roof, bevel, samples, profile);
+    } catch (error) {
+      throw new Error(error.message);
     }
   }
-  for (let ringIndex = 0; ringIndex < rings.length; ringIndex++) {
-    surfaceGroup = ringIndex + 2;
-    const ring = rings[ringIndex];
-    const distances = [0];
-    for (let i = 0; i < ring.length; i++)
-      distances.push(
-        distances.at(-1) + ring[i].distanceTo(ring[(i + 1) % ring.length]),
-      );
-    const total = distances.at(-1);
-    const layered = levels.map((l) =>
-      offset(ring, l.inset, sharp).map((p) => new THREE.Vector3(p.x, p.y, l.z)),
-    );
-    for (let l = 0; l < levels.length - 1; l++)
-      for (let i = 0; i < ring.length; i++) {
-        const j = (i + 1) % ring.length,
-          u = distances[i] / total,
-          v = distances[i + 1] / total;
-        const a = layered[l][i],
-          b = layered[l][j],
-          c = layered[l + 1][j],
-          d = layered[l + 1][i];
-        const sideUv = (s, z) =>
-          new THREE.Vector2(
-            (2.02 + s * 0.96) / 3,
-            (ringIndex + 0.02 + (0.96 * z) / depth) / rings.length,
-          );
-        const ua = sideUv(u, levels[l].z),
-          ub = sideUv(v, levels[l].z),
-          uc = sideUv(v, levels[l + 1].z),
-          ud = sideUv(u, levels[l + 1].z);
-        triangle(a, b, c, ua, ub, uc);
-        triangle(a, c, d, ua, uc, ud);
+  if (roofTriangles) {
+    for (const back of [false, true]) {
+      for (const face of roofTriangles) {
+        surfaceGroup = face.faceIndex + 2;
+        const points = face.points.map(
+          (p) =>
+            new THREE.Vector3(
+              p.x,
+              p.y,
+              back ? depth - bevelHeight * p.height : bevelHeight * p.height,
+            ),
+        );
+        const uv = face.points.map(
+          (p) =>
+            new THREE.Vector2(
+              ((back ? 1 : 0) + 0.02 + (0.96 * (p.x - box.min.x)) / width) / 3,
+              0.02 + (0.96 * (p.y - box.min.y)) / height,
+            ),
+        );
+        if (!back) {
+          points.reverse();
+          uv.reverse();
+        }
+        triangle(...points, ...uv);
       }
+    }
+    if (depth - 2 * bevelHeight > EPS) {
+      for (let r = 0; r < rings.length; r++) {
+        surfaceGroup = r + roof.faces.length + 2;
+        for (let i = 0; i < rings[r].length; i++) {
+          const a = rings[r][i],
+            b = rings[r][(i + 1) % rings[r].length];
+          const p = [
+            new THREE.Vector3(a.x, a.y, bevelHeight),
+            new THREE.Vector3(b.x, b.y, bevelHeight),
+            new THREE.Vector3(b.x, b.y, depth - bevelHeight),
+            new THREE.Vector3(a.x, a.y, depth - bevelHeight),
+          ];
+          const uv = [
+            new THREE.Vector2(2 / 3, i / rings[r].length),
+            new THREE.Vector2(1, i / rings[r].length),
+            new THREE.Vector2(1, (i + 1) / rings[r].length),
+            new THREE.Vector2(2 / 3, (i + 1) / rings[r].length),
+          ];
+          triangle(p[0], p[1], p[2], uv[0], uv[1], uv[2]);
+          triangle(p[0], p[2], p[3], uv[0], uv[2], uv[3]);
+        }
+      }
+    }
+  } else {
+    for (const level of [levels[0], levels.at(-1)]) {
+      surfaceGroup = level === levels[0] ? 0 : 1;
+      const contour = rings.map((p) => offset(p, level.inset, sharp));
+      const flat = contour.flat();
+      for (const indices of THREE.ShapeUtils.triangulateShape(
+        contour[0],
+        contour.slice(1),
+      )) {
+        const order = level === levels[0] ? [...indices].reverse() : indices;
+        const p = order.map(
+          (i) => new THREE.Vector3(flat[i].x, flat[i].y, level.z),
+        );
+        const capSlot = level === levels[0] ? 0 : 1;
+        const uv = order.map(
+          (i) =>
+            new THREE.Vector2(
+              (capSlot + 0.02 + (0.96 * (flat[i].x - box.min.x)) / width) / 3,
+              0.02 + (0.96 * (flat[i].y - box.min.y)) / height,
+            ),
+        );
+        triangle(...p, ...uv);
+      }
+    }
+    for (let ringIndex = 0; ringIndex < rings.length; ringIndex++) {
+      surfaceGroup = ringIndex + 2;
+      const ring = rings[ringIndex];
+      const distances = [0];
+      for (let i = 0; i < ring.length; i++)
+        distances.push(
+          distances.at(-1) + ring[i].distanceTo(ring[(i + 1) % ring.length]),
+        );
+      const total = distances.at(-1);
+      const layered = levels.map((l) =>
+        offset(ring, l.inset, sharp).map(
+          (p) => new THREE.Vector3(p.x, p.y, l.z),
+        ),
+      );
+      for (let l = 0; l < levels.length - 1; l++)
+        for (let i = 0; i < ring.length; i++) {
+          const j = (i + 1) % ring.length,
+            u = distances[i] / total,
+            v = distances[i + 1] / total;
+          const a = layered[l][i],
+            b = layered[l][j],
+            c = layered[l + 1][j],
+            d = layered[l + 1][i];
+          const sideUv = (s, z) =>
+            new THREE.Vector2(
+              (2.02 + s * 0.96) / 3,
+              (ringIndex + 0.02 + (0.96 * z) / depth) / rings.length,
+            );
+          const ua = sideUv(u, levels[l].z),
+            ub = sideUv(v, levels[l].z),
+            uc = sideUv(v, levels[l + 1].z),
+            ud = sideUv(u, levels[l + 1].z);
+          triangle(a, b, c, ua, ub, uc);
+          triangle(a, c, d, ua, uc, ud);
+        }
+    }
   }
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute(
@@ -599,7 +703,8 @@ export function buildMesh(shape, settings = {}) {
   geometry.userData = {
     warnings,
     effectiveBevel: bevel,
-    maximumBevelWidth: variant.maximumBevelWidth,
+    maximumBevelWidth: roof ? roof.maximumWidth : variant.maximumBevelWidth,
+    continuedBevel: !!roofTriangles,
     effectiveBevelDepth: bevelHeight,
     effectiveWallThickness,
     originalCount: prepared.originalCount,

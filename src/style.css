@@ -1046,3 +1046,13 @@ main {
     padding: 9px 12px;
   }
 }
+
+.wireframe-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #b8c4ce;
+  margin-left: auto;
+  margin-right: 12px;
+}

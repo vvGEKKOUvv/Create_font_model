@@ -11,6 +11,8 @@ const defaults = {
   reductionTolerance: 0,
   depth: 24,
   bevelSize: 3,
+  bevelWidth: 3,
+  bevelContinue: true,
   bevelSegments: 5,
   sharpCorners: true,
   hollow: false,
@@ -35,7 +37,7 @@ app.innerHTML = `
       <button id="tab-uv" role="tab" aria-selected="false" aria-controls="view-uv" tabindex="-1">UV MAP</button>
     </div>
     <div id="view-3d" class="workspace-view" role="tabpanel" aria-labelledby="tab-3d">
-      <div class="viewport-heading"><span><i class="live-dot"></i> LIVE PREVIEW</span><button id="fit" class="subtle">⊡ 全体表示</button></div>
+      <div class="viewport-heading"><span><i class="live-dot"></i> LIVE PREVIEW</span><label class="wireframe-toggle"><input id="wireframe" type="checkbox"/> ワイヤーフレーム</label><button id="fit" class="subtle">⊡ 全体表示</button></div>
       <div id="viewport"></div>
       <div class="view-caption"><span id="mesh-info">—</span></div>
     </div>
@@ -72,7 +74,9 @@ app.innerHTML = `
     </details>
     <details class="control-section" open>
       <summary>ベベル <span>BEVEL</span></summary>
-      ${field("bevelSize", "範囲", 3, 0, 12, 0.1)}
+      ${field("bevelSize", "奥行方向", 3, 0, 12, 0.1)}
+      ${field("bevelWidth", "輪郭幅", 3, 0, 100, 0.1)}
+      <label class="toggle-row"><span>正面が合流するまで広げる</span><input id="bevelContinue" type="checkbox" checked/><i></i></label>
       ${field("bevelSegments", "分割数", 5, 1, 16, 1)}
       <p id="geometry-status" class="control-note"></p>
       <div class="curve-display"></div>
@@ -169,6 +173,10 @@ function dispose() {
     m.material.dispose();
   });
 }
+function applyDisplayStyle(mesh, object) {
+  mesh.material.wireframe = $("wireframe").checked;
+  mesh.material.color.set(mesh.material.wireframe ? "#c4d8ef" : object.color);
+}
 function makeMeshes(entries) {
   const meshes = [];
   try {
@@ -181,6 +189,7 @@ function makeMeshes(entries) {
         side: THREE.DoubleSide,
       });
       const mesh = new THREE.Mesh(geometry, material);
+      applyDisplayStyle(mesh, o);
       mesh.userData.objectId = o.id;
       prepareObjectMesh(mesh, o);
       meshes.push(mesh);
@@ -228,6 +237,7 @@ function initialSettings(shape) {
     reductionTolerance: tolerance,
     depth,
     bevelSize: Math.min(defaults.bevelSize, span * 0.04, depth * 0.2),
+    bevelWidth: Math.min(defaults.bevelWidth, span * 0.04),
     wallThickness: Math.min(defaults.wallThickness, span * 0.15),
     bevelFullWidth: true,
     curvePoints: [
@@ -268,7 +278,7 @@ function rebuildObject(object) {
       mesh = group.children[index];
     const oldGeometry = mesh.geometry;
     mesh.geometry = replacement.geometry;
-    mesh.material.color.set(object.color);
+    applyDisplayStyle(mesh, object);
     mesh.position.copy(replacement.position);
     mesh.rotation.copy(replacement.rotation);
     mesh.scale.copy(replacement.scale);
@@ -276,6 +286,7 @@ function rebuildObject(object) {
     replacement.material.dispose();
     oldGeometry.dispose();
     object.invalid = false;
+    syncBevelLimit();
     refreshMeshInfo();
     return true;
   } catch (e) {
@@ -492,6 +503,22 @@ $("dropzone").ondrop = (e) => {
 function syncBevelLimit() {
   const o = selectedObject();
   if (!o) return;
+  $("sharpCorners").disabled = o.settings.bevelContinue;
+  $("sharpCorners").title = o.settings.bevelContinue
+    ? "合流モードでは角と稜線を保持します"
+    : "";
+  const widthMaximum = Math.max(
+    o.settings.bevelWidth,
+    group.children[selected]?.geometry.userData.maximumBevelWidth || 100,
+  );
+  for (const el of [
+    $("bevelWidth"),
+    document.querySelector('[data-range="bevelWidth"]'),
+  ]) {
+    el.max = widthMaximum;
+    el.step = Math.max(0.000001, widthMaximum / 1000);
+    el.value = o.settings.bevelWidth;
+  }
   const maximum = o.settings.depth / 2;
   o.settings.bevelSize = Math.min(o.settings.bevelSize, maximum);
   for (const el of [
@@ -519,7 +546,7 @@ Object.keys(defaults).forEach((key) => {
       const range = document.querySelector(`[data-range="${key}"]`);
       if (range) range.value = o.settings[key];
     }
-    if (key === "depth") syncBevelLimit();
+    if (key === "depth" || key === "bevelContinue") syncBevelLimit();
     const clearedUV = !key.startsWith("uv") && clearShapeUV(o);
     if (key.startsWith("uv")) {
       updateUV(o);
@@ -546,8 +573,12 @@ $("color").oninput = () => {
   $("color-value").textContent = o.color.toUpperCase();
   list();
   const mesh = group.children[selected];
-  if (mesh) mesh.material.color.set(o.color);
+  if (mesh) applyDisplayStyle(mesh, o);
 };
+$("wireframe").onchange = () =>
+  group.children.forEach((mesh, index) =>
+    applyDisplayStyle(mesh, objects[index]),
+  );
 $("fit").onclick = fit;
 $("reset").onclick = () => {
   const o = selectedObject();

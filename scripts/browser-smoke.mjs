@@ -68,6 +68,7 @@ try {
        window.__sceneSnapshot = {
          objects: group.children.map(mesh => ({
            geometryId: mesh.geometry.uuid,
+           wireframe: mesh.material.wireframe,
            effectiveBevel: mesh.geometry.userData.effectiveBevel,
            effectiveBevelDepth: mesh.geometry.userData.effectiveBevelDepth,
            matrix: mesh.matrixWorld.toArray(),
@@ -236,6 +237,39 @@ try {
       page.off("download", collect);
     }
   }
+  const beforeWireframe = await page.evaluate(
+    () => window.__sceneSnapshot.objects,
+  );
+  const wireframeBaseline = await exported();
+  await page.locator("#wireframe").check();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__sceneSnapshot.objects.every((o) => o.wireframe),
+      ),
+    )
+    .toBe(true);
+  const wireframeExport = await exported();
+  assert.equal(
+    wireframeExport["model.obj"],
+    wireframeBaseline["model.obj"],
+    "Wireframe changes display only, never exported geometry",
+  );
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window.__sceneSnapshot.objects.map((o) => o.geometryId),
+    ),
+    beforeWireframe.map((o) => o.geometryId),
+    "Wireframe toggling reuses geometry",
+  );
+  await page.locator("#wireframe").uncheck();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__sceneSnapshot.objects.every((o) => !o.wireframe),
+      ),
+    )
+    .toBe(true);
   const first = await exported();
   assert.match(first["model.obj"], /o Ring/);
   assert.match(first["model.obj"], /o Arrow/);
@@ -489,6 +523,10 @@ try {
   );
   await page.locator("#curve-point-mode").selectOption("bezier");
   await expect(page.locator("[data-curve-handle]")).toHaveCount(2);
+  await expect(page.locator("#curve-handle-mode")).toHaveValue("free");
+  const oppositeBefore = await page
+    .locator('[data-curve-handle="out"]')
+    .evaluate((e) => [e.getAttribute("cx"), e.getAttribute("cy")]);
   const beforeHandle = await exported();
   await page.locator('[data-curve-handle="in"]').scrollIntoViewIfNeeded();
   const handleBox = await page
@@ -501,18 +539,69 @@ try {
   await page.mouse.down();
   await page.mouse.move(
     handleBox.x + handleBox.width / 2,
-    handleBox.y + handleBox.height / 2 - 18,
+    handleBox.y + handleBox.height / 2 + 5,
     { steps: 4 },
   );
   await page.mouse.up();
   const afterHandle = await exported();
+  assert.deepEqual(
+    await page
+      .locator('[data-curve-handle="out"]')
+      .evaluate((e) => [e.getAttribute("cx"), e.getAttribute("cy")]),
+    oppositeBefore,
+    "Independent drag leaves opposite handle unchanged",
+  );
   assert.notDeepEqual(
     lines(beforeHandle["model.obj"], "v "),
     lines(afterHandle["model.obj"], "v "),
     "Dragging a Bezier handle changes actual exported geometry",
   );
+  await page.locator("#curve-handle-mode").selectOption("aligned");
+  const alignedHandle = await page
+    .locator('[data-curve-handle="in"]')
+    .boundingBox();
+  await page.mouse.move(
+    alignedHandle.x + alignedHandle.width / 2,
+    alignedHandle.y + alignedHandle.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    alignedHandle.x + alignedHandle.width / 2,
+    alignedHandle.y + alignedHandle.height / 2 + 3,
+    { steps: 4 },
+  );
+  await page.mouse.up();
+  const tangent = await page.evaluate(() => {
+    const p = document.querySelector("circle[data-curve-point].selected");
+    const a = document.querySelector('[data-curve-handle="in"]');
+    const b = document.querySelector('[data-curve-handle="out"]');
+    const v = (e) => [
+      Number(e.getAttribute("cx")) - Number(p.getAttribute("cx")),
+      Number(e.getAttribute("cy")) - Number(p.getAttribute("cy")),
+    ];
+    return [v(a), v(b)];
+  });
+  assert(
+    Math.abs(tangent[0][0] * tangent[1][1] - tangent[0][1] * tangent[1][0]) <
+      0.001,
+    "Aligned handles stay on one tangent after actual drag",
+  );
+  await page.locator("#curve-handle-mode").selectOption("free");
   await page.locator("#curve-point-mode").selectOption("linear");
   await expect(page.locator("[data-curve-handle]")).toHaveCount(0);
+  await page.locator("#curve-point-mode").selectOption("bezier");
+  await exported();
+  const beforeInvalidProfile = await page.evaluate(() => window.__sceneSnapshot.objects.map(o => o.geometryId));
+  const invalidHandle = await page.locator('[data-curve-handle="in"]').boundingBox();
+  await page.mouse.move(invalidHandle.x + invalidHandle.width / 2, invalidHandle.y + invalidHandle.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(invalidHandle.x + invalidHandle.width / 2, invalidHandle.y + invalidHandle.height / 2 - 80, { steps: 1 });
+  await page.mouse.up();
+  await expect(page.locator("#message")).toHaveClass(/error/);
+  await expect(page.locator("#message")).toContainText("戻らない");
+  assert.deepEqual(await page.evaluate(() => window.__sceneSnapshot.objects.map(o => o.geometryId)), beforeInvalidProfile, "Invalid continued profile preserves previously displayed geometry");
+  await page.locator("#curve-point-mode").selectOption("linear");
+  await expect(page.locator("#message")).not.toHaveClass(/error/);
   const storedCurve = await page.locator("#curve-path").getAttribute("d");
   await page.locator('[data-object="0"]').click();
   await expect(points).toHaveCount(3);
@@ -604,6 +693,8 @@ try {
       bevelSize: 3,
       bevelSegments: 5,
       bevelFullWidth: true,
+      bevelContinue: true,
+      bevelWidth: 3,
       curvePoints: [
         { x: 0, y: 0, mode: "linear" },
         { x: 0.5, y: 0.5, mode: "linear" },
@@ -792,6 +883,7 @@ try {
     "12",
   );
   await page.locator("#bevelSize").fill("12");
+  await page.locator("#bevelWidth").fill("18");
   await expect
     .poll(
       async () =>
