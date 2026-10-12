@@ -266,7 +266,10 @@ export function buildMesh(shape, settings = {}) {
   const warnings = [...prepared.warnings];
   const sharp = settings.sharpCorners !== false;
   const requestedWall = Math.max(0.000001, Number(settings.wallThickness) || 3);
-  const variantKey = `${!!settings.hollow}:${requestedWall}:${sharp}:${Math.max(0, Number(settings.bevelSize) || 0)}:${Math.min(depth, 2 * Math.max(0, Number(settings.bevelSize) || 0))}`;
+  const fullWidth = settings.bevelFullWidth === true;
+  const variantKey = fullWidth
+    ? `full:${!!settings.hollow}:${requestedWall}:${sharp}`
+    : `${!!settings.hollow}:${requestedWall}:${sharp}:${Math.max(0, Number(settings.bevelSize) || 0)}:${Math.min(depth, 2 * Math.max(0, Number(settings.bevelSize) || 0))}`;
   let variant = prepared.variants.get(variantKey);
   if (!variant) {
     let effectiveWallThickness = 0;
@@ -308,44 +311,76 @@ export function buildMesh(shape, settings = {}) {
     }
     const originalBevel = Math.max(0, Number(settings.bevelSize) || 0);
     const box = new THREE.Box2().setFromPoints(rings.flat());
+    const checkInset = (distance) => {
+      const shifted = rings.map((p) => offset(p, distance, sharp));
+      return (
+        shifted.every((p, r) => edgesForward(p, rings[r])) &&
+        shifted[0].every((p) => inside(p, rings[0])) &&
+        rings
+          .slice(1)
+          .every((p, i) => p.every((v) => inside(v, shifted[i + 1]))) &&
+        validRings(shifted) &&
+        Math.abs(area(shifted[0])) < Math.abs(area(rings[0]))
+      );
+    };
+    let maximumBevelWidth = 0;
     let bevel = Math.min(
       originalBevel,
       depth / 2,
       Math.min(box.max.x - box.min.x, box.max.y - box.min.y) / 4,
     );
-    let safeBevel = bevel === 0;
-    for (let attempt = 0; bevel > EPS && attempt < 24; attempt++) {
-      const shifted = rings.map((p) => offset(p, bevel, sharp));
-      const nested =
-        shifted[0].every((p) => inside(p, rings[0])) &&
-        rings
-          .slice(1)
-          .every((p, i) => p.every((v) => inside(v, shifted[i + 1])));
-      if (
-        shifted.every((p, r) => edgesForward(p, rings[r])) &&
-        nested &&
-        validRings(shifted) &&
-        Math.abs(area(shifted[0])) < Math.abs(area(rings[0]))
-      ) {
-        safeBevel = true;
-        break;
+    if (fullWidth) {
+      // Cache a contour-dependent limit, independent of the depth slider. A
+      // binary refinement approaches the ridge instead of leaving the wide
+      // flat cap produced by halving the requested width after a collision.
+      let high = Math.min(box.max.x - box.min.x, box.max.y - box.min.y) / 2;
+      let low = high;
+      let safe = high > EPS && checkInset(high);
+      for (let attempt = 0; !safe && low > EPS && attempt < 24; attempt++) {
+        high = low;
+        low *= 0.5;
+        safe = checkInset(low);
       }
-      bevel *= 0.5;
+      if (safe) {
+        for (let attempt = 0; attempt < 18; attempt++) {
+          const middle = (low + high) / 2;
+          if (checkInset(middle)) low = middle;
+          else high = middle;
+        }
+        // Do not collapse to an exact line: keep caps and triangles manifold.
+        const coordinateScale = Math.max(1, Math.abs(box.min.x), Math.abs(box.min.y), Math.abs(box.max.x), Math.abs(box.max.y));
+        const residual = Math.max(low * 0.0001, coordinateScale * 2 ** -23 * 2);
+        maximumBevelWidth = Math.max(0, low - residual);
+      } else
+        localWarnings.push(
+          "輪郭の交差を避けられないため、ベベルを無効にしました。",
+        );
+      bevel = maximumBevelWidth;
+    } else {
+      let safeBevel = bevel === 0;
+      for (let attempt = 0; bevel > EPS && attempt < 24; attempt++) {
+        if (checkInset(bevel)) {
+          safeBevel = true;
+          break;
+        }
+        bevel *= 0.5;
+      }
+      if (bevel < EPS || !safeBevel) bevel = 0;
+      if (originalBevel > depth / 2 + EPS)
+        localWarnings.push("ベベルの奥行きを押し出しの半分に制限しました。");
+      if (bevel + EPS < Math.min(originalBevel, depth / 2))
+        localWarnings.push(
+          bevel > 0
+            ? "細い輪郭・交差を考慮し、ベベル幅を安全側に縮小しました。ベベルの奥行きは保持しています。"
+            : "輪郭の交差を避けられないため、ベベルを無効にしました。",
+        );
     }
-    if (bevel < EPS || !safeBevel) bevel = 0;
-    if (originalBevel > depth / 2 + EPS)
-      localWarnings.push("ベベルの奥行きを押し出しの半分に制限しました。");
-    if (bevel + EPS < Math.min(originalBevel, depth / 2))
-      localWarnings.push(
-        bevel > 0
-          ? "細い輪郭・交差を考慮し、ベベル幅を安全側に縮小しました。ベベルの奥行きは保持しています。"
-          : "輪郭の交差を避けられないため、ベベルを無効にしました。",
-      );
     variant = {
       rings,
       box,
       bevel,
       effectiveWallThickness,
+      maximumBevelWidth,
       warnings: localWarnings,
     };
     if (prepared.variants.size >= 24)
@@ -353,7 +388,15 @@ export function buildMesh(shape, settings = {}) {
     prepared.variants.set(variantKey, variant);
   }
   rings = variant.rings;
-  const { box, bevel, effectiveWallThickness } = variant;
+  const { box, effectiveWallThickness } = variant;
+  const bevel = fullWidth
+    ? variant.maximumBevelWidth *
+      THREE.MathUtils.clamp(
+        Math.max(0, Number(settings.bevelSize) || 0) / (depth / 2),
+        0,
+        1,
+      )
+    : variant.bevel;
   // Inset safety restricts the lateral width, independently of axial reach.
   const bevelHeight =
     bevel > 0
@@ -556,6 +599,7 @@ export function buildMesh(shape, settings = {}) {
   geometry.userData = {
     warnings,
     effectiveBevel: bevel,
+    maximumBevelWidth: variant.maximumBevelWidth,
     effectiveBevelDepth: bevelHeight,
     effectiveWallThickness,
     originalCount: prepared.originalCount,

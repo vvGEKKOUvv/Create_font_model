@@ -229,7 +229,12 @@ function initialSettings(shape) {
     depth,
     bevelSize: Math.min(defaults.bevelSize, span * 0.04, depth * 0.2),
     wallThickness: Math.min(defaults.wallThickness, span * 0.15),
-    curvePoints: defaultProfile(),
+    bevelFullWidth: true,
+    curvePoints: [
+      { x: 0, y: 0, mode: "linear" },
+      { x: 0.5, y: 0.5, mode: "linear" },
+      { x: 1, y: 1, mode: "linear" },
+    ],
   };
 }
 function updateGeometryInfo() {

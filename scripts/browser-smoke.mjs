@@ -68,6 +68,8 @@ try {
        window.__sceneSnapshot = {
          objects: group.children.map(mesh => ({
            geometryId: mesh.geometry.uuid,
+           effectiveBevel: mesh.geometry.userData.effectiveBevel,
+           effectiveBevelDepth: mesh.geometry.userData.effectiveBevelDepth,
            matrix: mesh.matrixWorld.toArray(),
            depth: mesh.geometry.boundingBox.max.z - mesh.geometry.boundingBox.min.z,
            point: new THREE.Vector3().fromBufferAttribute(mesh.geometry.attributes.position, 0).applyMatrix4(mesh.matrixWorld).toArray()
@@ -601,7 +603,12 @@ try {
       depth: 24,
       bevelSize: 3,
       bevelSegments: 5,
-      curvePoints: (await import("/src/bevel-profile.js")).defaultProfile(),
+      bevelFullWidth: true,
+      curvePoints: [
+        { x: 0, y: 0, mode: "linear" },
+        { x: 0.5, y: 0.5, mode: "linear" },
+        { x: 1, y: 1, mode: "linear" },
+      ],
       sharpCorners: true,
       hollow: true,
       wallThickness: 4,
@@ -771,6 +778,38 @@ try {
   );
   const repeatedExport = await exported();
   assert.equal((repeatedExport["model.mtl"].match(/newmtl /g) || []).length, 8);
+  await page.locator("#file").setInputFiles({
+    name: "ridge-L.svg",
+    mimeType: "image/svg+xml",
+    buffer: Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg"><path id="Ridge-L" d="M0 0H36V140H130V176H0Z"/></svg>',
+    ),
+  });
+  await expect(page.locator("#selected-name")).toHaveText("Ridge-L");
+  await page.locator("#depth").fill("24");
+  await expect(page.locator('[data-range="bevelSize"]')).toHaveAttribute(
+    "max",
+    "12",
+  );
+  await page.locator("#bevelSize").fill("12");
+  await expect
+    .poll(
+      async () =>
+        (await page.evaluate(() => window.__sceneSnapshot)).objects.at(-1)
+          .effectiveBevel,
+    )
+    .toBeGreaterThan(17.99);
+  assert.equal(
+    (await page.evaluate(() => window.__sceneSnapshot)).objects.at(-1)
+      .effectiveBevelDepth,
+    12,
+  );
+  await expect(page.locator("#message")).not.toHaveClass(/error/);
+  const ridgeExport = await exported();
+  assert.match(ridgeExport["model.obj"], /o Ridge-L/);
+  assert(!/NaN|Infinity/.test(ridgeExport["model.obj"]));
+  await page.locator("#tab-3d").click();
+  await page.screenshot({ path: join(work, "ridge-L-browser.png") });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect
     .poll(() =>
@@ -781,7 +820,7 @@ try {
     .toBe(true);
   assert.deepEqual(errors, []);
   console.log(
-    "Browser smoke passed: empty startup, additive and repeated imports, previous object/camera persistence, maximum bevel axial reach, slim sidebar controls, single-click curve insertion, Delete removal, collapsible right sidebar, 3D/UV tabs, reduced orbit inertia, WebGL, SVG import, selected-object transform controls and actual gizmo drag, transform persistence/export, enlarged curve editor, per-vertex linear/Bezier and handle drag, UV transforms and vertex drag/reset, material, hollow, OBJ/MTL downloads, invalid input preservation, mobile layout, selected-only/debounced rebuilds, UV/material geometry reuse, reduction and automatic wall safety.",
+    "Browser smoke passed: empty startup, additive and repeated imports, previous object/camera persistence, maximum bevel axial reach and full-width L ridges, slim sidebar controls, single-click curve insertion, Delete removal, collapsible right sidebar, 3D/UV tabs, reduced orbit inertia, WebGL, SVG import, selected-object transform controls and actual gizmo drag, transform persistence/export, enlarged curve editor, per-vertex linear/Bezier and handle drag, UV transforms and vertex drag/reset, material, hollow, OBJ/MTL downloads, invalid input preservation, mobile layout, selected-only/debounced rebuilds, UV/material geometry reuse, reduction and automatic wall safety.",
   );
 } finally {
   if (browser) await browser.close();

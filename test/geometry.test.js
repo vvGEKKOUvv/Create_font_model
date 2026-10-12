@@ -794,3 +794,142 @@ test("maximum bevel reaches extrusion middle while narrow walls retain safe late
   );
   geometry.dispose();
 });
+
+function assertClosedFiniteSolid(geometry) {
+  for (const name of ["position", "normal", "uv"])
+    assert.ok(
+      Array.from(geometry.attributes[name].array).every(Number.isFinite),
+      `${name} finite`,
+    );
+  const edges = new Map();
+  const key = (p) => p.map((v) => Math.round(v * 100000)).join(",");
+  let volume = 0;
+  for (const [a, b, c] of triangleVertices(geometry)) {
+    volume +=
+      (a[0] * (b[1] * c[2] - b[2] * c[1]) +
+        a[1] * (b[2] * c[0] - b[0] * c[2]) +
+        a[2] * (b[0] * c[1] - b[1] * c[0])) /
+      6;
+    const ab = b.map((v, i) => v - a[i]),
+      ac = c.map((v, i) => v - a[i]);
+    assert.ok(
+      Math.hypot(
+        ab[1] * ac[2] - ab[2] * ac[1],
+        ab[2] * ac[0] - ab[0] * ac[2],
+        ab[0] * ac[1] - ab[1] * ac[0],
+      ) > 1e-9,
+      "nondegenerate triangles",
+    );
+    for (const [from, to] of [
+      [a, b],
+      [b, c],
+      [c, a],
+    ]) {
+      const first = key(from),
+        second = key(to),
+        edgeKey = [first, second].sort().join("|");
+      const entry = edges.get(edgeKey) || { count: 0, direction: 0 };
+      entry.count++;
+      entry.direction += first < second ? 1 : -1;
+      edges.set(edgeKey, entry);
+    }
+  }
+  assert.ok(volume > 0, `positive signed volume ${volume}`);
+  for (const entry of edges.values()) {
+    assert.equal(entry.count, 2, "closed two-face edges");
+    assert.equal(entry.direction, 0, "consistent face orientation");
+  }
+}
+
+const ridgeProfile = [
+  { x: 0, y: 0, mode: "linear" },
+  { x: 0.5, y: 0.5, mode: "linear" },
+  { x: 1, y: 1, mode: "linear" },
+];
+
+test("maximum full-width L bevel forms narrow central ridges and straight sloping faces", () => {
+  const shape = parseSvg(
+    '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0H36V140H130V176H0Z"/></svg>',
+  ).objects[0].shape;
+  for (const depth of [24, 8]) {
+    const geometry = buildMesh(shape, {
+      depth,
+      bevelSize: depth / 2,
+      bevelFullWidth: true,
+      curvePoints: ridgeProfile,
+      bevelSegments: 5,
+    });
+    assertClosedFiniteSolid(geometry);
+    assert.ok(
+      geometry.userData.effectiveBevel > 17.99 &&
+        geometry.userData.effectiveBevel < 18,
+      "full width reaches half the 36-unit stroke even with shallow extrusion",
+    );
+    assert.equal(geometry.userData.effectiveBevelDepth, depth / 2);
+    const caps = triangleVertices(geometry).filter((t) =>
+      t.every((p) => Math.abs(p[2]) < 1e-6),
+    );
+    const area = caps.reduce(
+      (sum, [a, b, c]) =>
+        sum +
+        Math.abs(
+          (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]),
+        ) /
+          2,
+      0,
+    );
+    assert.ok(
+      area < (36 * 176 + 94 * 36) * 0.01,
+      `flat cap ${area} is below 1% of silhouette`,
+    );
+    const p = geometry.attributes.position;
+    const middle = Array.from({ length: p.count }, (_, i) => [
+      p.getX(i),
+      p.getY(i),
+      p.getZ(i),
+    ]).filter((v) => Math.abs(v[2] - depth / 2) < 1e-6);
+    assert.ok(
+      middle.some((v) => v[0] === 0 && v[1] === 0),
+      "outside pointed corner remains",
+    );
+    assert.ok(
+      middle.some((v) => v[0] === 36 && v[1] === -140),
+      "concave L elbow remains",
+    );
+    const normals = geometry.attributes.normal;
+    assert.ok(
+      Array.from({ length: normals.count }, (_, i) => i).some(
+        (i) =>
+          Math.abs(normals.getZ(i)) > 0.1 && Math.abs(normals.getZ(i)) < 0.99,
+      ),
+      "visible sloping faces",
+    );
+    geometry.dispose();
+  }
+});
+
+test("full-width ridge bevel preserves compound holes and automatic hollow walls", () => {
+  for (const hollow of [false, true]) {
+    const shape = hollow ? denseRectangle(40, 4) : rectangleWithHole();
+    const geometry = buildMesh(shape, {
+      depth: 24,
+      bevelSize: 12,
+      bevelFullWidth: true,
+      curvePoints: ridgeProfile,
+      hollow,
+      wallThickness: 4,
+    });
+    assertClosedFiniteSolid(geometry);
+    assert.ok(geometry.userData.effectiveBevel > 0);
+    for (const tri of triangleVertices(geometry)) {
+      const x = tri.reduce((s, p) => s + p[0], 0) / 3,
+        y = -tri.reduce((s, p) => s + p[1], 0) / 3;
+      const [low, high] = hollow ? [4, 36] : [7, 13];
+      assert.ok(
+        !(x > low && x < high && y > low && y < high),
+        "triangles do not cover the hole",
+      );
+    }
+    geometry.dispose();
+  }
+});
