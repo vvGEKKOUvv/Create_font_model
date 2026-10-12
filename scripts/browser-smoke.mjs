@@ -54,7 +54,11 @@ try {
   // Observe actual scene transforms without adding production-only test hooks.
   await page.route("**/src/main.js", async (route) => {
     const response = await route.fetch();
-    const source = await response.text();
+    let source = await response.text();
+    source = source.replace(
+      /buildMesh\(o\.shape, o\.settings\)/g,
+      "(window.__geometryBuilds = (window.__geometryBuilds || 0) + 1, buildMesh(o.shape, o.settings))",
+    );
     assert(source.includes("renderer.render(scene, camera);"));
     await route.fulfill({
       response,
@@ -63,6 +67,7 @@ try {
         `scene.updateMatrixWorld(true);
        window.__sceneSnapshot = {
          objects: group.children.map(mesh => ({
+           geometryId: mesh.geometry.uuid,
            matrix: mesh.matrixWorld.toArray(),
            depth: mesh.geometry.boundingBox.max.z - mesh.geometry.boundingBox.min.z,
            point: new THREE.Vector3().fromBufferAttribute(mesh.geometry.attributes.position, 0).applyMatrix4(mesh.matrixWorld).toArray()
@@ -87,33 +92,74 @@ try {
   await expect(page.locator("#viewport canvas")).toBeVisible();
   await expect(page.locator(".left-panel")).toHaveCount(0);
   await expect(page.locator(".right-panel #file")).toHaveCount(1);
+  assert(
+    (await page.locator("#dropzone").boundingBox()).height <= 80,
+    "Import area is compact",
+  );
   await expect(page.locator(".right-panel #objects")).toHaveCount(1);
-  await expect(page.getByText("パスから、かたちへ。", { exact: true })).toHaveCount(0);
-  await expect(page.locator("#tab-3d")).toHaveAttribute("aria-selected", "true");
+  await expect(
+    page.getByText("パスから、かたちへ。", { exact: true }),
+  ).toHaveCount(0);
+  await expect(page.locator("#tab-3d")).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   await expect(page.locator("#view-uv")).toBeHidden();
   await page.locator("#tab-uv").click();
-  await expect(page.locator("#tab-uv")).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator("#tab-uv")).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   await expect(page.locator("#uv-canvas")).toBeVisible();
   await expect(page.locator("#view-3d")).toBeHidden();
   await page.locator("#tab-3d").click();
   await expect(page.locator("#viewport canvas")).toBeVisible();
-  assert(await page.locator(".transform-fields label").evaluateAll(labels =>
-    labels.every(label => !/[XYZ]/.test(label.textContent))
-  ), "Transform fields omit visible XYZ labels");
-  await expect(page.locator("#position-x")).toHaveAttribute("aria-label", "position x");
+  assert(
+    await page
+      .locator(".transform-fields label")
+      .evaluateAll((labels) =>
+        labels.every((label) => !/[XYZ]/.test(label.textContent)),
+      ),
+    "Transform fields omit visible XYZ labels",
+  );
+  await expect(page.locator("#position-x")).toHaveAttribute(
+    "aria-label",
+    "position x",
+  );
   const rightDetails = page.locator(".right-panel details");
-  assert((await rightDetails.count()) >= 7, "All right panel groups are collapsible");
-  assert(await page.locator(".right-panel").evaluate(panel =>
-    [...panel.querySelectorAll("input, select")].every(input => input.closest("details"))
-  ), "All right panel inputs belong to collapsible groups");
-  await rightDetails.evaluateAll(details => details.forEach(detail => { detail.open = false; }));
+  assert(
+    (await rightDetails.count()) >= 7,
+    "All right panel groups are collapsible",
+  );
+  assert(
+    await page
+      .locator(".right-panel")
+      .evaluate((panel) =>
+        [...panel.querySelectorAll("input, select")].every((input) =>
+          input.closest("details"),
+        ),
+      ),
+    "All right panel inputs belong to collapsible groups",
+  );
+  await rightDetails.evaluateAll((details) =>
+    details.forEach((detail) => {
+      detail.open = false;
+    }),
+  );
   await expect(page.locator("#depth")).toBeHidden();
   await expect(page.locator("#objects")).toBeHidden();
   await expect(page.locator("#viewport canvas")).toBeVisible();
-  await rightDetails.evaluateAll(details => details.forEach(detail => { detail.open = true; }));
+  await rightDetails.evaluateAll((details) =>
+    details.forEach((detail) => {
+      detail.open = true;
+    }),
+  );
   await expect(page.locator("#depth")).toBeVisible();
-  assert.equal(await page.evaluate(() => window.__sceneSnapshot.dampingFactor), 0.35,
-    "Orbit damping settles rapidly after pointer release");
+  assert.equal(
+    await page.evaluate(() => window.__sceneSnapshot.dampingFactor),
+    0.35,
+    "Orbit damping settles rapidly after pointer release",
+  );
   const snapshot = await page.locator("#viewport canvas").evaluate(
     (c) =>
       new Promise((resolve) =>
@@ -158,8 +204,18 @@ try {
   assert.match(first["model.obj"], /o Arrow/);
   assert.match(first["model.obj"], /mtllib model\.mtl/);
   assert.equal((first["model.mtl"].match(/newmtl /g) || []).length, 2);
+  const beforeUV = await page.evaluate(() =>
+    window.__sceneSnapshot.objects.map((o) => o.geometryId),
+  );
   await page.locator("#uvScaleX").fill("2");
   const changed = await exported();
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window.__sceneSnapshot.objects.map((o) => o.geometryId),
+    ),
+    beforeUV,
+    "UV edits reuse mesh geometry",
+  );
   const lines = (s, prefix) =>
     s.split("\n").filter((line) => line.startsWith(prefix));
   assert.notDeepEqual(
@@ -195,6 +251,31 @@ try {
     beforeDepth.target,
     "Editing depth preserves orbit target",
   );
+  const beforeBurst = await page.evaluate(() => window.__geometryBuilds);
+  await page.locator("#depth").evaluate((el) => {
+    for (let i = 0; i < 20; i++) {
+      el.value = String(41 + i);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  });
+  await expect
+    .poll(
+      async () =>
+        (await page.evaluate(() => window.__sceneSnapshot)).objects[1].depth,
+    )
+    .toBe(60);
+  assert.equal(
+    (await page.evaluate(() => window.__geometryBuilds)) - beforeBurst,
+    1,
+    "A burst of parameter input events builds selected mesh once",
+  );
+  await page.locator("#depth").fill("40");
+  await expect
+    .poll(
+      async () =>
+        (await page.evaluate(() => window.__sceneSnapshot)).objects[1].depth,
+    )
+    .toBe(40);
   await page.locator('[data-object="0"]').click();
   await expect(page.locator("#depth")).toHaveValue("24");
   await page.locator('[data-object="1"]').click();
@@ -281,11 +362,21 @@ try {
     "Manipulator preserves unselected object",
   );
   await page.locator("#transform-reset").click();
+  const beforeColor = await page.evaluate(() =>
+    window.__sceneSnapshot.objects.map((o) => o.geometryId),
+  );
   await page.locator("#color").evaluate((el) => {
     el.value = "#ff0000";
     el.dispatchEvent(new Event("input", { bubbles: true }));
   });
   const colored = await exported();
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window.__sceneSnapshot.objects.map((o) => o.geometryId),
+    ),
+    beforeColor,
+    "Color changes reuse mesh geometry",
+  );
   assert.match(colored["model.mtl"], /newmtl material_2\nKd 1 0 0/);
   const curve = page.locator(".curve-display svg");
   assert(
@@ -468,16 +559,103 @@ try {
     const samples = [window.__sceneSnapshot.camera];
     for (let group = 0; group < 3; group++) {
       for (let frame = 0; frame < 10; frame++)
-        await new Promise(resolve => requestAnimationFrame(resolve));
+        await new Promise((resolve) => requestAnimationFrame(resolve));
       samples.push(window.__sceneSnapshot.camera);
     }
     return samples;
   });
-  const matrixDistance = (a, b) => Math.hypot(...a.map((value, i) => value - b[i]));
+  const matrixDistance = (a, b) =>
+    Math.hypot(...a.map((value, i) => value - b[i]));
   const initialDrift = matrixDistance(cameraSamples[0], cameraSamples[1]);
   const residualDrift = matrixDistance(cameraSamples[2], cameraSamples[3]);
-  assert(residualDrift < Math.max(1e-6, initialDrift * 0.02),
-    "Camera inertia settles within 30 frames after an actual orbit pan");
+  assert(
+    residualDrift < Math.max(1e-6, initialDrift * 0.02),
+    "Camera inertia settles within 30 frames after an actual orbit pan",
+  );
+  const densePath =
+    Array.from({ length: 400 }, (_, i) => {
+      const a = (i * Math.PI * 2) / 400;
+      return `${i ? "L" : "M"}${100 + 100 * Math.cos(a)} ${100 + 100 * Math.sin(a)}`;
+    }).join(" ") + "Z";
+  await page
+    .locator("#file")
+    .setInputFiles({
+      name: "dense-curve.svg",
+      mimeType: "image/svg+xml",
+      buffer: Buffer.from(
+        `<svg xmlns="http://www.w3.org/2000/svg"><path id="Dense" d="${densePath}"/></svg>`,
+      ),
+    });
+  await expect(page.locator("#object-count")).toHaveText("1");
+  await expect(page.locator("#message")).not.toHaveClass(/error/);
+  await expect(page.locator("#reduction-info")).toContainText("400");
+  const unreduced = await exported();
+  await page.locator("#reductionTolerance").fill("0.5");
+  const reduced = await exported();
+  assert(
+    lines(reduced["model.obj"], "v ").length <
+      lines(unreduced["model.obj"], "v ").length / 2,
+    "Reduction parameter reduces exported mesh complexity",
+  );
+  assert(!/NaN|Infinity/.test(reduced["model.obj"]));
+  await expect(page.locator("#geometry-status")).toContainText("ベベル");
+  await page.locator("#hollow").check();
+  await page.locator("#wallThickness").fill("150");
+  const narrow = await exported();
+  await expect(page.locator("#message")).not.toHaveClass(/error/);
+  assert(!/NaN|Infinity/.test(narrow["model.obj"]));
+  await expect(page.locator("#geometry-status")).toContainText("壁厚");
+  const hugePath =
+    Array.from({ length: 3200 }, (_, i) => {
+      const a = (i * Math.PI * 2) / 3200;
+      return `${i ? "L" : "M"}${100 + 100 * Math.cos(a)} ${100 + 100 * Math.sin(a)}`;
+    }).join(" ") + "Z";
+  await page
+    .locator("#file")
+    .setInputFiles({
+      name: "3200-points.svg",
+      mimeType: "image/svg+xml",
+      buffer: Buffer.from(
+        `<svg xmlns="http://www.w3.org/2000/svg"><path id="Huge" d="${hugePath}"/></svg>`,
+      ),
+    });
+  await expect(page.locator("#selected-name")).toHaveText("Huge");
+  await expect(page.locator("#object-count")).toHaveText("1");
+  await expect(page.locator("#message")).not.toHaveClass(/error/);
+  assert(
+    Number(await page.locator("#reductionTolerance").inputValue()) > 0,
+    "Oversized contour is initially reduced enough to import",
+  );
+  const hugeStats = (await page.locator("#reduction-info").textContent()).match(
+    /([\d,]+) → ([\d,]+)/,
+  );
+  assert.equal(Number(hugeStats[1].replaceAll(",", "")), 3200);
+  assert(Number(hugeStats[2].replaceAll(",", "")) <= 3000);
+  await page
+    .locator("#file")
+    .setInputFiles({
+      name: "tiny.svg",
+      mimeType: "image/svg+xml",
+      buffer: Buffer.from(
+        '<svg xmlns="http://www.w3.org/2000/svg"><path id="Tiny" d="M0 0H2V2H0Z"/></svg>',
+      ),
+    });
+  await expect(page.locator("#selected-name")).toHaveText("Tiny");
+  assert(
+    Math.abs(Number(await page.locator("#depth").inputValue()) - 0.6) < 1e-8,
+  );
+  assert(
+    Math.abs(Number(await page.locator("#bevelSize").inputValue()) - 0.08) <
+      1e-8,
+  );
+  assert(
+    Math.abs(Number(await page.locator("#wallThickness").inputValue()) - 0.3) <
+      1e-8,
+  );
+  await page.locator("#hollow").check();
+  const tiny = await exported();
+  await expect(page.locator("#message")).not.toHaveClass(/error/);
+  assert(!/NaN|Infinity/.test(tiny["model.obj"]));
   await page.setViewportSize({ width: 390, height: 844 });
   await expect
     .poll(() =>
@@ -488,7 +666,7 @@ try {
     .toBe(true);
   assert.deepEqual(errors, []);
   console.log(
-    "Browser smoke passed: collapsible right sidebar, 3D/UV tabs, reduced orbit inertia, WebGL, SVG import, selected-object transform controls and actual gizmo drag, transform persistence/export, enlarged curve editor, per-vertex linear/Bezier and handle drag, UV transforms and vertex drag/reset, material, hollow, OBJ/MTL downloads, invalid input preservation, mobile layout.",
+    "Browser smoke passed: collapsible right sidebar, 3D/UV tabs, reduced orbit inertia, WebGL, SVG import, selected-object transform controls and actual gizmo drag, transform persistence/export, enlarged curve editor, per-vertex linear/Bezier and handle drag, UV transforms and vertex drag/reset, material, hollow, OBJ/MTL downloads, invalid input preservation, mobile layout, selected-only/debounced rebuilds, UV/material geometry reuse, reduction and automatic wall safety.",
   );
 } finally {
   if (browser) await browser.close();

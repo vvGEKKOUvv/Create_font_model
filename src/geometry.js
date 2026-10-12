@@ -1,6 +1,8 @@
 import * as THREE from "three";
 import { SVGLoader } from "three/addons/loaders/SVGLoader.js";
 
+import { prepareContours } from "./path-reduction.js";
+
 import { normalizeProfile, evaluateProfile } from "./bevel-profile.js";
 
 const EPS = 1e-7;
@@ -88,68 +90,79 @@ export function parseSvg(text) {
 function area(points) {
   return THREE.ShapeUtils.area(points);
 }
-function clean(points, ccw) {
-  const result = points
-    .filter((p, i) => i === 0 || p.distanceTo(points[i - 1]) > EPS)
-    .map((p) => p.clone());
-  if (result.length > 1 && result[0].distanceTo(result.at(-1)) < EPS)
-    result.pop();
-  if (result.length < 3 || Math.abs(area(result)) < EPS)
-    throw new Error(
-      "輪郭が退化しています。閉じた面積のあるパスを使用してください。",
-    );
-  if (area(result) > 0 !== ccw) result.reverse();
-  return result;
-}
-function cross(a, b) {
-  return a.x * b.y - a.y * b.x;
-}
 function offset(points, distance, sharp = true) {
+  if (!distance) return points;
   return points.map((p, i) => {
-    const a = p
-      .clone()
-      .sub(points[(i + points.length - 1) % points.length])
-      .normalize();
-    const b = points[(i + 1) % points.length].clone().sub(p).normalize();
-    const n1 = new THREE.Vector2(-a.y, a.x),
-      n2 = new THREE.Vector2(-b.y, b.x);
-    const sum = n1.add(n2),
-      denom = sum.dot(n2);
-    if (Math.abs(denom) < EPS) return p.clone();
-    const move = sum.multiplyScalar(distance / denom);
-    const limit = Math.abs(distance) * (sharp ? 10 : 1.5);
-    if (move.length() > limit) move.setLength(limit);
-    return p.clone().add(move);
+    const prev = points[(i + points.length - 1) % points.length];
+    const next = points[(i + 1) % points.length];
+    const al = Math.hypot(p.x - prev.x, p.y - prev.y);
+    const bl = Math.hypot(next.x - p.x, next.y - p.y);
+    const ax = (p.x - prev.x) / al,
+      ay = (p.y - prev.y) / al;
+    const bx = (next.x - p.x) / bl,
+      by = (next.y - p.y) / bl;
+    const sx = -ay - by,
+      sy = ax + bx;
+    const denom = sx * -by + sy * bx;
+    if (Math.abs(denom) < 1e-12) return p.clone();
+    let mx = (sx * distance) / denom,
+      my = (sy * distance) / denom;
+    const length = Math.hypot(mx, my),
+      limit = Math.abs(distance) * (sharp ? 10 : 1.5);
+    if (length > limit) {
+      mx *= limit / length;
+      my *= limit / length;
+    }
+    return new THREE.Vector2(p.x + mx, p.y + my);
   });
 }
 function intersects(a, b, c, d) {
-  const ab = b.clone().sub(a),
-    cd = d.clone().sub(c);
-  const divisor = cross(ab, cd);
-  if (Math.abs(divisor) < EPS) {
-    if (Math.abs(cross(c.clone().sub(a), ab)) > EPS) return false;
-    const length = ab.lengthSq();
+  if (
+    Math.max(a.x, b.x) < Math.min(c.x, d.x) - EPS ||
+    Math.max(c.x, d.x) < Math.min(a.x, b.x) - EPS ||
+    Math.max(a.y, b.y) < Math.min(c.y, d.y) - EPS ||
+    Math.max(c.y, d.y) < Math.min(a.y, b.y) - EPS
+  )
+    return false;
+  const ax = b.x - a.x,
+    ay = b.y - a.y,
+    bx = d.x - c.x,
+    by = d.y - c.y;
+  const dx = c.x - a.x,
+    dy = c.y - a.y,
+    divisor = ax * by - ay * bx;
+  if (
+    Math.abs(divisor) <
+    1e-12 * Math.max(1, Math.hypot(ax, ay) * Math.hypot(bx, by))
+  ) {
+    if (Math.abs(dx * ay - dy * ax) > EPS * Math.max(1, Math.hypot(ax, ay)))
+      return false;
+    const length = ax * ax + ay * ay;
     if (length < EPS * EPS) return true;
-    const t0 = c.clone().sub(a).dot(ab) / length,
-      t1 = d.clone().sub(a).dot(ab) / length;
-    return Math.max(Math.min(t0, t1), 0) < Math.min(Math.max(t0, t1), 1) - EPS;
+    const t0 = (dx * ax + dy * ay) / length,
+      t1 = ((d.x - a.x) * ax + (d.y - a.y) * ay) / length;
+    return (
+      Math.max(Math.min(t0, t1), 0) < Math.min(Math.max(t0, t1), 1) - 1e-10
+    );
   }
-  const ac = c.clone().sub(a);
-  const t = cross(ac, cd) / divisor,
-    u = cross(ac, ab) / divisor;
-  return t >= -EPS && t <= 1 + EPS && u >= -EPS && u <= 1 + EPS;
+  const t = (dx * by - dy * bx) / divisor,
+    u = (dx * ay - dy * ax) / divisor;
+  return t >= -1e-10 && t <= 1 + 1e-10 && u >= -1e-10 && u <= 1 + 1e-10;
 }
 function inside(point, ring) {
   let result = false;
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
     const a = ring[j],
       b = ring[i],
-      edge = b.clone().sub(a),
-      delta = point.clone().sub(a);
+      ex = b.x - a.x,
+      ey = b.y - a.y;
+    const dx = point.x - a.x,
+      dy = point.y - a.y,
+      dot = dx * ex + dy * ey;
     if (
-      Math.abs(cross(edge, delta)) < EPS &&
-      delta.dot(edge) >= -EPS &&
-      delta.dot(edge) <= edge.lengthSq() + EPS
+      Math.abs(ex * dy - ey * dx) < EPS * Math.max(1, Math.hypot(ex, ey)) &&
+      dot >= -EPS &&
+      dot <= ex * ex + ey * ey + EPS
     )
       return true;
     if (
@@ -158,6 +171,34 @@ function inside(point, ring) {
     )
       result = !result;
   }
+  return result;
+}
+function edgesForward(shifted, original) {
+  return shifted.every((p, i) => {
+    const q = shifted[(i + 1) % shifted.length],
+      a = original[i],
+      b = original[(i + 1) % original.length];
+    return (q.x - p.x) * (b.x - a.x) + (q.y - p.y) * (b.y - a.y) > 0;
+  });
+}
+const preparedCache = new WeakMap();
+function preparedShape(shape, tolerance) {
+  let cache = preparedCache.get(shape);
+  if (!cache) {
+    cache = new Map();
+    preparedCache.set(shape, cache);
+  }
+  if (cache.has(tolerance)) return cache.get(tolerance);
+  const data = prepareContours(shape, tolerance);
+  if (data.rings.reduce((n, p) => n + p.length, 0) > 3000)
+    throw new Error(
+      "輪郭が複雑すぎます。リダクション量を増やしてください（最大 3000 頂点）。",
+    );
+  if (!validRings(data.rings))
+    throw new Error("パスが自己交差しています。SVG の輪郭を修正してください。");
+  const result = { ...data, variants: new Map() };
+  if (cache.size >= 12) cache.delete(cache.keys().next().value);
+  cache.set(tolerance, result);
   return result;
 }
 function validRings(rings) {
@@ -197,6 +238,7 @@ export function buildMesh(shape, settings = {}) {
       throw new Error("UV 編集座標には有限の数値を指定してください。");
   }
   for (const field of [
+    "reductionTolerance",
     "depth",
     "bevelSize",
     "bevelSegments",
@@ -216,86 +258,99 @@ export function buildMesh(shape, settings = {}) {
       throw new Error(`${field} に有限の数値を指定してください。`);
   }
   const depth = Math.max(0.01, Number(settings.depth) || 20);
-  const extracted = shape.extractPoints(24);
-  let rings = [
-    clean(extracted.shape, true),
-    ...extracted.holes.map((p) => clean(p, false)),
-  ];
-  const warnings = [];
-  if (rings.reduce((n, p) => n + p.length, 0) > 3000)
-    throw new Error(
-      "輪郭が複雑すぎます。SVG のパスを簡略化してください（最大 3000 頂点）。",
-    );
-  if (!validRings(rings))
-    throw new Error("パスが自己交差しています。SVG の輪郭を修正してください。");
-  const sharp = settings.sharpCorners !== false;
-  if (settings.hollow) {
-    if (rings.length > 1)
-      warnings.push("既存の穴を優先し、自動中抜きは追加していません。");
-    else {
-      const wall = Math.max(0.01, Number(settings.wallThickness) || 3);
-      const inner = offset(rings[0], wall, true);
-      const edgesForward = inner.every(
-        (v, i) =>
-          inner[(i + 1) % inner.length]
-            .clone()
-            .sub(v)
-            .dot(rings[0][(i + 1) % inner.length].clone().sub(rings[0][i])) >
-          EPS,
-      );
-      if (
-        !validRings([inner]) ||
-        !edgesForward ||
-        !inner.every((v) => inside(v, rings[0])) ||
-        Math.abs(area(inner)) >= Math.abs(area(rings[0]))
-      )
-        throw new Error(
-          "壁厚が輪郭に対して大きすぎます。壁厚を小さくしてください。",
-        );
-      const candidate = [rings[0], inner.reverse()];
-      if (!validRings(candidate))
-        throw new Error("中抜きが自己交差します。壁厚を小さくしてください。");
-      rings = candidate;
-    }
-  }
-  let bevel = Math.max(0, Math.min(Number(settings.bevelSize) || 0, depth / 2));
-  const originalBevel = Math.max(0, Number(settings.bevelSize) || 0);
-  const box = new THREE.Box2().setFromPoints(rings.flat());
-  bevel = Math.min(
-    bevel,
-    Math.min(box.max.x - box.min.x, box.max.y - box.min.y) / 4,
+  const prepared = preparedShape(
+    shape,
+    Math.max(0, Number(settings.reductionTolerance) || 0),
   );
-  let safeBevel = bevel === 0;
-  for (let attempt = 0; bevel > EPS && attempt < 14; attempt++) {
-    const shifted = rings.map((p) => offset(p, bevel, sharp));
-    const nested =
-      shifted[0].every((p) => inside(p, rings[0])) &&
-      rings.slice(1).every((p, i) => p.every((v) => inside(v, shifted[i + 1])));
-    const edgesPreserved = shifted.every((p, r) =>
-      p.every(
-        (v, i) =>
-          p[(i + 1) % p.length]
-            .clone()
-            .sub(v)
-            .dot(rings[r][(i + 1) % p.length].clone().sub(rings[r][i])) > EPS,
-      ),
-    );
-    if (
-      validRings(shifted) &&
-      nested &&
-      edgesPreserved &&
-      Math.abs(area(shifted[0])) < Math.abs(area(rings[0]))
-    ) {
-      safeBevel = true;
-      break;
+  let rings = prepared.rings;
+  const warnings = [...prepared.warnings];
+  const sharp = settings.sharpCorners !== false;
+  const requestedWall = Math.max(0.000001, Number(settings.wallThickness) || 3);
+  const variantKey = `${!!settings.hollow}:${requestedWall}:${sharp}:${Math.max(0, Number(settings.bevelSize) || 0)}:${Math.min(depth, 2 * Math.max(0, Number(settings.bevelSize) || 0))}`;
+  let variant = prepared.variants.get(variantKey);
+  if (!variant) {
+    let effectiveWallThickness = 0;
+    const localWarnings = [];
+    if (settings.hollow) {
+      if (rings.length > 1)
+        localWarnings.push("既存の穴を優先し、自動中抜きは追加していません。");
+      else {
+        const checkWall = (wall) => {
+          const inner = offset(rings[0], wall, true);
+          if (
+            !edgesForward(inner, rings[0]) ||
+            !validRings([inner]) ||
+            !inner.every((p) => inside(p, rings[0])) ||
+            Math.abs(area(inner)) >= Math.abs(area(rings[0]))
+          )
+            return null;
+          const candidate = [rings[0], [...inner].reverse()];
+          return validRings(candidate) ? candidate : null;
+        };
+        let wall = requestedWall,
+          candidate = checkWall(wall);
+        for (let attempt = 0; !candidate && attempt < 24; attempt++) {
+          wall *= 0.5;
+          candidate = checkWall(wall);
+        }
+        if (candidate) {
+          if (wall < requestedWall)
+            localWarnings.push(
+              `細い輪郭・交差を考慮し、壁厚を ${wall.toPrecision(3)} に縮小しました。`,
+            );
+          rings = candidate;
+          effectiveWallThickness = wall;
+        } else
+          localWarnings.push(
+            "輪郭が細すぎるため、自動中抜きを生成できませんでした。元の輪郭を保持しています。",
+          );
+      }
     }
-    bevel *= 0.5;
-  }
-  if (bevel < EPS || !safeBevel) bevel = 0;
-  if (bevel + EPS < originalBevel)
-    warnings.push(
-      "深さ・細い輪郭・交差を考慮し、ベベル幅を安全側に縮小しました。",
+    const originalBevel = Math.max(0, Number(settings.bevelSize) || 0);
+    const box = new THREE.Box2().setFromPoints(rings.flat());
+    let bevel = Math.min(
+      originalBevel,
+      depth / 2,
+      Math.min(box.max.x - box.min.x, box.max.y - box.min.y) / 4,
     );
+    let safeBevel = bevel === 0;
+    for (let attempt = 0; bevel > EPS && attempt < 24; attempt++) {
+      const shifted = rings.map((p) => offset(p, bevel, sharp));
+      const nested =
+        shifted[0].every((p) => inside(p, rings[0])) &&
+        rings
+          .slice(1)
+          .every((p, i) => p.every((v) => inside(v, shifted[i + 1])));
+      if (
+        shifted.every((p, r) => edgesForward(p, rings[r])) &&
+        nested &&
+        validRings(shifted) &&
+        Math.abs(area(shifted[0])) < Math.abs(area(rings[0]))
+      ) {
+        safeBevel = true;
+        break;
+      }
+      bevel *= 0.5;
+    }
+    if (bevel < EPS || !safeBevel) bevel = 0;
+    if (bevel + EPS < originalBevel)
+      localWarnings.push(
+        "深さ・細い輪郭・交差を考慮し、ベベル幅を安全側に縮小しました。",
+      );
+    variant = {
+      rings,
+      box,
+      bevel,
+      effectiveWallThickness,
+      warnings: localWarnings,
+    };
+    if (prepared.variants.size >= 24)
+      prepared.variants.delete(prepared.variants.keys().next().value);
+    prepared.variants.set(variantKey, variant);
+  }
+  rings = variant.rings;
+  const { box, bevel, effectiveWallThickness } = variant;
+  warnings.push(...variant.warnings);
   const segments = Math.max(
     1,
     Math.min(32, Math.floor(Number(settings.bevelSegments) || 8)),
@@ -352,6 +407,7 @@ export function buildMesh(shape, settings = {}) {
       });
   const positions = [],
     uvs = [],
+    baseUVs = [],
     surfaceGroups = [];
   let surfaceGroup = 0;
   const scale = Math.max(0.0001, Number(settings.uvScale) || 1);
@@ -370,6 +426,7 @@ export function buildMesh(shape, settings = {}) {
     surfaceGroups.push(surfaceGroup);
     const key = `${uv.x.toFixed(6)},${uv.y.toFixed(6)}`;
     uvKeys.push(key);
+    baseUVs.push(uv.x, uv.y);
     const edited = Object.hasOwn(uvEdits, key) ? uvEdits[key] : null;
     const u = edited ? edited[0] : uv.x;
     const v = edited ? edited[1] : uv.y;
@@ -458,27 +515,99 @@ export function buildMesh(shape, settings = {}) {
   const groups = new Map();
   for (let i = 0; i < surfaceGroups.length; i++) {
     if (surfaceGroups[i] < 2) continue;
-    const key = `${surfaceGroups[i]}:${positions
-      .slice(i * 3, i * 3 + 3)
-      .map((v) => Math.round(v * 1e6))
-      .join(",")}`;
+    const j = i * 3;
+    const key = `${surfaceGroups[i]}:${Math.round(positions[j] * 1e6)},${Math.round(positions[j + 1] * 1e6)},${Math.round(positions[j + 2] * 1e6)}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(i);
   }
   const threshold = Math.cos(Math.PI / 6);
   for (const indices of groups.values())
     for (const i of indices) {
-      const reference = new THREE.Vector3().fromArray(originalNormals, i * 3),
-        sum = new THREE.Vector3();
+      const index = i * 3,
+        rx = originalNormals[index],
+        ry = originalNormals[index + 1],
+        rz = originalNormals[index + 2];
+      let sx = 0,
+        sy = 0,
+        sz = 0;
       for (const j of indices) {
-        const candidate = new THREE.Vector3().fromArray(originalNormals, j * 3);
-        if (reference.dot(candidate) >= threshold) sum.add(candidate);
+        const base = j * 3,
+          x = originalNormals[base],
+          y = originalNormals[base + 1],
+          z = originalNormals[base + 2];
+        if (rx * x + ry * y + rz * z >= threshold) {
+          sx += x;
+          sy += y;
+          sz += z;
+        }
       }
-      sum.normalize();
-      normals.setXYZ(i, sum.x, sum.y, sum.z);
+      const length = Math.hypot(sx, sy, sz) || 1;
+      normals.setXYZ(i, sx / length, sy / length, sz / length);
     }
-  geometry.userData = { warnings, effectiveBevel: bevel, uvKeys };
+  geometry.userData = {
+    warnings,
+    effectiveBevel: bevel,
+    effectiveWallThickness,
+    originalCount: prepared.originalCount,
+    reducedCount: prepared.reducedCount,
+    uvKeys,
+    baseUVs: new Float64Array(baseUVs),
+  };
   return geometry;
+}
+
+export function applyUvSettings(geometry, settings = {}) {
+  const uv = geometry.getAttribute("uv"),
+    base = geometry.userData.baseUVs,
+    keys = geometry.userData.uvKeys;
+  if (!base || base.length !== uv.count * 2)
+    throw new Error("UV 元データがありません。");
+  const edits = settings.uvEdits ?? {};
+  if (typeof edits !== "object" || Array.isArray(edits))
+    throw new Error("UV 編集データの形式が不正です。");
+  for (const point of Object.values(edits))
+    if (
+      !Array.isArray(point) ||
+      point.length !== 2 ||
+      !point.every(Number.isFinite)
+    )
+      throw new Error("UV 編集座標には有限の数値を指定してください。");
+  for (const field of [
+    "uvScale",
+    "uvScaleX",
+    "uvScaleY",
+    "uvOffsetX",
+    "uvOffsetY",
+    "uvRotation",
+  ])
+    if (
+      settings[field] !== undefined &&
+      !Number.isFinite(Number(settings[field]))
+    )
+      throw new Error(`${field} に有限の数値を指定してください。`);
+  const scale = Math.max(0.0001, Number(settings.uvScale) || 1),
+    sx =
+      settings.uvScaleX === undefined
+        ? scale
+        : Math.max(0.0001, Number(settings.uvScaleX)),
+    sy =
+      settings.uvScaleY === undefined
+        ? scale
+        : Math.max(0.0001, Number(settings.uvScaleY));
+  const angle = ((Number(settings.uvRotation) || 0) * Math.PI) / 180,
+    c = Math.cos(angle),
+    s = Math.sin(angle);
+  for (let i = 0; i < uv.count; i++) {
+    const edited = Object.hasOwn(edits, keys[i]) ? edits[keys[i]] : null;
+    const u = edited ? edited[0] : base[i * 2],
+      v = edited ? edited[1] : base[i * 2 + 1];
+    uv.setXY(
+      i,
+      (u * c - v * s) * sx + (Number(settings.uvOffsetX) || 0),
+      (u * s + v * c) * sy + (Number(settings.uvOffsetY) || 0),
+    );
+  }
+  uv.needsUpdate = true;
 }
 
 export function exportObj(items) {

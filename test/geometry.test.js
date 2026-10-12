@@ -2,7 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Shape, Path, Matrix4 } from "three";
 import { DOMParser } from "@xmldom/xmldom";
-import { parseSvg, buildMesh, exportObj } from "../src/geometry.js";
+import {
+  parseSvg,
+  buildMesh,
+  exportObj,
+  applyUvSettings,
+} from "../src/geometry.js";
 
 globalThis.DOMParser = DOMParser;
 
@@ -284,15 +289,23 @@ test("solid with a hole has outward normals, positive volume, and closed edges",
   }
 });
 
-test("automatic hollow rejects a wall that collapses the contour", () => {
+test("automatic hollow clamps a wall that collapses the contour", () => {
   const shape = new Shape();
   shape.moveTo(0, 0);
   shape.lineTo(20, 0);
   shape.lineTo(20, 20);
   shape.lineTo(0, 20);
   shape.closePath();
-  assert.throws(() =>
-    buildMesh(shape, { depth: 5, hollow: true, wallThickness: 11 }),
+  const clamped = buildMesh(shape, {
+    depth: 5,
+    hollow: true,
+    wallThickness: 11,
+  });
+  assert.ok(clamped.userData.effectiveWallThickness > 0);
+  assert.ok(clamped.userData.effectiveWallThickness < 10);
+  assert.ok(clamped.userData.warnings.length > 0);
+  assert.ok(
+    Array.from(clamped.attributes.position.array).every(Number.isFinite),
   );
   const geometry = buildMesh(shape, {
     depth: 5,
@@ -529,4 +542,208 @@ test("OBJ normals use inverse transpose for rotated nonuniform scale", () => {
     );
     assert.ok(Math.abs(Math.hypot(...v) - 1) < 1e-5);
   });
+});
+
+function denseRectangle(size = 100, divisions = 50) {
+  const shape = new Shape();
+  shape.moveTo(0, 0);
+  for (const [ax, ay, bx, by] of [
+    [0, 0, size, 0],
+    [size, 0, size, size],
+    [size, size, 0, size],
+    [0, size, 0, 0],
+  ])
+    for (let i = 1; i <= divisions; i++)
+      shape.lineTo(
+        ax + ((bx - ax) * i) / divisions,
+        ay + ((by - ay) * i) / divisions,
+      );
+  shape.closePath();
+  return shape;
+}
+
+test("dense imported straight contours retain a working bevel and hollow", () => {
+  for (const hollow of [false, true]) {
+    const geometry = buildMesh(denseRectangle(), {
+      depth: 24,
+      bevelSize: 3,
+      bevelSegments: 5,
+      hollow,
+      wallThickness: 4,
+    });
+    assert.ok(
+      geometry.userData.effectiveBevel > (hollow ? 0 : 2.9),
+      "dense straight segments must not silently disable the bevel",
+    );
+    assert.ok(
+      Array.from(geometry.attributes.position.array).every(Number.isFinite),
+    );
+    assert.ok(
+      triangleVertices(geometry)
+        .flat()
+        .some((v) => v[2] > 0 && v[2] < 3),
+      "intermediate bevel layers exist",
+    );
+  }
+});
+
+test("path reduction removes redundant vertices while preserving corners and holes", () => {
+  const shape = denseRectangle();
+  shape.holes.push(rectangleWithHole().holes[0]);
+  const baseline = buildMesh(shape, {
+    depth: 5,
+    bevelSize: 0,
+    reductionTolerance: 0,
+  });
+  const reduced = buildMesh(shape, {
+    depth: 5,
+    bevelSize: 0,
+    reductionTolerance: 0.1,
+  });
+  assert.ok(reduced.userData.reducedCount < reduced.userData.originalCount);
+  for (const geometry of [baseline, reduced]) {
+    geometry.computeBoundingBox();
+    assert.equal(geometry.boundingBox.min.x, 0);
+    assert.equal(geometry.boundingBox.max.x, 100);
+    assert.equal(geometry.boundingBox.min.y, -100);
+    assert.ok(Math.abs(geometry.boundingBox.max.y) < 1e-6);
+    const caps = triangleVertices(geometry).filter((t) =>
+      t.every((p) => Math.abs(p[2] - t[0][2]) < 1e-6),
+    );
+    for (const triangle of caps) {
+      const x = triangle.reduce((n, p) => n + p[0], 0) / 3;
+      const y = -triangle.reduce((n, p) => n + p[1], 0) / 3;
+      assert.ok(
+        !(x > 7 && x < 13 && y > 7 && y < 13),
+        "reduction preserves holes",
+      );
+    }
+  }
+});
+
+test("path reduction retains an arrow tip and rejects nonfinite tolerance", () => {
+  const shape = parseSvg(
+    '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0L30 0L30 -10L50 5L30 20L30 10L0 10Z"/></svg>',
+  ).objects[0].shape;
+  const geometry = buildMesh(shape, {
+    depth: 5,
+    bevelSize: 0,
+    reductionTolerance: 0.5,
+  });
+  const p = geometry.attributes.position;
+  assert.ok(
+    Array.from({ length: p.count }, (_, i) => i).some(
+      (i) => p.getX(i) === 50 && p.getY(i) === -5,
+    ),
+    "sharp arrow tip survives",
+  );
+  assert.throws(() => buildMesh(shape, { reductionTolerance: NaN }));
+});
+
+function denseCircle(count = 400) {
+  const shape = new Shape();
+  for (let i = 0; i < count; i++) {
+    const angle = (i * Math.PI * 2) / count;
+    const x = 100 + 100 * Math.cos(angle),
+      y = 100 + 100 * Math.sin(angle);
+    if (i === 0) shape.moveTo(x, y);
+    else shape.lineTo(x, y);
+  }
+  shape.closePath();
+  return shape;
+}
+
+test("curve reduction stays within the requested silhouette tolerance", () => {
+  const shape = denseCircle();
+  const tolerance = 0.5;
+  const geometry = buildMesh(shape, {
+    depth: 5,
+    bevelSize: 0,
+    reductionTolerance: tolerance,
+  });
+  assert.ok(
+    geometry.userData.reducedCount < geometry.userData.originalCount / 2,
+  );
+  const caps = triangleVertices(geometry).filter((t) =>
+    t.every((p) => p[2] === 0),
+  );
+  const edges = new Map();
+  for (const t of caps)
+    for (let i = 0; i < 3; i++) {
+      const a = t[i],
+        b = t[(i + 1) % 3];
+      const key = [a.slice(0, 2).join(","), b.slice(0, 2).join(",")]
+        .sort()
+        .join("|");
+      const value = edges.get(key) || { count: 0, a, b };
+      value.count++;
+      edges.set(key, value);
+    }
+  const boundary = [...edges.values()].filter((e) => e.count === 1);
+  for (let i = 0; i < 400; i++) {
+    const angle = (i * Math.PI * 2) / 400,
+      x = 100 + 100 * Math.cos(angle),
+      y = -(100 + 100 * Math.sin(angle));
+    const distance = Math.min(
+      ...boundary.map(({ a, b }) => {
+        const dx = b[0] - a[0],
+          dy = b[1] - a[1];
+        const u = Math.max(
+          0,
+          Math.min(
+            1,
+            ((x - a[0]) * dx + (y - a[1]) * dy) / (dx * dx + dy * dy),
+          ),
+        );
+        return Math.hypot(x - a[0] - u * dx, y - a[1] - u * dy);
+      }),
+    );
+    assert.ok(
+      distance <= tolerance + 0.0001,
+      `silhouette deviation ${distance} exceeds tolerance`,
+    );
+  }
+});
+
+test("extreme reduction falls back without collapsing a smooth contour", () => {
+  const shape = denseCircle(100);
+  const geometry = buildMesh(shape, { depth: 5, reductionTolerance: 1000 });
+  assert.ok(geometry.userData.reducedCount >= 3);
+  assert.ok(geometry.userData.warnings.length > 0);
+  assert.ok(
+    Array.from(geometry.attributes.position.array).every(Number.isFinite),
+  );
+});
+
+test("in-place UV updates match full builds and restore original UVs without replacing geometry", () => {
+  const shape = rectangleWithHole(),
+    geometry = buildMesh(shape, { depth: 5, bevelSize: 1 });
+  const position = geometry.attributes.position,
+    normal = geometry.attributes.normal,
+    uv = geometry.attributes.uv;
+  const positions = Array.from(position.array),
+    normals = Array.from(normal.array),
+    originalUV = Array.from(uv.array);
+  const settings = {
+    depth: 5,
+    bevelSize: 1,
+    uvScaleX: 2.3,
+    uvScaleY: 0.7,
+    uvRotation: 23,
+    uvOffsetX: 0.14,
+    uvOffsetY: -0.3,
+    uvEdits: { [geometry.userData.uvKeys[0]]: [0.2, 0.4] },
+  };
+  applyUvSettings(geometry, settings);
+  assert.deepEqual(
+    Array.from(uv.array),
+    Array.from(buildMesh(shape, settings).attributes.uv.array),
+  );
+  applyUvSettings(geometry, {});
+  assert.deepEqual(Array.from(uv.array), originalUV);
+  assert.equal(geometry.attributes.position, position);
+  assert.equal(geometry.attributes.normal, normal);
+  assert.equal(geometry.attributes.uv, uv);
+  assert.deepEqual(Array.from(position.array), positions);
+  assert.deepEqual(Array.from(normal.array), normals);
 });

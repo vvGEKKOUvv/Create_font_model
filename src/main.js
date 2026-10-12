@@ -1,12 +1,14 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { parseSvg, buildMesh, exportObj } from "./geometry.js";
+import { parseSvg, buildMesh, exportObj, applyUvSettings } from "./geometry.js";
 import { defaultProfile } from "./bevel-profile.js";
+import { prepareContours } from "./path-reduction.js";
 import { createBevelEditor } from "./bevel-editor.js";
 import { createTransformTools, prepareObjectMesh } from "./transform-tools.js";
 import "./style.css";
 
 const defaults = {
+  reductionTolerance: 0,
   depth: 24,
   bevelSize: 3,
   bevelSegments: 5,
@@ -57,6 +59,12 @@ app.innerHTML = `
       <button class="sample-button" id="sample">◈ サンプルを読み込む <span>↗</span></button>
       <p class="control-note">閉じた SVG パス・複合パスに対応。<br>文字はアウトライン化してください。</p>
     </details>
+    <details class="control-section" id="reduction-settings" open>
+      <summary>パスのリダクション <span>REDUCTION</span></summary>
+      ${field("reductionTolerance", "許容誤差", 0, 0, 5, 0.01)}
+      <p id="reduction-info" class="control-note">—</p>
+      <p class="control-note">大きい値ほど頂点を削減します。SVG座標の単位です。0は直線上の不要頂点のみ整理。角と穴を保護し、危険な削減は自動制限します。</p>
+    </details>
     <details id="objects-details" class="control-section" open>
       <summary>オブジェクト選択 <span id="object-count">0</span></summary>
       <div id="objects"></div>
@@ -64,12 +72,13 @@ app.innerHTML = `
     </details>
     <details class="control-section" open>
       <summary>押し出し <span>EXTRUDE</span></summary>
-      ${field("depth", "奥行き", 24, 1, 100, 1)}
+      ${field("depth", "奥行き", 24, 0.01, 100, 0.1)}
     </details>
     <details class="control-section" open>
       <summary>ベベル <span>BEVEL</span></summary>
       ${field("bevelSize", "幅", 3, 0, 20, 0.1)}
       ${field("bevelSegments", "分割数", 5, 1, 16, 1)}
+      <p id="geometry-status" class="control-note"></p>
       <div class="curve-display"></div>
       <label class="toggle-row"><span>尖った角を保持</span><input id="sharpCorners" type="checkbox" checked/><i></i></label>
       <p class="control-note">ベベル幅は輪郭に合わせて自動制限。<br>細い形状では小さい値を推奨します。</p>
@@ -77,7 +86,7 @@ app.innerHTML = `
     <details class="control-section" open>
       <summary>内側をくり抜く <span>HOLLOW</span></summary>
       <label class="toggle-row"><span>中空にする</span><input id="hollow" type="checkbox"/><i></i></label>
-      ${field("wallThickness", "壁の厚み", 4, 0.1, 30, 0.1)}
+      ${field("wallThickness", "壁の厚み", 4, 0.001, 30, 0.01)}
     </details>
     <details class="control-section" open>
       <summary>マテリアル <span>MATERIAL</span></summary>
@@ -147,6 +156,7 @@ const transformTools = createTransformTools({
   getObjects: () => objects,
   getSelected: () => selected,
   onSelect: (index) => {
+    flushPending();
     selected = index;
     uvSelectedKey = null;
     uvDragKey = null;
@@ -189,29 +199,132 @@ function makeMeshes(entries) {
     throw e;
   }
 }
-function rebuild(prepared) {
+let pendingObjects = new Set(),
+  rebuildTimer = null;
+function initialSettings(shape) {
+  const points = shape.extractPoints(4).shape;
+  const box = new THREE.Box2().setFromPoints(points),
+    span = Math.max(
+      0.01,
+      Math.min(box.max.x - box.min.x, box.max.y - box.min.y),
+    );
+  const depth = Math.min(defaults.depth, span * 0.3);
+  let tolerance = 0;
   try {
-    const meshes = prepared || makeMeshes(objects);
-    transformTools.detach();
-    dispose();
-    meshes.forEach((m) => group.add(m));
-    const warnings = meshes.flatMap((m) => m.geometry.userData.warnings || []);
-    // Center a newly imported document once. Editing one object's depth must
-    // leave the document origin, camera and every other object's position fixed.
-    if (prepared) {
-      group.position.set(0, 0, 0);
-      const box = new THREE.Box3().setFromObject(group);
-      group.position.sub(box.getCenter(new THREE.Vector3()));
+    prepareContours(shape, 0);
+  } catch (error) {
+    if (!/3,000|3000/.test(error.message)) throw error;
+    const diagonal = box.getSize(new THREE.Vector2()).length();
+    let accepted = false;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      tolerance = Math.max(1e-6, diagonal * 1e-6) * 4 ** attempt;
+      try {
+        prepareContours(shape, tolerance);
+        accepted = true;
+        break;
+      } catch (retry) {
+        if (!/3,000|3000/.test(retry.message)) throw retry;
+      }
     }
-    $("mesh-info").textContent =
-      `${objects.length} OBJECTS · ${group.children.reduce((n, m) => n + m.geometry.getAttribute("position").count, 0).toLocaleString()} VERTICES`;
-    notice([...new Set(warnings)].join(" / "));
-    transformTools.sync();
-    drawUV();
+    if (!accepted) throw error;
+  }
+  return {
+    ...defaults,
+    reductionTolerance: tolerance,
+    depth,
+    bevelSize: Math.min(defaults.bevelSize, span * 0.04, depth * 0.2),
+    wallThickness: Math.min(defaults.wallThickness, span * 0.15),
+    curvePoints: defaultProfile(),
+  };
+}
+function updateGeometryInfo() {
+  const data = group.children[selected]?.geometry.userData;
+  if (!data) return;
+  const before = data.originalCount ?? 0,
+    after = data.reducedCount ?? before;
+  $("reduction-info").textContent =
+    `${before.toLocaleString()} → ${after.toLocaleString()} 頂点（${before ? ((1 - after / before) * 100).toFixed(1) : 0}% 削減）`;
+  $("geometry-status").textContent =
+    `実際のベベル幅：${Number(data.effectiveBevel || 0).toPrecision(3)}` +
+    (selectedObject()?.settings.hollow
+      ? ` / 壁厚：${Number(data.effectiveWallThickness || 0).toPrecision(3)}`
+      : "");
+}
+function refreshMeshInfo() {
+  $("mesh-info").textContent =
+    `${objects.length} OBJECTS · ${group.children.reduce((n, m) => n + m.geometry.getAttribute("position").count, 0).toLocaleString()} VERTICES`;
+  const warnings = group.children.flatMap(
+    (m) => m.geometry.userData.warnings || [],
+  );
+  notice([...new Set(warnings)].join(" / "));
+  updateGeometryInfo();
+  drawUV();
+}
+function rebuildObject(object) {
+  const index = objects.indexOf(object);
+  if (index < 0) return true;
+  try {
+    const replacement = makeMeshes([object])[0],
+      mesh = group.children[index];
+    const oldGeometry = mesh.geometry;
+    mesh.geometry = replacement.geometry;
+    mesh.material.color.set(object.color);
+    mesh.position.copy(replacement.position);
+    mesh.rotation.copy(replacement.rotation);
+    mesh.scale.copy(replacement.scale);
+    mesh.updateMatrix();
+    replacement.material.dispose();
+    oldGeometry.dispose();
+    object.invalid = false;
+    refreshMeshInfo();
     return true;
   } catch (e) {
+    object.invalid = true;
     notice(e.message, true);
     return false;
+  }
+}
+function flushPending() {
+  clearTimeout(rebuildTimer);
+  rebuildTimer = null;
+  const queued = [...pendingObjects];
+  pendingObjects.clear();
+  let valid = true;
+  for (const object of queued) if (!rebuildObject(object)) valid = false;
+  return valid;
+}
+function scheduleRebuild(object = selectedObject()) {
+  if (!object) return;
+  pendingObjects.add(object);
+  clearTimeout(rebuildTimer);
+  rebuildTimer = setTimeout(flushPending, 70);
+}
+function rebuild(prepared) {
+  if (!prepared) {
+    const object = selectedObject();
+    pendingObjects.delete(object);
+    return object ? rebuildObject(object) : true;
+  }
+  transformTools.detach();
+  dispose();
+  prepared.forEach((m) => group.add(m));
+  group.position.set(0, 0, 0);
+  group.position.sub(
+    new THREE.Box3().setFromObject(group).getCenter(new THREE.Vector3()),
+  );
+  transformTools.sync();
+  refreshMeshInfo();
+  return true;
+}
+function updateUV(object = selectedObject()) {
+  const index = objects.indexOf(object),
+    mesh = group.children[index];
+  if (!mesh) return;
+  try {
+    applyUvSettings(mesh.geometry, object.settings);
+    drawUV();
+  } catch (e) {
+    notice(e.message, true);
   }
 }
 function fit() {
@@ -243,6 +356,7 @@ function list() {
   document.querySelectorAll("[data-object]").forEach(
     (el) =>
       (el.onclick = () => {
+        flushPending();
         selected = Number(el.dataset.object);
         uvSelectedKey = null;
         uvDragKey = null;
@@ -279,6 +393,7 @@ function sync() {
   $("color").value = safeColor(o.color);
   $("color-value").textContent = o.color.toUpperCase();
   curveDraw();
+  updateGeometryInfo();
 }
 const bevelEditor = createBevelEditor(
   document.querySelector(".curve-display"),
@@ -288,7 +403,7 @@ const bevelEditor = createBevelEditor(
       const o = selectedObject();
       if (!o) return;
       const cleared = clearShapeUV(o);
-      rebuild();
+      scheduleRebuild(o);
       if (cleared) notice("形状の変更に伴い UV 頂点修正をクリアしました。");
     },
   },
@@ -307,9 +422,11 @@ async function load(text, name) {
       ...o,
       name: o.name || `パス ${i + 1}`,
       color: safeColor(o.color),
-      settings: { ...defaults, curvePoints: defaultProfile() },
+      settings: initialSettings(o.shape),
     }));
     const meshes = makeMeshes(next);
+    clearTimeout(rebuildTimer);
+    pendingObjects.clear();
     objects = next;
     selected = 0;
     uvSelectedKey = null;
@@ -377,11 +494,18 @@ Object.keys(defaults).forEach((key) => {
       if (range) range.value = o.settings[key];
     }
     const clearedUV = !key.startsWith("uv") && clearShapeUV(o);
-    curveDraw();
-    rebuild();
+    if (key.startsWith("uv")) {
+      updateUV(o);
+    } else {
+      scheduleRebuild(o);
+    }
     if (clearedUV) notice("形状の変更に伴い UV 頂点修正をクリアしました。");
   };
+  input.onchange = flushPending;
   const range = document.querySelector(`[data-range="${key}"]`);
+  if (range) {
+    range.onchange = flushPending;
+  }
   if (range)
     range.oninput = () => {
       input.value = range.value;
@@ -394,13 +518,14 @@ $("color").oninput = () => {
   o.color = $("color").value;
   $("color-value").textContent = o.color.toUpperCase();
   list();
-  rebuild();
+  const mesh = group.children[selected];
+  if (mesh) mesh.material.color.set(o.color);
 };
 $("fit").onclick = fit;
 $("reset").onclick = () => {
   const o = selectedObject();
   if (o) {
-    o.settings = { ...defaults, curvePoints: defaultProfile() };
+    o.settings = initialSettings(o.shape);
     sync();
     rebuild();
     fit();
@@ -420,26 +545,26 @@ $("export").onclick = () => {
     return;
   }
   try {
-    const meshes = makeMeshes(objects);
-    const items = objects.map((o, i) => ({
-      name: o.name,
-      color: o.color,
-      geometry: meshes[i].geometry,
-      matrix: meshes[i].matrix,
-    }));
-    try {
-      const { obj, mtl } = exportObj(items);
-      download(obj, "model.obj", "text/plain");
-      download(mtl, "model.mtl", "text/plain");
-      notice(
-        "model.obj と model.mtl を書き出しました。同じフォルダーに保存してください。",
+    if (!flushPending() || objects.some((o) => o.invalid))
+      throw new Error(
+        "生成できない設定があります。表示中のエラーを解消してから書き出してください。",
       );
-    } finally {
-      meshes.forEach((m) => {
-        m.geometry.dispose();
-        m.material.dispose();
-      });
-    }
+    const items = objects.map((o, i) => {
+      const mesh = group.children[i];
+      mesh.updateMatrix();
+      return {
+        name: o.name,
+        color: o.color,
+        geometry: mesh.geometry,
+        matrix: mesh.matrix,
+      };
+    });
+    const { obj, mtl } = exportObj(items);
+    download(obj, "model.obj", "text/plain");
+    download(mtl, "model.mtl", "text/plain");
+    notice(
+      "model.obj と model.mtl を書き出しました。同じフォルダーに保存してください。",
+    );
   } catch (e) {
     notice(e.message, true);
   }
@@ -557,7 +682,7 @@ $("uv-clear").onclick = () => {
   if (!o) return;
   delete o.settings.uvEdits;
   uvSelectedKey = null;
-  rebuild();
+  updateUV(o);
   notice("選択オブジェクトの UV 頂点修正をクリアしました。");
 };
 function uvPointer(e) {
@@ -601,7 +726,7 @@ $("uv-canvas").onpointermove = (e) => {
     ...s.uvEdits,
     [uvDragKey]: [x * c + y * sin, -x * sin + y * c],
   };
-  rebuild();
+  updateUV(o);
 };
 $("uv-canvas").onpointerup = () => {
   uvDragKey = null;
