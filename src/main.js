@@ -20,7 +20,83 @@ const defaults = {
   uvRotation: 0,
 };
 const app = document.querySelector("#app");
-app.innerHTML = `<header><a class="brand" href="./"><span class="brand-icon">◈</span> PATH<span class="brand-slash">/</span>FORM</a><span class="tagline">パスから、かたちへ。</span><span class="header-label">SVG → 3D STUDIO</span><button id="export" class="primary">↓ OBJ を書き出す</button></header><main><aside class="left-panel"><div class="panel-heading"><span>01 / SOURCE</span><span class="status-dot">●</span></div><h1>輪郭から始めよう。</h1><p class="muted intro">ベクターパスを読み込んで、<br>自由に立体をつくる。</p><label class="dropzone" id="dropzone"><input type="file" id="file" accept=".svg,image/svg+xml" hidden/><span class="upload-icon"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 15v6h16v-6"/></svg></span><strong>SVG をドロップ</strong><span>またはクリックして選択</span><small>Illustrator：SVG 形式で保存</small></label><button class="sample-button" id="sample">◈ サンプルを読み込む <span>↗</span></button><div class="section-line"></div><div class="panel-heading"><span>OBJECTS</span><span id="object-count">0</span></div><div id="objects"></div><div class="source-note"><span class="tiny-label">SUPPORTED FORMAT</span><p>閉じた SVG パス・複合パスに対応。<br>文字はアウトライン化してください。</p></div></aside><section class="workspace"><div class="viewport-heading"><span><i class="live-dot"></i> LIVE PREVIEW</span><button id="fit" class="subtle">⊡ 全体表示</button></div><div id="viewport"></div><div class="view-caption"><span>ドラッグで回転 · スクロールでズーム · 右ドラッグで移動</span><span id="mesh-info">—</span></div><div id="message" role="status"></div><div class="uv-panel"><div class="uv-heading"><span>UV MAP <small>展開・調整</small></span><span class="tiny-label">UV 座標を確認</span></div><div class="uv-tools"><label><input type="checkbox" id="uv-edit-mode"/> UV 頂点編集</label><button id="uv-clear" class="subtle">UV 修正をクリア ↺</button><span>頂点をドラッグ · 同じ UV 座標をまとめて編集</span></div><canvas id="uv-canvas" width="700" height="180" aria-label="UV 展開。頂点編集を有効にして頂点をドラッグ"></canvas><div class="uv-inputs">${field("uvScaleX", "スケール X", 1, 0.01, 20, 0.1, false)}${field("uvScaleY", "スケール Y", 1, 0.01, 20, 0.1, false)}${field("uvOffsetX", "移動 U", 0, -20, 20, 0.1, false)}${field("uvOffsetY", "移動 V", 0, -20, 20, 0.1, false)}${field("uvRotation", "回転 °", 0, -360, 360, 1, false)}</div></div></section><aside class="right-panel"><div class="panel-heading"><span>02 / SHAPE</span><button id="reset" class="subtle">リセット ↺</button></div><h2>かたちを調整</h2><p id="selected-name" class="muted">オブジェクトを選択</p><section class="control-section"><h3>押し出し <span>EXTRUDE</span></h3>${field("depth", "奥行き", 24, 1, 100, 1)}</section><section class="control-section"><h3>ベベル <span>BEVEL</span></h3>${field("bevelSize", "幅", 3, 0, 20, 0.1)}${field("bevelSegments", "分割数", 5, 1, 16, 1)}<div class="curve-display"></div><label class="toggle-row"><span>尖った角を保持</span><input id="sharpCorners" type="checkbox" checked/><i></i></label><p class="control-note">ベベル幅は輪郭に合わせて自動制限。<br>細い形状では小さい値を推奨します。</p></section><section class="control-section"><h3>内側をくり抜く <span>HOLLOW</span></h3><label class="toggle-row"><span>中空にする</span><input id="hollow" type="checkbox"/><i></i></label>${field("wallThickness", "壁の厚み", 4, 0.1, 30, 0.1)}</section><section class="control-section"><h3>マテリアル <span>MATERIAL</span></h3><label class="color-row"><input type="color" id="color" value="#b6ee75"/><span id="color-value">#B6EE75</span><span class="muted">カラー</span></label></section><p class="footer-note">OBJ + MTL として出力<br>オブジェクトごとのカラーを保存</p></aside></main>`;
+app.innerHTML = `
+<header>
+  <a class="brand" href="./"><span class="brand-icon">◈</span> PATH<span class="brand-slash">/</span>FORM</a>
+  <span class="header-label">SVG → 3D STUDIO</span>
+  <button id="export" class="primary">↓ OBJ を書き出す</button>
+</header>
+<main>
+  <section class="workspace">
+    <div class="workspace-tabs" role="tablist" aria-label="編集ビュー">
+      <button id="tab-3d" class="active" role="tab" aria-selected="true" aria-controls="view-3d">3D ビューポート</button>
+      <button id="tab-uv" role="tab" aria-selected="false" aria-controls="view-uv" tabindex="-1">UV MAP</button>
+    </div>
+    <div id="view-3d" class="workspace-view" role="tabpanel" aria-labelledby="tab-3d">
+      <div class="viewport-heading"><span><i class="live-dot"></i> LIVE PREVIEW</span><button id="fit" class="subtle">⊡ 全体表示</button></div>
+      <div id="viewport"></div>
+      <div class="view-caption"><span>ドラッグで回転 · スクロールでズーム · 右ドラッグで移動</span><span id="mesh-info">—</span></div>
+    </div>
+    <div id="view-uv" class="workspace-view" role="tabpanel" aria-labelledby="tab-uv" hidden>
+      <div class="uv-panel">
+        <div class="uv-heading"><span>UV MAP <small>展開・調整</small></span><span class="tiny-label">UV 座標を確認</span></div>
+        <canvas id="uv-canvas" width="700" height="600" aria-label="UV 展開。頂点編集を有効にして頂点をドラッグ"></canvas>
+      </div>
+      <div class="view-caption">右側の UV 設定で頂点編集を有効にすると、頂点をドラッグできます。</div>
+    </div>
+    <div id="message" role="status"></div>
+  </section>
+  <aside class="right-panel" aria-label="オブジェクトと設定">
+    <details class="control-section" open>
+      <summary>パスの読み込み <span>SOURCE</span></summary>
+      <label class="dropzone" id="dropzone">
+        <input type="file" id="file" accept=".svg,image/svg+xml" hidden/>
+        <span class="upload-icon"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 15v6h16v-6"/></svg></span>
+        <strong>SVG をドロップ</strong><span>またはクリックして選択</span><small>Illustrator：SVG 形式で保存</small>
+      </label>
+      <button class="sample-button" id="sample">◈ サンプルを読み込む <span>↗</span></button>
+      <p class="control-note">閉じた SVG パス・複合パスに対応。<br>文字はアウトライン化してください。</p>
+    </details>
+    <details id="objects-details" class="control-section" open>
+      <summary>オブジェクト選択 <span id="object-count">0</span></summary>
+      <div id="objects"></div>
+      <div class="selection-heading"><p id="selected-name" class="muted">オブジェクトを選択</p><button id="reset" class="subtle">リセット ↺</button></div>
+    </details>
+    <details class="control-section" open>
+      <summary>押し出し <span>EXTRUDE</span></summary>
+      ${field("depth", "奥行き", 24, 1, 100, 1)}
+    </details>
+    <details class="control-section" open>
+      <summary>ベベル <span>BEVEL</span></summary>
+      ${field("bevelSize", "幅", 3, 0, 20, 0.1)}
+      ${field("bevelSegments", "分割数", 5, 1, 16, 1)}
+      <div class="curve-display"></div>
+      <label class="toggle-row"><span>尖った角を保持</span><input id="sharpCorners" type="checkbox" checked/><i></i></label>
+      <p class="control-note">ベベル幅は輪郭に合わせて自動制限。<br>細い形状では小さい値を推奨します。</p>
+    </details>
+    <details class="control-section" open>
+      <summary>内側をくり抜く <span>HOLLOW</span></summary>
+      <label class="toggle-row"><span>中空にする</span><input id="hollow" type="checkbox"/><i></i></label>
+      ${field("wallThickness", "壁の厚み", 4, 0.1, 30, 0.1)}
+    </details>
+    <details class="control-section" open>
+      <summary>マテリアル <span>MATERIAL</span></summary>
+      <label class="color-row"><input type="color" id="color" value="#b6ee75"/><span id="color-value">#B6EE75</span><span class="muted">カラー</span></label>
+      <p class="control-note">OBJ + MTL として出力。<br>オブジェクトごとのカラーを保存します。</p>
+    </details>
+    <details id="uv-settings" class="control-section" open>
+      <summary>UV 設定 <span>UV MAP</span></summary>
+      <div class="uv-tools"><label><input type="checkbox" id="uv-edit-mode"/> UV 頂点編集</label><button id="uv-clear" class="subtle">UV 修正をクリア ↺</button><span>頂点をドラッグ · 同じ UV 座標をまとめて編集</span></div>
+      <div class="uv-inputs">
+        ${field("uvScaleX", "スケール U", 1, 0.01, 20, 0.1, false)}
+        ${field("uvScaleY", "スケール V", 1, 0.01, 20, 0.1, false)}
+        ${field("uvOffsetX", "移動 U", 0, -20, 20, 0.1, false)}
+        ${field("uvOffsetY", "移動 V", 0, -20, 20, 0.1, false)}
+        ${field("uvRotation", "回転 °", 0, -360, 360, 1, false)}
+      </div>
+    </details>
+  </aside>
+</main>`;
 function field(id, label, value, min, max, step, range = true) {
   return `<label class="field ${range ? "" : "compact"}"><span>${label}</span><input id="${id}" type="number" min="${min}" max="${max}" step="${step}" value="${value}"/>${range ? `<input data-range="${id}" type="range" min="${min}" max="${max}" step="${step}" value="${value}"/>` : ""}</label>`;
 }
@@ -41,6 +117,7 @@ if (renderer) {
   document.querySelector("#viewport").append(renderer.domElement);
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
+  controls.dampingFactor = 0.35;
 }
 scene.add(new THREE.HemisphereLight(0xffffff, 0x4c5664, 2.2));
 const light = new THREE.DirectionalLight(0xffffff, 3);
@@ -381,6 +458,7 @@ function drawUV() {
   const canvas = $("uv-canvas"),
     ctx = canvas.getContext("2d");
   const rect = canvas.getBoundingClientRect();
+  if (rect.width < 1 || rect.height < 1) return;
   canvas.width = Math.max(1, Math.round(rect.width));
   canvas.height = Math.max(1, Math.round(rect.height));
   const w = canvas.width,
@@ -539,16 +617,58 @@ function resize() {
   const el = $("viewport"),
     w = el.clientWidth,
     h = el.clientHeight;
+  if (w < 1 || h < 1) return;
   renderer.setSize(w, h);
   camera.aspect = w / Math.max(h, 1);
   camera.updateProjectionMatrix();
 }
 new ResizeObserver(resize).observe($("viewport"));
+let activeView = "3d";
+function activateView(view, focus = false) {
+  activeView = view;
+  uvDragKey = null;
+  for (const name of ["3d", "uv"]) {
+    const active = name === view,
+      tab = $(`tab-${name}`);
+    $(`view-${name}`).hidden = !active;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+    if (active && focus) tab.focus();
+  }
+  if (transformControls) transformControls.enabled = view === "3d";
+  if (controls) controls.enabled = view === "3d";
+  requestAnimationFrame(() => {
+    resize();
+    drawUV();
+  });
+}
+for (const view of ["3d", "uv"]) {
+  const tab = $(`tab-${view}`);
+  tab.onclick = () => activateView(view);
+  tab.onkeydown = (e) => {
+    if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
+      e.preventDefault();
+      activateView(
+        e.key === "Home"
+          ? "3d"
+          : e.key === "End"
+            ? "uv"
+            : activeView === "3d"
+              ? "uv"
+              : "3d",
+        true,
+      );
+    }
+  };
+}
 function animate() {
   requestAnimationFrame(animate);
   if (renderer) {
     controls.update();
-    renderer.render(scene, camera);
+    if (activeView === "3d") {
+      renderer.render(scene, camera);
+    }
   }
 }
 animate();

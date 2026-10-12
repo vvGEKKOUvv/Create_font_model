@@ -69,6 +69,7 @@ try {
          })),
          camera: camera.matrixWorld.toArray(),
          orbitEnabled: controls.enabled,
+         dampingFactor: controls.dampingFactor,
          gizmo: {axis:transformControls.axis, dragging:transformControls.dragging, mode:transformControls.mode, position:transformControls.object?.position.toArray(), handles: transformControls._gizmo.gizmo.translate.children.filter(h=>h.name==='X' && h.visible && h.isMesh).map(h=> {
            h.geometry.computeBoundingBox();
            const p=h.geometry.boundingBox.getCenter(new THREE.Vector3()).applyMatrix4(h.matrixWorld).project(camera);
@@ -84,6 +85,35 @@ try {
   await page.goto("http://127.0.0.1:5184");
   await expect(page.locator("#object-count")).toHaveText("2");
   await expect(page.locator("#viewport canvas")).toBeVisible();
+  await expect(page.locator(".left-panel")).toHaveCount(0);
+  await expect(page.locator(".right-panel #file")).toHaveCount(1);
+  await expect(page.locator(".right-panel #objects")).toHaveCount(1);
+  await expect(page.getByText("パスから、かたちへ。", { exact: true })).toHaveCount(0);
+  await expect(page.locator("#tab-3d")).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator("#view-uv")).toBeHidden();
+  await page.locator("#tab-uv").click();
+  await expect(page.locator("#tab-uv")).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator("#uv-canvas")).toBeVisible();
+  await expect(page.locator("#view-3d")).toBeHidden();
+  await page.locator("#tab-3d").click();
+  await expect(page.locator("#viewport canvas")).toBeVisible();
+  assert(await page.locator(".transform-fields label").evaluateAll(labels =>
+    labels.every(label => !/[XYZ]/.test(label.textContent))
+  ), "Transform fields omit visible XYZ labels");
+  await expect(page.locator("#position-x")).toHaveAttribute("aria-label", "position x");
+  const rightDetails = page.locator(".right-panel details");
+  assert((await rightDetails.count()) >= 7, "All right panel groups are collapsible");
+  assert(await page.locator(".right-panel").evaluate(panel =>
+    [...panel.querySelectorAll("input, select")].every(input => input.closest("details"))
+  ), "All right panel inputs belong to collapsible groups");
+  await rightDetails.evaluateAll(details => details.forEach(detail => { detail.open = false; }));
+  await expect(page.locator("#depth")).toBeHidden();
+  await expect(page.locator("#objects")).toBeHidden();
+  await expect(page.locator("#viewport canvas")).toBeVisible();
+  await rightDetails.evaluateAll(details => details.forEach(detail => { detail.open = true; }));
+  await expect(page.locator("#depth")).toBeVisible();
+  assert.equal(await page.evaluate(() => window.__sceneSnapshot.dampingFactor), 0.35,
+    "Orbit damping settles rapidly after pointer release");
   const snapshot = await page.locator("#viewport canvas").evaluate(
     (c) =>
       new Promise((resolve) =>
@@ -370,6 +400,8 @@ try {
   const hollow = await exported();
   assert.match(hollow["model.obj"], /o Box/);
   assert(!/NaN|Infinity/.test(hollow["model.obj"]));
+  await page.locator("#tab-uv").click();
+  await expect(page.locator("#uv-canvas")).toBeVisible();
   await page.locator("#uv-edit-mode").check();
   await page.locator("#uv-canvas").scrollIntoViewIfNeeded();
   const point = await page.evaluate(async () => {
@@ -415,6 +447,8 @@ try {
     lines(cleared["model.obj"], "vt "),
     lines(hollow["model.obj"], "vt "),
   );
+  await page.locator("#tab-3d").click();
+  await expect(page.locator("#viewport canvas")).toBeVisible();
   await page.locator("#file").setInputFiles({
     name: "bad.svg",
     mimeType: "image/svg+xml",
@@ -425,6 +459,25 @@ try {
   await expect(page.locator("#message")).toHaveClass(/error/);
   await expect(page.locator("#object-count")).toHaveText("1");
   await expect(page.locator("#selected-name")).toHaveText("Box");
+  const orbitBox = await page.locator("#viewport canvas").boundingBox();
+  await page.mouse.move(orbitBox.x + 30, orbitBox.y + 40);
+  await page.mouse.down({ button: "right" });
+  await page.mouse.move(orbitBox.x + 90, orbitBox.y + 40, { steps: 5 });
+  await page.mouse.up({ button: "right" });
+  const cameraSamples = await page.evaluate(async () => {
+    const samples = [window.__sceneSnapshot.camera];
+    for (let group = 0; group < 3; group++) {
+      for (let frame = 0; frame < 10; frame++)
+        await new Promise(resolve => requestAnimationFrame(resolve));
+      samples.push(window.__sceneSnapshot.camera);
+    }
+    return samples;
+  });
+  const matrixDistance = (a, b) => Math.hypot(...a.map((value, i) => value - b[i]));
+  const initialDrift = matrixDistance(cameraSamples[0], cameraSamples[1]);
+  const residualDrift = matrixDistance(cameraSamples[2], cameraSamples[3]);
+  assert(residualDrift < Math.max(1e-6, initialDrift * 0.02),
+    "Camera inertia settles within 30 frames after an actual orbit pan");
   await page.setViewportSize({ width: 390, height: 844 });
   await expect
     .poll(() =>
@@ -435,7 +488,7 @@ try {
     .toBe(true);
   assert.deepEqual(errors, []);
   console.log(
-    "Browser smoke passed: WebGL, SVG import, selected-object transform controls and actual gizmo drag, transform persistence/export, enlarged curve editor, per-vertex linear/Bezier and handle drag, UV transforms and vertex drag/reset, material, hollow, OBJ/MTL downloads, invalid input preservation, mobile layout.",
+    "Browser smoke passed: collapsible right sidebar, 3D/UV tabs, reduced orbit inertia, WebGL, SVG import, selected-object transform controls and actual gizmo drag, transform persistence/export, enlarged curve editor, per-vertex linear/Bezier and handle drag, UV transforms and vertex drag/reset, material, hollow, OBJ/MTL downloads, invalid input preservation, mobile layout.",
   );
 } finally {
   if (browser) await browser.close();

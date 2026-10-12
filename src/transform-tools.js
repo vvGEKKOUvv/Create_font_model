@@ -41,19 +41,23 @@ export function createTransformTools({
   toolbar.innerHTML =
     '<span>オブジェクト操作</span><button id="transform-translate" class="active">移動 W</button><button id="transform-rotate">回転 E</button><button id="transform-scale">スケール R</button><label><input id="transform-local" type="checkbox">ローカル軸</label>';
   document.getElementById("viewport").before(toolbar);
-  const panel = document.createElement("section");
+  const panel = document.createElement("details");
   panel.className = "control-section transform-panel";
+  panel.open = true;
   const axes = ["x", "y", "z"];
   panel.innerHTML =
-    "<h3>位置・回転・スケール <span>TRANSFORM</span></h3>" +
+    '<summary>位置・回転・スケール <span>TRANSFORM</span></summary><div class="fold-content">' +
     ["position", "rotation", "scale"]
       .map(
         (kind) =>
-          `<div class="transform-fields"><span>${{ position: "位置", rotation: "回転 °", scale: "スケール" }[kind]}</span>${axes.map((axis) => `<label>${axis.toUpperCase()}<input id="${kind}-${axis}" type="number" step="${kind === "rotation" ? 1 : 0.1}" ${kind === "scale" ? 'min="0.01"' : ""} value="${kind === "scale" ? 1 : 0}" aria-label="${kind} ${axis}"></label>`).join("")}</div>`,
+          `<div class="transform-fields"><span>${{ position: "位置", rotation: "回転 °", scale: "スケール" }[kind]}</span>${axes.map((axis) => `<label><input id="${kind}-${axis}" type="number" step="${kind === "rotation" ? 1 : 0.1}" ${kind === "scale" ? 'min="0.01"' : ""} value="${kind === "scale" ? 1 : 0}" aria-label="${kind} ${axis}"></label>`).join("")}</div>`,
       )
       .join("") +
-    '<button id="transform-reset" class="subtle">位置・回転・スケールをリセット</button><p class="control-note">3D画面の軸・リング・ハンドルをドラッグ。位置は読み込み時からの移動量です。W / E / R で切替。</p>';
-  document.getElementById("selected-name").after(panel);
+    '<button id="transform-reset" class="subtle">位置・回転・スケールをリセット</button><p class="control-note">3D画面の軸・リング・ハンドルをドラッグ。位置は読み込み時からの移動量です。W / E / R で切替。</p></div>';
+  (
+    document.getElementById("objects-details") ||
+    document.getElementById("selected-name")
+  ).after(panel);
   let controls = null,
     mode = "translate";
   if (renderer) {

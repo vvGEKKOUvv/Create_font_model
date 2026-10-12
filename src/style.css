@@ -694,11 +694,24 @@ h3 span {
 
 /* The curve editor needs room for individual handles. */
 @media (min-width: 1000px) {
-  main { height: calc(100vh - 80px); min-height: 650px; }
-  aside { min-height: 0; overflow-y: auto; }
-  .workspace { min-height: 0; }
-  #viewport { height: auto; min-height: 180px; }
-  .uv-panel { flex-shrink: 0; }
+  main {
+    height: calc(100vh - 80px);
+    min-height: 650px;
+  }
+  aside {
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .workspace {
+    min-height: 0;
+  }
+  #viewport {
+    height: auto;
+    min-height: 180px;
+  }
+  .uv-panel {
+    flex-shrink: 0;
+  }
 }
 @media (min-width: 1000px) {
   main {
@@ -810,5 +823,169 @@ h3 span {
   .right-panel {
     grid-column: 1;
     grid-row: auto;
+  }
+}
+
+/* A single settings sidebar leaves the central view available for 3D or UV. */
+[hidden] {
+  display: none !important;
+}
+main {
+  grid-template-columns: minmax(0, 1fr) 340px;
+  height: calc(100vh - 80px);
+  min-height: 650px;
+}
+.workspace {
+  min-height: 0;
+  overflow: hidden;
+}
+.right-panel {
+  padding: 6px 18px 24px;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+.workspace-tabs {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid #303741;
+  margin-bottom: 16px;
+  padding-bottom: 10px;
+  flex-shrink: 0;
+}
+.workspace-tabs button {
+  color: #9da8b5;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 10px 16px;
+}
+.workspace-tabs button.active {
+  color: #e4efda;
+  background: #b6ee7510;
+  border-color: #536344;
+}
+.workspace-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+#viewport {
+  height: auto;
+  min-height: 0;
+  flex: 1;
+}
+#view-uv .uv-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+#uv-canvas {
+  height: auto;
+  flex: 1;
+  min-height: 0;
+}
+#message {
+  flex-shrink: 0;
+}
+.control-section {
+  padding: 18px 0;
+}
+.control-section > summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  cursor: pointer;
+  list-style: none;
+  font-weight: 500;
+  font-size: 12px;
+  padding: 4px 0;
+}
+.control-section > summary::-webkit-details-marker {
+  display: none;
+}
+.control-section > summary::before {
+  content: "›";
+  font-size: 18px;
+  color: #9ba7b5;
+  line-height: 1;
+  transition: transform 0.15s;
+}
+.control-section[open] > summary::before {
+  transform: rotate(90deg);
+}
+.control-section > summary > span {
+  margin-left: auto;
+  font-size: 8px;
+  letter-spacing: 1.4px;
+  color: #81909f;
+}
+.control-section > summary:focus-visible {
+  outline: 2px solid #b6ee75;
+  outline-offset: 4px;
+}
+.selection-heading {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+.selection-heading p {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+.selection-heading button {
+  flex-shrink: 0;
+}
+.right-panel .dropzone {
+  margin-top: 16px;
+  padding: 16px 8px;
+}
+.right-panel .uv-tools {
+  padding: 16px 0 12px;
+  gap: 12px;
+}
+.right-panel .uv-inputs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 0;
+  gap: 14px;
+}
+@media (min-width: 1600px) {
+  main {
+    grid-template-columns: minmax(0, 1fr) 360px;
+  }
+  .right-panel {
+    padding: 6px 22px 24px;
+  }
+}
+@media (max-width: 780px) {
+  main {
+    grid-template-columns: minmax(0, 1fr);
+    height: auto;
+    min-height: 0;
+  }
+  .workspace {
+    grid-column: 1;
+    grid-row: 1;
+    height: 540px;
+    padding: 16px;
+  }
+  .right-panel {
+    grid-column: 1;
+    grid-row: 2;
+    overflow: visible;
+    border-left: 0;
+    border-top: 1px solid #2a2f35;
+  }
+  #viewport {
+    height: auto;
+    min-height: 0;
+  }
+  .workspace-tabs button {
+    padding: 9px 12px;
   }
 }
