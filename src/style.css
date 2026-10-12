@@ -1056,3 +1056,90 @@ main {
   margin-left: auto;
   margin-right: 12px;
 }
+
+#wireframe-mode {
+  max-width: 145px;
+  padding: 4px 6px;
+  margin-right: 8px;
+  color: #cbd5df;
+  background: #232b35;
+  border: 1px solid #3a4652;
+  border-radius: 4px;
+  font-size: 11px;
+}
+.object-entry {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.object-entry .object-row {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+.object-entry .object-row span {
+  min-width: 0;
+}
+.object-entry .object-visibility {
+  flex-shrink: 0;
+  padding: 6px;
+  margin-left: 3px;
+  color: #b6ee75;
+  background: transparent;
+  border: 1px solid #394551;
+  border-radius: 4px;
+}
+.object-hidden .object-row {
+  opacity: 0.5;
+}
+.object-hidden .object-visibility {
+  color: #8793a0;
+}
+.rename-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  font-size: 11px;
+}
+.rename-row input {
+  width: 100%;
+  min-width: 0;
+  color: #dbe3eb;
+  background: #171d24;
+  border: 1px solid #3a4652;
+  border-radius: 4px;
+  padding: 6px;
+}
+.export-visibility-note {
+  margin: 5px 0;
+  color: #8793a0;
+  font-size: 10px;
+}
+.history-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+.history-actions button {
+  white-space: nowrap;
+  font-size: 11px;
+}
+.history-actions button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+@media (max-width: 850px) {
+  .history-actions button {
+    font-size: 10px;
+    padding: 5px;
+  }
+  .viewport-heading {
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+  .wireframe-toggle {
+    margin-left: 0;
+    margin-right: 2px;
+  }
+}

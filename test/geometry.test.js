@@ -1061,3 +1061,39 @@ test("continued bevel rejects returning profiles while ordinary bevel allows the
     buildMesh(shape, { ...settings, bevelContinue: false }),
   );
 });
+
+
+test("hollow continued bevel preserves axial walls when lateral width is constrained", () => {
+  for (const requestedWidth of [10, 3, 1]) {
+    const geometry = buildMesh(denseRectangle(100, 4), {
+      depth: 20, bevelSize: 10, bevelWidth: requestedWidth, bevelContinue: true,
+      hollow: true, wallThickness: 3, curvePoints: ridgeProfile,
+    });
+    assertClosedFiniteSolid(geometry);
+    assert.ok(Math.abs(geometry.userData.effectiveBevel - Math.min(requestedWidth, 1.5)) < 1e-5);
+    assert.ok(Math.abs(geometry.userData.effectiveBevelDepth - 10 * Math.min(1, 1.5 / requestedWidth)) < 1e-5);
+    const sides = triangleVertices(geometry).filter(tri => Math.max(...tri.map(p => p[2])) - Math.min(...tri.map(p => p[2])) > 16.9);
+    if (requestedWidth === 10) assert.ok(sides.length > 0, "thin walls retain their axial side instead of becoming a wafer");
+  }
+  const solid = buildMesh(denseRectangle(100, 4), {depth:20, bevelSize:10, bevelWidth:10, bevelContinue:true, curvePoints:ridgeProfile});
+  assert.equal(solid.userData.effectiveBevelDepth, 10);
+  assertClosedFiniteSolid(solid);
+});
+
+
+test("compound holes retain finite closed geometry when continued bevel width exceeds remaining wall", () => {
+  const geometry = buildMesh(rectangleWithHole(), {depth:20, bevelSize:10, bevelWidth:10, bevelContinue:true, curvePoints:ridgeProfile});
+  assertClosedFiniteSolid(geometry);
+  assert.ok(geometry.userData.effectiveBevelDepth < 10);
+  assert.ok(geometry.userData.effectiveBevelDepth > 0);
+  assert.ok(geometry.userData.warnings.length > 0);
+});
+
+test("OBJ preserves Unicode names and disambiguates renamed objects after sanitizing", () => {
+  const geometry = buildMesh(denseRectangle(10, 4), {depth:3, bevelSize:0});
+  const {obj, mtl} = exportObj(['彫刻 001', '彫刻 001', '彫刻_001_2', '彫刻 001'].map(name => ({name, geometry})));
+  const names = obj.split('\n').filter(line => line.startsWith('o ')).map(line => line.slice(2));
+  assert.deepEqual(names, ['彫刻_001', '彫刻_001_2', '彫刻_001_2_2', '彫刻_001_3']);
+  assert.equal(new Set(names).size, 4);
+  assert.equal((mtl.match(/^newmtl /gm) || []).length, 4);
+});

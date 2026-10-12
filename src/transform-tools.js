@@ -35,6 +35,7 @@ export function createTransformTools({
   getObjects,
   getSelected,
   onSelect,
+  onChange = () => {},
 }) {
   const toolbar = document.createElement("div");
   toolbar.className = "transform-toolbar";
@@ -66,6 +67,7 @@ export function createTransformTools({
     scene.add(controls.getHelper());
     controls.addEventListener("dragging-changed", (e) => {
       if (orbit) orbit.enabled = !e.value;
+      if (!e.value) onChange(true);
     });
     controls.addEventListener("objectChange", () => {
       const mesh = controls.object,
@@ -86,6 +88,7 @@ export function createTransformTools({
       };
       mesh.updateMatrix();
       syncNumbers();
+      onChange();
     });
     const raycaster = new THREE.Raycaster();
     let down = null;
@@ -111,7 +114,10 @@ export function createTransformTools({
         ),
         camera,
       );
-      const hit = raycaster.intersectObjects(group.children, false)[0];
+      const hit = raycaster.intersectObjects(
+        group.children.filter((m) => m.visible),
+        false,
+      )[0];
       if (hit) onSelect(group.children.indexOf(hit.object));
     });
   }
@@ -163,8 +169,12 @@ export function createTransformTools({
               ? Math.max(0.01, value)
               : value;
         apply(mesh, o);
+        onChange();
       };
-      input.onchange = syncNumbers;
+      input.onchange = () => {
+        syncNumbers();
+        onChange(true);
+      };
     });
   document.getElementById("transform-reset").onclick = () => {
     const o = activeObject(),
@@ -177,6 +187,7 @@ export function createTransformTools({
     };
     apply(mesh, o);
     syncNumbers();
+    onChange(true);
   };
   window.addEventListener("keydown", (e) => {
     if (
@@ -205,7 +216,7 @@ export function createTransformTools({
     sync() {
       const mesh = group.children[getSelected()];
       if (controls) {
-        if (mesh) controls.attach(mesh);
+        if (mesh && mesh.visible) controls.attach(mesh);
         else controls.detach();
       }
       syncNumbers();

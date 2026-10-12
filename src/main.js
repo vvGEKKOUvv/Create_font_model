@@ -5,6 +5,7 @@ import { defaultProfile } from "./bevel-profile.js";
 import { prepareContours } from "./path-reduction.js";
 import { createBevelEditor } from "./bevel-editor.js";
 import { createTransformTools, prepareObjectMesh } from "./transform-tools.js";
+import { createHistory } from "./history.js";
 import "./style.css";
 
 const defaults = {
@@ -28,6 +29,7 @@ app.innerHTML = `
 <header>
   <a class="brand" href="./"><span class="brand-icon">◈</span> PATH<span class="brand-slash">/</span>FORM</a>
   <span class="header-label">SVG → 3D STUDIO</span>
+  <div class="history-actions"><button id="undo" class="subtle" disabled aria-label="元に戻す">↶ 元に戻す</button><button id="redo" class="subtle" disabled aria-label="やり直す">↷ やり直す</button></div>
   <button id="export" class="primary">↓ OBJ を書き出す</button>
 </header>
 <main>
@@ -37,7 +39,7 @@ app.innerHTML = `
       <button id="tab-uv" role="tab" aria-selected="false" aria-controls="view-uv" tabindex="-1">UV MAP</button>
     </div>
     <div id="view-3d" class="workspace-view" role="tabpanel" aria-labelledby="tab-3d">
-      <div class="viewport-heading"><span><i class="live-dot"></i> LIVE PREVIEW</span><label class="wireframe-toggle"><input id="wireframe" type="checkbox"/> ワイヤーフレーム</label><button id="fit" class="subtle">⊡ 全体表示</button></div>
+      <div class="viewport-heading"><span><i class="live-dot"></i> LIVE PREVIEW</span><label class="wireframe-toggle"><input id="wireframe" type="checkbox"/> ワイヤーフレーム</label><select id="wireframe-mode" aria-label="ワイヤーフレーム表示方式"><option value="lines">線のみ</option><option value="overlay">シェーダーに重ねる</option></select><button id="fit" class="subtle">⊡ 全体表示</button></div>
       <div id="viewport"></div>
       <div class="view-caption"><span id="mesh-info">—</span></div>
     </div>
@@ -61,6 +63,8 @@ app.innerHTML = `
     <details id="objects-details" class="control-section" open>
       <summary>オブジェクト選択 <span id="object-count">0</span></summary>
       <div id="objects"></div>
+      <label class="rename-row"><span>名前</span><input id="object-name" type="text" maxlength="120" aria-label="オブジェクト名" placeholder="選択オブジェクトの名前"/></label>
+      <p class="export-visibility-note">非表示のオブジェクトは書き出し対象外</p>
       <div class="selection-heading"><p id="selected-name" class="muted">オブジェクトを選択</p><button id="reset" class="subtle">リセット ↺</button></div>
     </details>
     <details class="control-section" id="reduction-settings" open>
@@ -136,8 +140,14 @@ scene.add(grid);
 const group = new THREE.Group();
 scene.add(group);
 let fileSequence = 0;
+let objectSequence = 0;
 let objects = [],
   selected = 0;
+let history = null;
+function recordHistory(immediate = false) {
+  history?.record();
+  if (immediate) history?.commit();
+}
 const $ = (id) => document.getElementById(id);
 function notice(text, error = false) {
   $("message").textContent = text;
@@ -154,6 +164,7 @@ const transformTools = createTransformTools({
   group,
   getObjects: () => objects,
   getSelected: () => selected,
+  onChange: (immediate) => recordHistory(immediate),
   onSelect: (index) => {
     flushPending();
     selected = index;
@@ -169,19 +180,51 @@ const transformControls = transformTools.controls;
 function dispose() {
   group.children.slice().forEach((m) => {
     group.remove(m);
+    disposeWireframe(m);
     m.geometry.dispose();
     m.material.dispose();
   });
 }
+function disposeWireframe(mesh) {
+  const overlay = mesh.userData.wireframeOverlay;
+  if (!overlay) return;
+  mesh.remove(overlay);
+  overlay.geometry.dispose();
+  overlay.material.dispose();
+  delete mesh.userData.wireframeOverlay;
+}
 function applyDisplayStyle(mesh, object) {
-  mesh.material.wireframe = $("wireframe").checked;
+  const enabled = $("wireframe").checked;
+  const overlayMode = $("wireframe-mode").value === "overlay";
+  mesh.visible = object.visible !== false;
+  mesh.material.wireframe = enabled && !overlayMode;
   mesh.material.color.set(mesh.material.wireframe ? "#c4d8ef" : object.color);
+  mesh.material.polygonOffset = enabled && overlayMode;
+  mesh.material.polygonOffsetFactor = 1;
+  mesh.material.polygonOffsetUnits = 1;
+  let overlay = mesh.userData.wireframeOverlay;
+  if (overlay && overlay.userData.sourceGeometry !== mesh.geometry) {
+    disposeWireframe(mesh);
+    overlay = null;
+  }
+  if (enabled && overlayMode && !overlay) {
+    overlay = new THREE.LineSegments(
+      new THREE.WireframeGeometry(mesh.geometry),
+      new THREE.LineBasicMaterial({ color: "#17212b", depthWrite: false }),
+    );
+    overlay.userData.sourceGeometry = mesh.geometry;
+    overlay.renderOrder = 1;
+    mesh.userData.wireframeOverlay = overlay;
+    mesh.add(overlay);
+  }
+  if (overlay) overlay.visible = enabled && overlayMode;
 }
 function makeMeshes(entries) {
   const meshes = [];
   try {
     entries.forEach((o) => {
       const geometry = buildMesh(o.shape, o.settings);
+      geometry.userData.sourceSettings = structuredClone(o.settings);
       const material = new THREE.MeshStandardMaterial({
         color: o.color,
         roughness: 0.44,
@@ -189,14 +232,15 @@ function makeMeshes(entries) {
         side: THREE.DoubleSide,
       });
       const mesh = new THREE.Mesh(geometry, material);
-      applyDisplayStyle(mesh, o);
       mesh.userData.objectId = o.id;
       prepareObjectMesh(mesh, o);
+      applyDisplayStyle(mesh, o);
       meshes.push(mesh);
     });
     return meshes;
   } catch (e) {
     meshes.forEach((m) => {
+      disposeWireframe(m);
       m.geometry.dispose();
       m.material.dispose();
     });
@@ -283,6 +327,7 @@ function rebuildObject(object) {
     mesh.rotation.copy(replacement.rotation);
     mesh.scale.copy(replacement.scale);
     mesh.updateMatrix();
+    disposeWireframe(replacement);
     replacement.material.dispose();
     oldGeometry.dispose();
     object.invalid = false;
@@ -340,8 +385,13 @@ function updateUV(object = selectedObject()) {
 }
 function fit() {
   if (!group.children.length) return;
-  const box = new THREE.Box3().setFromObject(group),
-    size = box.getSize(new THREE.Vector3()),
+  const box = new THREE.Box3();
+  group.updateMatrixWorld(true);
+  group.children
+    .filter((mesh) => mesh.visible)
+    .forEach((mesh) => box.expandByObject(mesh));
+  if (box.isEmpty()) return;
+  const size = box.getSize(new THREE.Vector3()),
     center = box.getCenter(new THREE.Vector3()),
     r = Math.max(size.x, size.y, size.z, 10);
   camera.position
@@ -360,10 +410,27 @@ function list() {
   $("object-count").textContent = objects.length;
   $("objects").innerHTML = objects
     .map(
-      (o, i) =>
-        `<button class="object-row ${selected === i ? "active" : ""}" data-object="${i}"><i style="background:${safeColor(o.color)}"></i><span>${escapeHTML(o.name)}</span><small title="${escapeHTML(o.sourceName || "")}">${escapeHTML(o.sourceName || "")}</small></button>`,
+      (
+        o,
+        i,
+      ) => `<div class="object-entry ${o.visible === false ? "object-hidden" : ""}">
+      <button class="object-row ${selected === i ? "active" : ""}" data-object="${i}"><i style="background:${safeColor(o.color)}"></i><span>${escapeHTML(o.name)}</span><small title="${escapeHTML(o.sourceName || "")}">${escapeHTML(o.sourceName || "")}</small></button>
+      <button class="object-visibility" data-visibility="${i}" aria-label="${escapeHTML(o.name)}を${o.visible === false ? "表示" : "非表示"}" aria-pressed="${o.visible !== false}" title="${o.visible === false ? "表示する" : "非表示にする"}">${o.visible === false ? "○" : "◉"}</button>
+    </div>`,
     )
     .join("");
+  document.querySelectorAll("[data-visibility]").forEach((button) => {
+    button.onclick = () => {
+      flushPending();
+      const index = Number(button.dataset.visibility);
+      const object = objects[index];
+      object.visible = object.visible === false;
+      recordHistory(true);
+      applyDisplayStyle(group.children[index], object);
+      list();
+      transformTools.sync();
+    };
+  });
   document.querySelectorAll("[data-object]").forEach(
     (el) =>
       (el.onclick = () => {
@@ -394,6 +461,7 @@ function sync() {
   const o = selectedObject();
   if (!o) return;
   $("selected-name").textContent = o.name;
+  $("object-name").value = o.name;
   Object.keys(defaults).forEach((key) => {
     const el = $(key);
     if (el.type === "checkbox") el.checked = o.settings[key];
@@ -416,6 +484,7 @@ const bevelEditor = createBevelEditor(
       if (!o) return;
       const cleared = clearShapeUV(o);
       scheduleRebuild(o);
+      recordHistory();
       if (cleared) notice("形状の変更に伴い UV 頂点修正をクリアしました。");
     },
   },
@@ -431,7 +500,8 @@ async function load(text, name) {
       ...o,
       id: `file-${source}-${o.id}`,
       sourceName: name,
-      name: o.name || `パス ${i + 1}`,
+      name: `${o.name || "パス"} ${String(++objectSequence).padStart(3, "0")}`,
+      visible: true,
       color: safeColor(o.color),
       settings: initialSettings(o.shape),
     }));
@@ -458,6 +528,7 @@ async function load(text, name) {
     if (parsed.warnings.length) notice(parsed.warnings.join(" / "));
     $("dropzone").classList.add("loaded");
     $("dropzone").querySelector("strong").textContent = name;
+    recordHistory(true);
   } catch (e) {
     notice(e.message, true);
   }
@@ -553,6 +624,7 @@ Object.keys(defaults).forEach((key) => {
     } else {
       scheduleRebuild(o);
     }
+    recordHistory();
     if (clearedUV) notice("形状の変更に伴い UV 頂点修正をクリアしました。");
   };
   input.onchange = flushPending;
@@ -570,6 +642,7 @@ $("color").oninput = () => {
   const o = selectedObject();
   if (!o) return;
   o.color = $("color").value;
+  recordHistory();
   $("color-value").textContent = o.color.toUpperCase();
   list();
   const mesh = group.children[selected];
@@ -579,11 +652,26 @@ $("wireframe").onchange = () =>
   group.children.forEach((mesh, index) =>
     applyDisplayStyle(mesh, objects[index]),
   );
+$("wireframe-mode").onchange = $("wireframe").onchange;
+$("object-name").onchange = () => {
+  const object = selectedObject();
+  if (!object) return;
+  const name = $("object-name").value.trim();
+  if (!name) {
+    $("object-name").value = object.name;
+    return;
+  }
+  object.name = name;
+  recordHistory(true);
+  list();
+  sync();
+};
 $("fit").onclick = fit;
 $("reset").onclick = () => {
   const o = selectedObject();
   if (o) {
     o.settings = initialSettings(o.shape);
+    recordHistory(true);
     sync();
     rebuild();
     fit();
@@ -607,16 +695,20 @@ $("export").onclick = () => {
       throw new Error(
         "生成できない設定があります。表示中のエラーを解消してから書き出してください。",
       );
-    const items = objects.map((o, i) => {
+    const items = objects.flatMap((o, i) => {
+      if (o.visible === false) return [];
       const mesh = group.children[i];
       mesh.updateMatrix();
-      return {
-        name: `${o.name}_${i + 1}`,
-        color: o.color,
-        geometry: mesh.geometry,
-        matrix: mesh.matrix,
-      };
+      return [
+        {
+          name: o.name,
+          color: o.color,
+          geometry: mesh.geometry,
+          matrix: mesh.matrix,
+        },
+      ];
     });
+    if (!items.length) throw new Error("表示中のオブジェクトがありません。");
     const { obj, mtl } = exportObj(items);
     download(obj, "model.obj", "text/plain");
     download(mtl, "model.mtl", "text/plain");
@@ -739,6 +831,7 @@ $("uv-clear").onclick = () => {
   const o = selectedObject();
   if (!o) return;
   delete o.settings.uvEdits;
+  recordHistory(true);
   uvSelectedKey = null;
   updateUV(o);
   notice("選択オブジェクトの UV 頂点修正をクリアしました。");
@@ -785,8 +878,10 @@ $("uv-canvas").onpointermove = (e) => {
     [uvDragKey]: [x * c + y * sin, -x * sin + y * c],
   };
   updateUV(o);
+  recordHistory();
 };
 $("uv-canvas").onpointerup = () => {
+  history?.commit();
   uvDragKey = null;
   drawUV();
 };
@@ -854,6 +949,116 @@ function animate() {
     }
   }
 }
+function copyObjectState(object) {
+  const { shape, ...state } = object;
+  return { ...structuredClone(state), shape };
+}
+function captureHistory() {
+  return {
+    objects: objects.map((object, index) => ({
+      ...copyObjectState(object),
+      validSettings: structuredClone(
+        group.children[index]?.geometry.userData.sourceSettings ||
+          object.settings,
+      ),
+    })),
+    selected,
+    groupPosition: group.position.toArray(),
+    sourceLabel: $("dropzone").querySelector("strong").textContent,
+  };
+}
+function restoreHistory(snapshot) {
+  clearTimeout(rebuildTimer);
+  rebuildTimer = null;
+  pendingObjects.clear();
+  const restored = snapshot.objects.map(copyObjectState);
+  const prepared = [];
+  let error = "";
+  try {
+    restored.forEach((object) => {
+      const validSettings = object.validSettings;
+      delete object.validSettings;
+      try {
+        prepared.push(...makeMeshes([object]));
+        object.invalid = false;
+      } catch (failure) {
+        const desired = object.settings;
+        object.settings = validSettings;
+        prepared.push(...makeMeshes([object]));
+        object.settings = desired;
+        object.invalid = true;
+        error = failure.message;
+      }
+    });
+  } catch (failure) {
+    prepared.forEach((mesh) => {
+      disposeWireframe(mesh);
+      mesh.geometry.dispose();
+      mesh.material.dispose();
+    });
+    throw failure;
+  }
+  transformTools.detach();
+  dispose();
+  objects = restored;
+  selected = Math.min(snapshot.selected, Math.max(0, objects.length - 1));
+  prepared.forEach((mesh) => group.add(mesh));
+  group.position.fromArray(snapshot.groupPosition);
+  uvSelectedKey = null;
+  uvDragKey = null;
+  $("dropzone").classList.toggle("loaded", objects.length > 0);
+  $("dropzone").querySelector("strong").textContent = snapshot.sourceLabel;
+  list();
+  sync();
+  transformTools.sync();
+  refreshMeshInfo();
+  if (!objects.length) {
+    $("selected-name").textContent = "オブジェクトを選択";
+    $("object-name").value = "";
+    $("object-name").disabled = true;
+  }
+  if (error) notice(error, true);
+}
+history = createHistory({
+  capture: captureHistory,
+  restore: restoreHistory,
+  fingerprint: (snapshot) =>
+    JSON.stringify(snapshot, (key, value) =>
+      ["shape", "selected", "validSettings", "invalid"].includes(key)
+        ? undefined
+        : value,
+    ),
+  onChange: () => {
+    $("undo").disabled = !history.canUndo;
+    $("redo").disabled = !history.canRedo;
+  },
+});
+function travelHistory(direction) {
+  flushPending();
+  try {
+    history[direction]();
+  } catch (error) {
+    notice(error.message, true);
+  }
+}
+$("undo").onclick = () => travelHistory("undo");
+$("redo").onclick = () => travelHistory("redo");
+window.addEventListener("change", () => {
+  if (history.pending) history.commit();
+});
+window.addEventListener("pointerup", () => {
+  if (history.pending) history.commit();
+});
+window.addEventListener("keydown", (event) => {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+  const key = event.key.toLowerCase();
+  if (key !== "z" && !(key === "y" && event.ctrlKey)) return;
+  // Text fields retain the browser's own text undo; buttons handle model undo.
+  if (event.target.closest("input,textarea,select,[contenteditable=true]"))
+    return;
+  event.preventDefault();
+  travelHistory(key === "y" || event.shiftKey ? "redo" : "undo");
+});
 animate();
 transformTools.sync();
 refreshMeshInfo();

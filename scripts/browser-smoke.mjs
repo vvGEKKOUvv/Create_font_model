@@ -69,6 +69,9 @@ try {
          objects: group.children.map(mesh => ({
            geometryId: mesh.geometry.uuid,
            wireframe: mesh.material.wireframe,
+           visible: mesh.visible,
+           overlay: Boolean(mesh.userData.wireframeOverlay?.visible),
+           overlayCount: mesh.children.filter(c => c.isLineSegments).length,
            effectiveBevel: mesh.geometry.userData.effectiveBevel,
            effectiveBevelDepth: mesh.geometry.userData.effectiveBevelDepth,
            matrix: mesh.matrixWorld.toArray(),
@@ -262,6 +265,13 @@ try {
     beforeWireframe.map((o) => o.geometryId),
     "Wireframe toggling reuses geometry",
   );
+  await page.locator("#wireframe-mode").selectOption("overlay");
+  await expect.poll(() => page.evaluate(() => window.__sceneSnapshot.objects.every(o => !o.wireframe && o.overlay && o.overlayCount === 1))).toBe(true);
+  assert.equal((await exported())["model.obj"], wireframeBaseline["model.obj"], "Overlay never changes OBJ geometry");
+  await page.locator("#wireframe-mode").selectOption("lines");
+  await page.locator("#wireframe-mode").selectOption("overlay");
+  await expect.poll(() => page.evaluate(() => window.__sceneSnapshot.objects.every(o => o.overlayCount === 1))).toBe(true);
+  await page.locator("#wireframe-mode").selectOption("lines");
   await page.locator("#wireframe").uncheck();
   await expect
     .poll(() =>
@@ -270,6 +280,27 @@ try {
       ),
     )
     .toBe(true);
+  const initialNames = await page.locator(".object-row span").allTextContents();
+  assert.equal(new Set(initialNames).size, initialNames.length, "Imported object names are unique");
+  const renamedObject = "Custom sculpture";
+  await page.locator("#object-name").fill(renamedObject);
+  await page.locator("#object-name").dispatchEvent("change");
+  await expect(page.locator("#selected-name")).toHaveText(renamedObject);
+  assert.match((await exported())["model.obj"], /o Custom_sculpture/);
+  await page.locator("#undo").click();
+  await expect(page.locator("#selected-name")).toHaveText(initialNames[0]);
+  await page.locator("#redo").click();
+  await expect(page.locator("#selected-name")).toHaveText(renamedObject);
+  await page.locator("#undo").click();
+  await page.locator('[data-visibility="0"]').click();
+  await expect.poll(() => page.evaluate(() => window.__sceneSnapshot.objects[0].visible)).toBe(false);
+  const hiddenExport = await exported();
+  assert.equal((hiddenExport["model.obj"].match(/^o /gm) || []).length, 1, "Hidden object is excluded from export");
+  await page.locator("#undo").click();
+  await expect.poll(() => page.evaluate(() => window.__sceneSnapshot.objects[0].visible)).toBe(true);
+  await page.locator("#redo").click();
+  await expect.poll(() => page.evaluate(() => window.__sceneSnapshot.objects[0].visible)).toBe(false);
+  await page.locator("#undo").click();
   const first = await exported();
   assert.match(first["model.obj"], /o Ring/);
   assert.match(first["model.obj"], /o Arrow/);
@@ -744,7 +775,7 @@ try {
   });
   await expect(page.locator("#message")).toHaveClass(/error/);
   await expect(page.locator("#object-count")).toHaveText("3");
-  await expect(page.locator("#selected-name")).toHaveText("Box");
+  await expect(page.locator("#selected-name")).toHaveText(/Box \d+/);
   const orbitBox = await page.locator("#viewport canvas").boundingBox();
   await page.mouse.move(orbitBox.x + 30, orbitBox.y + 40);
   await page.mouse.down({ button: "right" });
@@ -786,8 +817,8 @@ try {
   await page.locator("#reductionTolerance").fill("0.5");
   const reduced = await exported();
   assert(
-    lines(reduced["model.obj"].split("o Dense_4\n")[1], "v ").length <
-      lines(unreduced["model.obj"].split("o Dense_4\n")[1], "v ").length / 2,
+    lines(reduced["model.obj"].split(/o Dense_\d+\n/)[1], "v ").length <
+      lines(unreduced["model.obj"].split(/o Dense_\d+\n/)[1], "v ").length / 2,
     "Reduction parameter reduces exported mesh complexity",
   );
   assert(!/NaN|Infinity/.test(reduced["model.obj"]));
@@ -810,7 +841,7 @@ try {
       `<svg xmlns="http://www.w3.org/2000/svg"><path id="Huge" d="${hugePath}"/></svg>`,
     ),
   });
-  await expect(page.locator("#selected-name")).toHaveText("Huge");
+  await expect(page.locator("#selected-name")).toHaveText(/Huge \d+/);
   await expect(page.locator("#object-count")).toHaveText("5");
   await expect(page.locator("#message")).not.toHaveClass(/error/);
   assert(
@@ -829,7 +860,7 @@ try {
       '<svg xmlns="http://www.w3.org/2000/svg"><path id="Tiny" d="M0 0H2V2H0Z"/></svg>',
     ),
   });
-  await expect(page.locator("#selected-name")).toHaveText("Tiny");
+  await expect(page.locator("#selected-name")).toHaveText(/Tiny \d+/);
   assert(
     Math.abs(Number(await page.locator("#depth").inputValue()) - 0.6) < 1e-8,
   );
@@ -876,7 +907,7 @@ try {
       '<svg xmlns="http://www.w3.org/2000/svg"><path id="Ridge-L" d="M0 0H36V140H130V176H0Z"/></svg>',
     ),
   });
-  await expect(page.locator("#selected-name")).toHaveText("Ridge-L");
+  await expect(page.locator("#selected-name")).toHaveText(/Ridge-L \d+/);
   await page.locator("#depth").fill("24");
   await expect(page.locator('[data-range="bevelSize"]')).toHaveAttribute(
     "max",

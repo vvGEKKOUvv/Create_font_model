@@ -429,10 +429,29 @@ export function buildMesh(shape, settings = {}) {
           )
         : variant.bevel;
   // Inset safety restricts the lateral width, independently of axial reach.
-  const bevelHeight =
+  let bevelHeight =
     bevel > 0
       ? Math.min(Math.max(0, Number(settings.bevelSize) || 0), depth / 2)
       : 0;
+  // A hollow wall has two opposing bevels, so its lateral limit is usually
+  // half the wall thickness. Keeping the full axial reach after squeezing
+  // their width turns an otherwise substantial wall into a knife edge.
+  // Preserve the requested bevel slope for holes; solid ridges still retain
+  // their independently controlled axial reach when narrow strokes meet.
+  const nominalBevelWidth = explicitWidth
+    ? requestedBevelWidth
+    : Math.max(0, Number(settings.bevelSize) || 0);
+  if (
+    roof &&
+    rings.length > 1 &&
+    nominalBevelWidth > bevel + EPS &&
+    bevel > EPS
+  ) {
+    bevelHeight *= bevel / nominalBevelWidth;
+    warnings.push(
+      "中空の壁を薄い刃状にしないため、ベベル幅の縮小に合わせて奥行方向のベベルも調整しました。",
+    );
+  }
   warnings.push(
     ...variant.warnings.filter(
       (message) => !roof || !message.includes("ベベル"),
@@ -773,6 +792,7 @@ export function exportObj(items) {
   const obj = ["# Path Studio OBJ", "mtllib model.mtl"],
     mtl = ["# Path Studio materials"];
   let base = 1;
+  const names = new Set();
   items.forEach((item, index) => {
     const geometry = item.geometry.index
       ? item.geometry.toNonIndexed()
@@ -780,10 +800,14 @@ export function exportObj(items) {
     const p = geometry.getAttribute("position"),
       uv = geometry.getAttribute("uv"),
       n = geometry.getAttribute("normal");
-    const name = String(item.name || `object_${index + 1}`).replace(
-      /[^a-zA-Z0-9_\-]/g,
+    const rawName = String(item.name || `object_${index + 1}`).replace(
+      /[^\p{L}\p{N}_-]/gu,
       "_",
     );
+    let name = rawName,
+      suffix = 2;
+    while (names.has(name)) name = `${rawName}_${suffix++}`;
+    names.add(name);
     const material = `material_${index + 1}`,
       color = new THREE.Color(item.color || "#ffffff");
     const matrix = item.matrix || new THREE.Matrix4();
