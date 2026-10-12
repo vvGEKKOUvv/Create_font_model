@@ -750,7 +750,7 @@ test("in-place UV updates match full builds and restore original UVs without rep
   assert.deepEqual(Array.from(normal.array), normals);
 });
 
-test("maximum bevel reaches extrusion middle while narrow walls retain safe lateral inset", () => {
+test("maximum bevel retains a substantial wall around narrow imported holes", () => {
   const shape = parseSvg(
     '<svg xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M0 0H40V40H0Z M1 1V39H39V1Z"/></svg>',
   ).objects[0].shape;
@@ -760,7 +760,9 @@ test("maximum bevel reaches extrusion middle while narrow walls retain safe late
     bevelSegments: 5,
     sharpCorners: true,
   });
-  assert.equal(geometry.userData.effectiveBevelDepth, 12);
+  assert.ok(
+    geometry.userData.effectiveBevelDepth <= geometry.userData.effectiveBevel,
+  );
   assert(
     geometry.userData.effectiveBevel > 0 &&
       geometry.userData.effectiveBevel <= 0.5,
@@ -770,7 +772,7 @@ test("maximum bevel reaches extrusion middle while narrow walls retain safe late
   const triangles = triangleVertices(geometry);
   const edges = new Map();
   const key = (p) => p.map((v) => v.toFixed(5)).join(",");
-  let middleCount = 0;
+  let sideEdgeCount = 0;
   for (const tri of triangles) {
     const [a, b, c] = tri;
     const ab = b.map((v, i) => v - a[i]),
@@ -786,10 +788,10 @@ test("maximum bevel reaches extrusion middle while narrow walls retain safe late
     for (let i = 0; i < 3; i++) {
       const edge = [key(tri[i]), key(tri[(i + 1) % 3])].sort().join("|");
       edges.set(edge, (edges.get(edge) || 0) + 1);
-      if (Math.abs(tri[i][2] - 12) < 1e-5) middleCount++;
+      if (Math.abs(tri[i][2] - tri[(i + 1) % 3][2]) >= 12) sideEdgeCount++;
     }
   }
-  assert(middleCount > 0, "Bevel profile reaches extrusion center");
+  assert(sideEdgeCount > 0, "Imported hole retains axial side wall thickness");
   assert(
     [...edges.values()].every((n) => n === 2),
     "Mesh remains closed",
@@ -1062,38 +1064,136 @@ test("continued bevel rejects returning profiles while ordinary bevel allows the
   );
 });
 
+function assertWallBodyThickness(geometry, depth) {
+  assertClosedFiniteSolid(geometry);
+  const height = geometry.userData.effectiveBevelDepth;
+  assert.ok(
+    depth - 2 * height >= depth / 2 - 1e-6,
+    "bevels leave at least half the extrusion as an axial wall",
+  );
+  const sideFaces = triangleVertices(geometry).filter((tri) => {
+    const z = tri.map((p) => p[2]);
+    return Math.max(...z) - Math.min(...z) >= depth / 2 - 1e-6;
+  });
+  assert.ok(
+    sideFaces.length > 0,
+    "actual side triangles retain substantial front/back separation",
+  );
+  let volume = 0;
+  for (const [a, b, c] of triangleVertices(geometry))
+    volume +=
+      (a[0] * (b[1] * c[2] - b[2] * c[1]) +
+        a[1] * (b[2] * c[0] - b[0] * c[2]) +
+        a[2] * (b[0] * c[1] - b[1] * c[0])) /
+      6;
+  return volume;
+}
 
-test("hollow continued bevel preserves axial walls when lateral width is constrained", () => {
-  for (const requestedWidth of [10, 3, 1]) {
-    const geometry = buildMesh(denseRectangle(100, 4), {
-      depth: 20, bevelSize: 10, bevelWidth: requestedWidth, bevelContinue: true,
-      hollow: true, wallThickness: 3, curvePoints: ridgeProfile,
-    });
-    assertClosedFiniteSolid(geometry);
-    assert.ok(Math.abs(geometry.userData.effectiveBevel - Math.min(requestedWidth, 1.5)) < 1e-5);
-    assert.ok(Math.abs(geometry.userData.effectiveBevelDepth - 10 * Math.min(1, 1.5 / requestedWidth)) < 1e-5);
-    const sides = triangleVertices(geometry).filter(tri => Math.max(...tri.map(p => p[2])) - Math.min(...tri.map(p => p[2])) > 16.9);
-    if (requestedWidth === 10) assert.ok(sides.length > 0, "thin walls retain their axial side instead of becoming a wafer");
+test("hollow walls keep their body when width equals its maximum, overshoots, or is automatic", () => {
+  const paths = [
+    "M0 0H100V100H0Z",
+    "M0 0H36V140H130V176H0Z",
+    "M0 0H5V100H100V105H0Z",
+  ];
+  for (const path of paths) {
+    const shape = parseSvg(`<svg><path d="${path}"/></svg>`).objects[0].shape;
+    for (const bevelContinue of [false, true]) {
+      const base = {
+        depth: 20,
+        bevelSize: 10,
+        bevelContinue,
+        hollow: true,
+        wallThickness: 3,
+        curvePoints: ridgeProfile,
+      };
+      const probe = buildMesh(shape, { ...base, bevelWidth: 100 });
+      const maximum = probe.userData.maximumBevelWidth;
+      for (const bevelWidth of [
+        maximum,
+        maximum * 0.1,
+        maximum * 3,
+        undefined,
+      ]) {
+        const geometry = buildMesh(shape, { ...base, bevelWidth });
+        assertWallBodyThickness(geometry, 20);
+        assert.ok(
+          geometry.userData.effectiveBevelDepth <=
+            geometry.userData.effectiveBevel + 1e-6,
+          "axial bevel stays proportional to the narrow wall",
+        );
+      }
+    }
   }
-  const solid = buildMesh(denseRectangle(100, 4), {depth:20, bevelSize:10, bevelWidth:10, bevelContinue:true, curvePoints:ridgeProfile});
+  // Solid ridges still meet at the extrusion center; hollow protection does
+  // not change the explicitly requested solid-font appearance.
+  const solid = buildMesh(denseRectangle(100, 4), {
+    depth: 20,
+    bevelSize: 10,
+    bevelWidth: 10,
+    bevelContinue: true,
+    curvePoints: ridgeProfile,
+  });
   assert.equal(solid.userData.effectiveBevelDepth, 10);
   assertClosedFiniteSolid(solid);
 });
 
+test("hollow square preserves at least three quarters of its unbeveled wall volume at maximum width", () => {
+  const geometry = buildMesh(denseRectangle(100, 4), {
+    depth: 20,
+    bevelSize: 10,
+    bevelWidth: 1.5,
+    bevelContinue: true,
+    hollow: true,
+    wallThickness: 3,
+    curvePoints: ridgeProfile,
+  });
+  const volume = assertWallBodyThickness(geometry, 20);
+  assert.ok(
+    volume >= (100 * 100 - 94 * 94) * 20 * 0.75,
+    "substantial wall body survives even though the front bevels meet",
+  );
+});
 
-test("compound holes retain finite closed geometry when continued bevel width exceeds remaining wall", () => {
-  const geometry = buildMesh(rectangleWithHole(), {depth:20, bevelSize:10, bevelWidth:10, bevelContinue:true, curvePoints:ridgeProfile});
-  assertClosedFiniteSolid(geometry);
-  assert.ok(geometry.userData.effectiveBevelDepth < 10);
-  assert.ok(geometry.userData.effectiveBevelDepth > 0);
-  assert.ok(geometry.userData.warnings.length > 0);
+test("imported compound holes preserve wall thickness in both bevel modes", () => {
+  for (const bevelContinue of [false, true]) {
+    const shape = rectangleWithHole();
+    const probe = buildMesh(shape, {
+      depth: 20,
+      bevelSize: 10,
+      bevelWidth: 100,
+      bevelContinue,
+      curvePoints: ridgeProfile,
+    });
+    const geometry = buildMesh(shape, {
+      depth: 20,
+      bevelSize: 10,
+      bevelWidth: probe.userData.maximumBevelWidth,
+      bevelContinue,
+      curvePoints: ridgeProfile,
+    });
+    assertWallBodyThickness(geometry, 20);
+    assert.ok(geometry.userData.warnings.length > 0);
+  }
 });
 
 test("OBJ preserves Unicode names and disambiguates renamed objects after sanitizing", () => {
-  const geometry = buildMesh(denseRectangle(10, 4), {depth:3, bevelSize:0});
-  const {obj, mtl} = exportObj(['彫刻 001', '彫刻 001', '彫刻_001_2', '彫刻 001'].map(name => ({name, geometry})));
-  const names = obj.split('\n').filter(line => line.startsWith('o ')).map(line => line.slice(2));
-  assert.deepEqual(names, ['彫刻_001', '彫刻_001_2', '彫刻_001_2_2', '彫刻_001_3']);
+  const geometry = buildMesh(denseRectangle(10, 4), { depth: 3, bevelSize: 0 });
+  const { obj, mtl } = exportObj(
+    ["彫刻 001", "彫刻 001", "彫刻_001_2", "彫刻 001"].map((name) => ({
+      name,
+      geometry,
+    })),
+  );
+  const names = obj
+    .split("\n")
+    .filter((line) => line.startsWith("o "))
+    .map((line) => line.slice(2));
+  assert.deepEqual(names, [
+    "彫刻_001",
+    "彫刻_001_2",
+    "彫刻_001_2_2",
+    "彫刻_001_3",
+  ]);
   assert.equal(new Set(names).size, 4);
   assert.equal((mtl.match(/^newmtl /gm) || []).length, 4);
 });

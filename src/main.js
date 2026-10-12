@@ -301,7 +301,7 @@ function updateGeometryInfo() {
   $("geometry-status").textContent =
     `奥行方向：${Number(data.effectiveBevelDepth || 0).toPrecision(3)} / 輪郭幅：${Number(data.effectiveBevel || 0).toPrecision(3)}` +
     (selectedObject()?.settings.hollow
-      ? ` / 壁厚：${Number(data.effectiveWallThickness || 0).toPrecision(3)}`
+      ? ` / 壁厚：${Number(data.effectiveWallThickness || 0).toPrecision(3)} / 残る奥行：${Number(data.centralWallDepth ?? 0).toPrecision(3)}`
       : "");
 }
 function refreshMeshInfo() {

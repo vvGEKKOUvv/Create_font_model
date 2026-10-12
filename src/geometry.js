@@ -433,23 +433,15 @@ export function buildMesh(shape, settings = {}) {
     bevel > 0
       ? Math.min(Math.max(0, Number(settings.bevelSize) || 0), depth / 2)
       : 0;
-  // A hollow wall has two opposing bevels, so its lateral limit is usually
-  // half the wall thickness. Keeping the full axial reach after squeezing
-  // their width turns an otherwise substantial wall into a knife edge.
-  // Preserve the requested bevel slope for holes; solid ridges still retain
-  // their independently controlled axial reach when narrow strokes meet.
-  const nominalBevelWidth = explicitWidth
-    ? requestedBevelWidth
-    : Math.max(0, Number(settings.bevelSize) || 0);
-  if (
-    roof &&
-    rings.length > 1 &&
-    nominalBevelWidth > bevel + EPS &&
-    bevel > EPS
-  ) {
-    bevelHeight *= bevel / nominalBevelWidth;
+  // Opposing inner/outer bevels must retain a substantial straight wall.
+  // Constrain their actual axial reach even when the requested lateral width
+  // already fits: shrinking only an oversized width misses small-width edits
+  // and the conventional/fallback bevel path entirely. Solid ridges retain
+  // their independently controlled axial reach.
+  if (rings.length > 1 && bevelHeight > Math.min(bevel, depth / 4) + EPS) {
+    bevelHeight = Math.min(bevel, depth / 4);
     warnings.push(
-      "中空の壁を薄い刃状にしないため、ベベル幅の縮小に合わせて奥行方向のベベルも調整しました。",
+      "中空の厚みを保つため、奥行方向のベベルを輪郭幅と押し出し厚に合わせて制限しました。",
     );
   }
   warnings.push(
@@ -725,6 +717,7 @@ export function buildMesh(shape, settings = {}) {
     maximumBevelWidth: roof ? roof.maximumWidth : variant.maximumBevelWidth,
     continuedBevel: !!roofTriangles,
     effectiveBevelDepth: bevelHeight,
+    centralWallDepth: depth - 2 * bevelHeight,
     effectiveWallThickness,
     originalCount: prepared.originalCount,
     reducedCount: prepared.reducedCount,

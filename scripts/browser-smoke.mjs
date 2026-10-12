@@ -74,6 +74,7 @@ try {
            overlayCount: mesh.children.filter(c => c.isLineSegments).length,
            effectiveBevel: mesh.geometry.userData.effectiveBevel,
            effectiveBevelDepth: mesh.geometry.userData.effectiveBevelDepth,
+           centralWallDepth: mesh.geometry.userData.centralWallDepth,
            matrix: mesh.matrixWorld.toArray(),
            depth: mesh.geometry.boundingBox.max.z - mesh.geometry.boundingBox.min.z,
            point: new THREE.Vector3().fromBufferAttribute(mesh.geometry.attributes.position, 0).applyMatrix4(mesh.matrixWorld).toArray()
@@ -266,11 +267,29 @@ try {
     "Wireframe toggling reuses geometry",
   );
   await page.locator("#wireframe-mode").selectOption("overlay");
-  await expect.poll(() => page.evaluate(() => window.__sceneSnapshot.objects.every(o => !o.wireframe && o.overlay && o.overlayCount === 1))).toBe(true);
-  assert.equal((await exported())["model.obj"], wireframeBaseline["model.obj"], "Overlay never changes OBJ geometry");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__sceneSnapshot.objects.every(
+          (o) => !o.wireframe && o.overlay && o.overlayCount === 1,
+        ),
+      ),
+    )
+    .toBe(true);
+  assert.equal(
+    (await exported())["model.obj"],
+    wireframeBaseline["model.obj"],
+    "Overlay never changes OBJ geometry",
+  );
   await page.locator("#wireframe-mode").selectOption("lines");
   await page.locator("#wireframe-mode").selectOption("overlay");
-  await expect.poll(() => page.evaluate(() => window.__sceneSnapshot.objects.every(o => o.overlayCount === 1))).toBe(true);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__sceneSnapshot.objects.every((o) => o.overlayCount === 1),
+      ),
+    )
+    .toBe(true);
   await page.locator("#wireframe-mode").selectOption("lines");
   await page.locator("#wireframe").uncheck();
   await expect
@@ -281,7 +300,11 @@ try {
     )
     .toBe(true);
   const initialNames = await page.locator(".object-row span").allTextContents();
-  assert.equal(new Set(initialNames).size, initialNames.length, "Imported object names are unique");
+  assert.equal(
+    new Set(initialNames).size,
+    initialNames.length,
+    "Imported object names are unique",
+  );
   const renamedObject = "Custom sculpture";
   await page.locator("#object-name").fill(renamedObject);
   await page.locator("#object-name").dispatchEvent("change");
@@ -293,13 +316,23 @@ try {
   await expect(page.locator("#selected-name")).toHaveText(renamedObject);
   await page.locator("#undo").click();
   await page.locator('[data-visibility="0"]').click();
-  await expect.poll(() => page.evaluate(() => window.__sceneSnapshot.objects[0].visible)).toBe(false);
+  await expect
+    .poll(() => page.evaluate(() => window.__sceneSnapshot.objects[0].visible))
+    .toBe(false);
   const hiddenExport = await exported();
-  assert.equal((hiddenExport["model.obj"].match(/^o /gm) || []).length, 1, "Hidden object is excluded from export");
+  assert.equal(
+    (hiddenExport["model.obj"].match(/^o /gm) || []).length,
+    1,
+    "Hidden object is excluded from export",
+  );
   await page.locator("#undo").click();
-  await expect.poll(() => page.evaluate(() => window.__sceneSnapshot.objects[0].visible)).toBe(true);
+  await expect
+    .poll(() => page.evaluate(() => window.__sceneSnapshot.objects[0].visible))
+    .toBe(true);
   await page.locator("#redo").click();
-  await expect.poll(() => page.evaluate(() => window.__sceneSnapshot.objects[0].visible)).toBe(false);
+  await expect
+    .poll(() => page.evaluate(() => window.__sceneSnapshot.objects[0].visible))
+    .toBe(false);
   await page.locator("#undo").click();
   const first = await exported();
   assert.match(first["model.obj"], /o Ring/);
@@ -622,15 +655,32 @@ try {
   await expect(page.locator("[data-curve-handle]")).toHaveCount(0);
   await page.locator("#curve-point-mode").selectOption("bezier");
   await exported();
-  const beforeInvalidProfile = await page.evaluate(() => window.__sceneSnapshot.objects.map(o => o.geometryId));
-  const invalidHandle = await page.locator('[data-curve-handle="in"]').boundingBox();
-  await page.mouse.move(invalidHandle.x + invalidHandle.width / 2, invalidHandle.y + invalidHandle.height / 2);
+  const beforeInvalidProfile = await page.evaluate(() =>
+    window.__sceneSnapshot.objects.map((o) => o.geometryId),
+  );
+  const invalidHandle = await page
+    .locator('[data-curve-handle="in"]')
+    .boundingBox();
+  await page.mouse.move(
+    invalidHandle.x + invalidHandle.width / 2,
+    invalidHandle.y + invalidHandle.height / 2,
+  );
   await page.mouse.down();
-  await page.mouse.move(invalidHandle.x + invalidHandle.width / 2, invalidHandle.y + invalidHandle.height / 2 - 80, { steps: 1 });
+  await page.mouse.move(
+    invalidHandle.x + invalidHandle.width / 2,
+    invalidHandle.y + invalidHandle.height / 2 - 80,
+    { steps: 1 },
+  );
   await page.mouse.up();
   await expect(page.locator("#message")).toHaveClass(/error/);
   await expect(page.locator("#message")).toContainText("戻らない");
-  assert.deepEqual(await page.evaluate(() => window.__sceneSnapshot.objects.map(o => o.geometryId)), beforeInvalidProfile, "Invalid continued profile preserves previously displayed geometry");
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window.__sceneSnapshot.objects.map((o) => o.geometryId),
+    ),
+    beforeInvalidProfile,
+    "Invalid continued profile preserves previously displayed geometry",
+  );
   await page.locator("#curve-point-mode").selectOption("linear");
   await expect(page.locator("#message")).not.toHaveClass(/error/);
   const storedCurve = await page.locator("#curve-path").getAttribute("d");
@@ -900,6 +950,28 @@ try {
   );
   const repeatedExport = await exported();
   assert.equal((repeatedExport["model.mtl"].match(/newmtl /g) || []).length, 8);
+  // Regression: axial slider at its maximum plus lateral slider at exactly
+  // its displayed maximum previously disabled the hollow-wall protection.
+  await page.locator("#hollow").check();
+  await page.locator("#bevelSize").fill("0.3");
+  const wallWidthMax = Number(
+    await page.locator('[data-range="bevelWidth"]').getAttribute("max"),
+  );
+  await page.locator("#bevelWidth").fill(String(wallWidthMax));
+  await expect
+    .poll(
+      async () =>
+        (await page.evaluate(() => window.__sceneSnapshot)).objects.at(-1)
+          .centralWallDepth,
+    )
+    .toBeGreaterThanOrEqual(0.3);
+  assert.ok(
+    (await page.evaluate(() => window.__sceneSnapshot)).objects.at(-1)
+      .effectiveBevelDepth <=
+      wallWidthMax + 1e-6,
+  );
+  const protectedHollow = await exported();
+  assert(!/NaN|Infinity/.test(protectedHollow["model.obj"]));
   await page.locator("#file").setInputFiles({
     name: "ridge-L.svg",
     mimeType: "image/svg+xml",
