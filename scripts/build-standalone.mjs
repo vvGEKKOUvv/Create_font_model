@@ -13,8 +13,9 @@ const css = await readFile(resolve(dist, stylesheet[1].replace(/^\//, '')), 'utf
 const svg = await readFile(resolve(root, 'public/sample.svg'), 'utf8');
 const sampleUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
 const sampleReference = /(["'`])\/sample\.svg\1/g;
-if (!sampleReference.test(javascript)) throw new Error('Sample reference was not found in the bundle.');
-javascript = javascript.replace(sampleReference, () => JSON.stringify(sampleUrl));
+if (sampleReference.test(javascript)) {
+  javascript = javascript.replace(sampleReference, () => JSON.stringify(sampleUrl));
+}
 html = html.replace(script[0], () => `<script type="module">${javascript.replace(/<\/script/gi, '<\\/script')}</script>`);
 html = html.replace(stylesheet[0], () => `<style>${css.replace(/<\/style/gi, '<\\/style')}</style>`);
 const target = process.argv[2] ? resolve(process.argv[2]) : resolve(dist, 'PathForm.html');

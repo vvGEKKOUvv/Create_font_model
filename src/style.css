@@ -827,18 +827,50 @@ h3 span {
 }
 
 /* A single settings sidebar leaves the central view available for 3D or UV. */
+.right-panel .field:not(.compact) {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) 62px;
+  gap: 8px;
+  margin-top: 11px;
+}
+.right-panel .field:not(.compact) input[type="range"] {
+  grid-column: auto;
+  margin: 0;
+  height: 3px;
+}
+.right-panel .field:not(.compact) input[type="number"] {
+  padding: 4px 6px;
+}
+.right-panel #dropzone {
+  display: flex;
+  flex-direction: row;
+  padding: 5px 10px;
+  gap: 8px;
+  margin-top: 8px;
+  min-height: 32px;
+}
+.right-panel #dropzone strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.right-panel .object-row {
+  padding: 6px 8px;
+  margin: 3px 0;
+  gap: 8px;
+}
+.right-panel .object-row small {
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 8px;
+}
 [hidden] {
   display: none !important;
 }
-.right-panel #dropzone {
-  margin-top: 10px;
-  padding: 9px 12px;
-  display: grid;
-  grid-template-columns: 24px 1fr;
-  gap: 3px 10px;
-  text-align: left;
-  align-items: center;
-}
+
 .right-panel #dropzone .upload-icon {
   grid-row: 1/4;
   font-size: 20px;

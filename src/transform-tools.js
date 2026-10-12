@@ -53,7 +53,7 @@ export function createTransformTools({
           `<div class="transform-fields"><span>${{ position: "位置", rotation: "回転 °", scale: "スケール" }[kind]}</span>${axes.map((axis) => `<label><input id="${kind}-${axis}" type="number" step="${kind === "rotation" ? 1 : 0.1}" ${kind === "scale" ? 'min="0.01"' : ""} value="${kind === "scale" ? 1 : 0}" aria-label="${kind} ${axis}"></label>`).join("")}</div>`,
       )
       .join("") +
-    '<button id="transform-reset" class="subtle">位置・回転・スケールをリセット</button><p class="control-note">3D画面の軸・リング・ハンドルをドラッグ。位置は読み込み時からの移動量です。W / E / R で切替。</p></div>';
+    '<button id="transform-reset" class="subtle">位置・回転・スケールをリセット</button></div>';
   (
     document.getElementById("objects-details") ||
     document.getElementById("selected-name")

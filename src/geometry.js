@@ -333,9 +333,13 @@ export function buildMesh(shape, settings = {}) {
       bevel *= 0.5;
     }
     if (bevel < EPS || !safeBevel) bevel = 0;
-    if (bevel + EPS < originalBevel)
+    if (originalBevel > depth / 2 + EPS)
+      localWarnings.push("ベベルの奥行きを押し出しの半分に制限しました。");
+    if (bevel + EPS < Math.min(originalBevel, depth / 2))
       localWarnings.push(
-        "深さ・細い輪郭・交差を考慮し、ベベル幅を安全側に縮小しました。",
+        bevel > 0
+          ? "細い輪郭・交差を考慮し、ベベル幅を安全側に縮小しました。ベベルの奥行きは保持しています。"
+          : "輪郭の交差を避けられないため、ベベルを無効にしました。",
       );
     variant = {
       rings,
@@ -350,6 +354,11 @@ export function buildMesh(shape, settings = {}) {
   }
   rings = variant.rings;
   const { box, bevel, effectiveWallThickness } = variant;
+  // Inset safety restricts the lateral width, independently of axial reach.
+  const bevelHeight =
+    bevel > 0
+      ? Math.min(Math.max(0, Number(settings.bevelSize) || 0), depth / 2)
+      : 0;
   warnings.push(...variant.warnings);
   const segments = Math.max(
     1,
@@ -393,16 +402,16 @@ export function buildMesh(shape, settings = {}) {
   ].sort((a, b) => a - b);
   const levels = bevel
     ? samples.map((t) => ({
-        z: bevel * t,
+        z: bevelHeight * t,
         inset: bevel * (1 - profile(t)),
       }))
     : [{ z: 0, inset: 0 }];
-  if (depth - bevel - levels.at(-1).z > EPS)
-    levels.push({ z: depth - bevel, inset: 0 });
+  if (depth - bevelHeight - levels.at(-1).z > EPS)
+    levels.push({ z: depth - bevelHeight, inset: 0 });
   if (bevel)
     for (let i = samples.length - 2; i >= 0; i--)
       levels.push({
-        z: depth - bevel * samples[i],
+        z: depth - bevelHeight * samples[i],
         inset: bevel * (1 - profile(samples[i])),
       });
   const positions = [],
@@ -547,6 +556,7 @@ export function buildMesh(shape, settings = {}) {
   geometry.userData = {
     warnings,
     effectiveBevel: bevel,
+    effectiveBevelDepth: bevelHeight,
     effectiveWallThickness,
     originalCount: prepared.originalCount,
     reducedCount: prepared.reducedCount,

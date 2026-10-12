@@ -36,7 +36,7 @@ export function normalizeProfile(input) {
         p.y < 0 ||
         p.y > 1 ||
         !["linear", "bezier"].includes(p.mode) ||
-        (i && (p.x <= points[i - 1].x || p.y < points[i - 1].y)),
+        (i && p.x <= points[i - 1].x),
     ) ||
     Math.abs(points[0].x) > 1e-7 ||
     Math.abs(points[0].y) > 1e-7 ||
@@ -44,7 +44,7 @@ export function normalizeProfile(input) {
     Math.abs(points.at(-1).y - 1) > 1e-7
   )
     throw new Error(
-      "ベベルカーブは両端 (0,0)・(1,1) と単調増加の頂点が必要です。",
+      "ベベルカーブは両端 (0,0)・(1,1) と高さ順の頂点と 0〜1 の範囲が必要です。",
     );
   points[0].x = points[0].y = 0;
   points.at(-1).x = points.at(-1).y = 1;
@@ -56,7 +56,7 @@ export function normalizeProfile(input) {
       throw new Error("ベジェハンドルには有限の数値を指定してください。");
     return {
       x: clamp(raw ? Number(raw.x) : mix(a.x, b.x, fraction), a.x, b.x),
-      y: clamp(raw ? Number(raw.y) : mix(a.y, b.y, fraction), a.y, b.y),
+      y: clamp(raw ? Number(raw.y) : mix(a.y, b.y, fraction), 0, 1),
     };
   };
   for (let i = 0; i < points.length; i++) {
@@ -67,7 +67,7 @@ export function normalizeProfile(input) {
         ? handle(p.out, p, points[i + 1], 1 / 3)
         : { x: p.x, y: p.y };
   }
-  // Ordered controls keep x and y monotonic, including mixed segment modes.
+  // Ordered x controls keep height invertible; y may form recessed profiles.
   for (let i = 0; i < points.length - 1; i++) {
     const a = points[i],
       b = points[i + 1];
@@ -79,7 +79,7 @@ export function normalizeProfile(input) {
       b.mode === "bezier"
         ? b.in
         : { x: mix(a.x, b.x, 2 / 3), y: mix(a.y, b.y, 2 / 3) };
-    for (const axis of ["x", "y"])
+    for (const axis of ["x"])
       if (left[axis] > right[axis]) {
         if (a.mode === "bezier" && b.mode === "bezier")
           left[axis] = right[axis] = (left[axis] + right[axis]) / 2;

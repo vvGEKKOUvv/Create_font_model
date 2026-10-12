@@ -5,12 +5,12 @@ import {
 } from "./bevel-profile.js";
 export function createBevelEditor(host, { getObject, onChange }) {
   host.classList.add("bevel-editor");
-  host.innerHTML = `<div class="curve-tools"><button id="curve-add">＋ 頂点を追加</button><button id="curve-delete">頂点を削除</button><button id="curve-expand">拡大 ↗</button><label>選択頂点 <select id="curve-point-mode"><option value="linear">リニア</option><option value="bezier">ベジェ</option></select></label></div><svg viewBox="0 0 480 280" tabindex="0" role="group" aria-label="ベベル曲線エディター"></svg><div class="curve-labels"><span>側面 → 表面（高さ）</span><span>ベベル幅 ↑</span></div><p class="curve-help">ダブルクリックで頂点追加 · 頂点／ハンドルをドラッグ<br>矢印キーで移動 · Deleteで削除（両端位置は固定）</p>`;
+  host.innerHTML = `<div class="curve-tools"><button id="curve-add">＋ 頂点を追加</button><button id="curve-delete">頂点を削除</button><button id="curve-expand">拡大 ↗</button><label>選択頂点 <select id="curve-point-mode"><option value="linear">リニア</option><option value="bezier">ベジェ</option></select></label></div><svg viewBox="0 0 480 280" tabindex="0" role="group" aria-label="ベベル曲線エディター"></svg><div class="curve-labels"><span>側面 → 表面（高さ）</span><span>ベベル幅 ↑</span></div><p class="curve-help">クリックで頂点追加 · 頂点／ハンドルをドラッグ<br>矢印キーで移動 · Delで削除（両端位置は固定）</p>`;
   const svg = host.querySelector("svg"),
     mode = host.querySelector("select"),
     add = host.querySelector("#curve-add"),
     del = host.querySelector("#curve-delete");
-  svg.setAttribute('preserveAspectRatio', 'none');
+  svg.setAttribute("preserveAspectRatio", "none");
   let selected = 1,
     objectId = null,
     drag = null;
@@ -88,7 +88,7 @@ export function createBevelEditor(host, { getObject, onChange }) {
           p[selected - 1].x + 0.01,
           p[selected + 1].x - 0.01,
         ),
-        y = clamp(pos.y, p[selected - 1].y, p[selected + 1].y),
+        y = clamp(pos.y),
         dx = x - v.x,
         dy = y - v.y;
       for (const h of ["in", "out"])
@@ -112,7 +112,7 @@ export function createBevelEditor(host, { getObject, onChange }) {
     const x = clamp(pos.x, 0.01, 0.99),
       i = p.findIndex((v) => v.x > x);
     if (i < 1 || x - p[i - 1].x < 0.01 || p[i].x - x < 0.01) return;
-    p.splice(i, 0, { x, y: clamp(pos.y, p[i - 1].y, p[i].y), mode: "linear" });
+    p.splice(i, 0, { x, y: clamp(pos.y), mode: "linear" });
     selected = i;
     save(p);
   }
@@ -123,22 +123,31 @@ export function createBevelEditor(host, { getObject, onChange }) {
     selected = Math.min(selected, p.length - 2);
     save(p);
   }
-  add.onclick = () => insert();
-  del.onclick = remove;
+  add.onclick = () => {
+    insert();
+    svg.focus();
+  };
+  del.onclick = () => {
+    remove();
+    svg.focus();
+  };
   mode.onchange = () => {
     const p = points();
     p[selected].mode = mode.value;
     save(p);
-  };
-  svg.ondblclick = (e) => {
-    if (!e.target.closest("[data-curve-handle]")) insert(coords(e));
+    svg.focus();
   };
   svg.onpointerdown = (e) => {
     if (!getObject()) return;
     const hit = e.target.closest("[data-curve-point]"),
       handle = e.target.closest("[data-curve-handle]");
     if (hit) selected = Number(hit.dataset.curvePoint);
-    if (!hit && !handle) return;
+    if (!hit && !handle) {
+      insert(coords(e));
+      svg.focus();
+      e.preventDefault();
+      return;
+    }
     drag = { handle: handle?.dataset.curveHandle };
     svg.setPointerCapture(e.pointerId);
     svg.focus();

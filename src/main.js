@@ -37,14 +37,13 @@ app.innerHTML = `
     <div id="view-3d" class="workspace-view" role="tabpanel" aria-labelledby="tab-3d">
       <div class="viewport-heading"><span><i class="live-dot"></i> LIVE PREVIEW</span><button id="fit" class="subtle">⊡ 全体表示</button></div>
       <div id="viewport"></div>
-      <div class="view-caption"><span>ドラッグで回転 · スクロールでズーム · 右ドラッグで移動</span><span id="mesh-info">—</span></div>
+      <div class="view-caption"><span id="mesh-info">—</span></div>
     </div>
     <div id="view-uv" class="workspace-view" role="tabpanel" aria-labelledby="tab-uv" hidden>
       <div class="uv-panel">
         <div class="uv-heading"><span>UV MAP <small>展開・調整</small></span><span class="tiny-label">UV 座標を確認</span></div>
         <canvas id="uv-canvas" width="700" height="600" aria-label="UV 展開。頂点編集を有効にして頂点をドラッグ"></canvas>
       </div>
-      <div class="view-caption">右側の UV 設定で頂点編集を有効にすると、頂点をドラッグできます。</div>
     </div>
     <div id="message" role="status"></div>
   </section>
@@ -52,23 +51,20 @@ app.innerHTML = `
     <details class="control-section" open>
       <summary>パスの読み込み <span>SOURCE</span></summary>
       <label class="dropzone" id="dropzone">
-        <input type="file" id="file" accept=".svg,image/svg+xml" hidden/>
+        <input type="file" id="file" accept=".svg,image/svg+xml" multiple hidden/>
         <span class="upload-icon"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 15v6h16v-6"/></svg></span>
-        <strong>SVG をドロップ</strong><span>またはクリックして選択</span><small>Illustrator：SVG 形式で保存</small>
+        <strong>SVG を追加</strong>
       </label>
-      <button class="sample-button" id="sample">◈ サンプルを読み込む <span>↗</span></button>
-      <p class="control-note">閉じた SVG パス・複合パスに対応。<br>文字はアウトライン化してください。</p>
-    </details>
-    <details class="control-section" id="reduction-settings" open>
-      <summary>パスのリダクション <span>REDUCTION</span></summary>
-      ${field("reductionTolerance", "許容誤差", 0, 0, 5, 0.01)}
-      <p id="reduction-info" class="control-note">—</p>
-      <p class="control-note">大きい値ほど頂点を削減します。SVG座標の単位です。0は直線上の不要頂点のみ整理。角と穴を保護し、危険な削減は自動制限します。</p>
     </details>
     <details id="objects-details" class="control-section" open>
       <summary>オブジェクト選択 <span id="object-count">0</span></summary>
       <div id="objects"></div>
       <div class="selection-heading"><p id="selected-name" class="muted">オブジェクトを選択</p><button id="reset" class="subtle">リセット ↺</button></div>
+    </details>
+    <details class="control-section" id="reduction-settings" open>
+      <summary>パスのリダクション <span>REDUCTION</span></summary>
+      ${field("reductionTolerance", "許容誤差", 0, 0, 5, 0.01)}
+      <p id="reduction-info" class="control-note">—</p>
     </details>
     <details class="control-section" open>
       <summary>押し出し <span>EXTRUDE</span></summary>
@@ -76,12 +72,11 @@ app.innerHTML = `
     </details>
     <details class="control-section" open>
       <summary>ベベル <span>BEVEL</span></summary>
-      ${field("bevelSize", "幅", 3, 0, 20, 0.1)}
+      ${field("bevelSize", "範囲", 3, 0, 12, 0.1)}
       ${field("bevelSegments", "分割数", 5, 1, 16, 1)}
       <p id="geometry-status" class="control-note"></p>
       <div class="curve-display"></div>
       <label class="toggle-row"><span>尖った角を保持</span><input id="sharpCorners" type="checkbox" checked/><i></i></label>
-      <p class="control-note">ベベル幅は輪郭に合わせて自動制限。<br>細い形状では小さい値を推奨します。</p>
     </details>
     <details class="control-section" open>
       <summary>内側をくり抜く <span>HOLLOW</span></summary>
@@ -91,7 +86,6 @@ app.innerHTML = `
     <details class="control-section" open>
       <summary>マテリアル <span>MATERIAL</span></summary>
       <label class="color-row"><input type="color" id="color" value="#b6ee75"/><span id="color-value">#B6EE75</span><span class="muted">カラー</span></label>
-      <p class="control-note">OBJ + MTL として出力。<br>オブジェクトごとのカラーを保存します。</p>
     </details>
     <details id="uv-settings" class="control-section" open>
       <summary>UV 設定 <span>UV MAP</span></summary>
@@ -107,7 +101,7 @@ app.innerHTML = `
   </aside>
 </main>`;
 function field(id, label, value, min, max, step, range = true) {
-  return `<label class="field ${range ? "" : "compact"}"><span>${label}</span><input id="${id}" type="number" min="${min}" max="${max}" step="${step}" value="${value}"/>${range ? `<input data-range="${id}" type="range" min="${min}" max="${max}" step="${step}" value="${value}"/>` : ""}</label>`;
+  return `<label class="field ${range ? "" : "compact"}"><span>${label}</span>${range ? `<input data-range="${id}" type="range" min="${min}" max="${max}" step="${step}" value="${value}"/>` : ""}<input id="${id}" type="number" min="${min}" max="${max}" step="${step}" value="${value}"/></label>`;
 }
 const scene = new THREE.Scene();
 scene.background = new THREE.Color("#171b20");
@@ -137,6 +131,7 @@ grid.position.y = -85;
 scene.add(grid);
 const group = new THREE.Group();
 scene.add(group);
+let fileSequence = 0;
 let objects = [],
   selected = 0;
 const $ = (id) => document.getElementById(id);
@@ -245,7 +240,7 @@ function updateGeometryInfo() {
   $("reduction-info").textContent =
     `${before.toLocaleString()} → ${after.toLocaleString()} 頂点（${before ? ((1 - after / before) * 100).toFixed(1) : 0}% 削減）`;
   $("geometry-status").textContent =
-    `実際のベベル幅：${Number(data.effectiveBevel || 0).toPrecision(3)}` +
+    `奥行方向：${Number(data.effectiveBevelDepth || 0).toPrecision(3)} / 輪郭幅：${Number(data.effectiveBevel || 0).toPrecision(3)}` +
     (selectedObject()?.settings.hollow
       ? ` / 壁厚：${Number(data.effectiveWallThickness || 0).toPrecision(3)}`
       : "");
@@ -350,7 +345,7 @@ function list() {
   $("objects").innerHTML = objects
     .map(
       (o, i) =>
-        `<button class="object-row ${selected === i ? "active" : ""}" data-object="${i}"><i style="background:${safeColor(o.color)}"></i><span>${escapeHTML(o.name)}</span><small>↗</small></button>`,
+        `<button class="object-row ${selected === i ? "active" : ""}" data-object="${i}"><i style="background:${safeColor(o.color)}"></i><span>${escapeHTML(o.name)}</span><small title="${escapeHTML(o.sourceName || "")}">${escapeHTML(o.sourceName || "")}</small></button>`,
     )
     .join("");
   document.querySelectorAll("[data-object]").forEach(
@@ -392,6 +387,7 @@ function sync() {
   });
   $("color").value = safeColor(o.color);
   $("color-value").textContent = o.color.toUpperCase();
+  syncBevelLimit();
   curveDraw();
   updateGeometryInfo();
 }
@@ -413,29 +409,37 @@ function curveDraw() {
 }
 async function load(text, name) {
   try {
-    const parsed = parseSvg(text);
-    if (!parsed.objects.length)
-      throw new Error(
-        "閉じたパスが見つかりません。文字はアウトライン化して SVG に保存してください。",
-      );
+    const parsed = parseSvg(text),
+      source = ++fileSequence;
     const next = parsed.objects.map((o, i) => ({
       ...o,
+      id: `file-${source}-${o.id}`,
+      sourceName: name,
       name: o.name || `パス ${i + 1}`,
       color: safeColor(o.color),
       settings: initialSettings(o.shape),
     }));
     const meshes = makeMeshes(next);
-    clearTimeout(rebuildTimer);
-    pendingObjects.clear();
-    objects = next;
-    selected = 0;
+    flushPending();
+    const first = objects.length === 0,
+      index = objects.length;
+    objects.push(...next);
+    selected = index;
     uvSelectedKey = null;
     uvDragKey = null;
+    meshes.forEach((mesh) => group.add(mesh));
+    if (first) {
+      group.position.set(0, 0, 0);
+      group.position.sub(
+        new THREE.Box3().setFromObject(group).getCenter(new THREE.Vector3()),
+      );
+      fit();
+    }
     list();
     sync();
-    rebuild(meshes);
-    fit();
-    if (parsed.warnings?.length) notice(parsed.warnings.join(" / "));
+    transformTools.sync();
+    refreshMeshInfo();
+    if (parsed.warnings.length) notice(parsed.warnings.join(" / "));
     $("dropzone").classList.add("loaded");
     $("dropzone").querySelector("strong").textContent = name;
   } catch (e) {
@@ -457,7 +461,19 @@ async function read(file) {
   }
   await load(await file.text(), file.name);
 }
-$("file").onchange = (e) => read(e.target.files[0]);
+let importQueue = Promise.resolve();
+function enqueueFiles(files) {
+  const added = Array.from(files);
+  importQueue = importQueue
+    .then(async () => {
+      for (const file of added) await read(file);
+    })
+    .catch((e) => notice(e.message, true));
+}
+$("file").onchange = (e) => {
+  enqueueFiles(e.target.files);
+  e.target.value = "";
+};
 $("dropzone").ondragover = (e) => {
   e.preventDefault();
   $("dropzone").classList.add("dragging");
@@ -466,17 +482,22 @@ $("dropzone").ondragleave = () => $("dropzone").classList.remove("dragging");
 $("dropzone").ondrop = (e) => {
   e.preventDefault();
   $("dropzone").classList.remove("dragging");
-  read(e.dataTransfer.files[0]);
+  enqueueFiles(e.dataTransfer.files);
 };
-$("sample").onclick = async () => {
-  try {
-    const response = await fetch("/sample.svg");
-    if (!response.ok) throw new Error("サンプルを取得できません。");
-    await load(await response.text(), "sample.svg");
-  } catch (e) {
-    notice(e.message, true);
+function syncBevelLimit() {
+  const o = selectedObject();
+  if (!o) return;
+  const maximum = o.settings.depth / 2;
+  o.settings.bevelSize = Math.min(o.settings.bevelSize, maximum);
+  for (const el of [
+    $("bevelSize"),
+    document.querySelector('[data-range="bevelSize"]'),
+  ]) {
+    el.max = maximum;
+    el.step = maximum / 1000;
+    el.value = o.settings.bevelSize;
   }
-};
+}
 Object.keys(defaults).forEach((key) => {
   const input = $(key);
   input.oninput = () => {
@@ -493,6 +514,7 @@ Object.keys(defaults).forEach((key) => {
       const range = document.querySelector(`[data-range="${key}"]`);
       if (range) range.value = o.settings[key];
     }
+    if (key === "depth") syncBevelLimit();
     const clearedUV = !key.startsWith("uv") && clearShapeUV(o);
     if (key.startsWith("uv")) {
       updateUV(o);
@@ -553,7 +575,7 @@ $("export").onclick = () => {
       const mesh = group.children[i];
       mesh.updateMatrix();
       return {
-        name: o.name,
+        name: `${o.name}_${i + 1}`,
         color: o.color,
         geometry: mesh.geometry,
         matrix: mesh.matrix,
@@ -797,4 +819,5 @@ function animate() {
   }
 }
 animate();
-$("sample").click();
+transformTools.sync();
+refreshMeshInfo();

@@ -88,6 +88,13 @@ try {
     });
   });
   await page.goto("http://127.0.0.1:5184");
+  await expect(page.locator("#object-count")).toHaveText("0");
+  await expect(page.locator("#sample")).toHaveCount(0);
+  await page.locator("#file").setInputFiles({
+    name: "sample.svg",
+    mimeType: "image/svg+xml",
+    buffer: await readFile(new URL("../public/sample.svg", import.meta.url)),
+  });
   await expect(page.locator("#object-count")).toHaveText("2");
   await expect(page.locator("#viewport canvas")).toBeVisible();
   await expect(page.locator(".left-panel")).toHaveCount(0);
@@ -97,6 +104,24 @@ try {
     "Import area is compact",
   );
   await expect(page.locator(".right-panel #objects")).toHaveCount(1);
+  assert(
+    await page
+      .locator(".right-panel details")
+      .evaluateAll((ds) => ds[1].id === "objects-details"),
+    "Object selection immediately follows import",
+  );
+  const depthRange = await page.locator('[data-range="depth"]').boundingBox();
+  const depthInput = await page.locator("#depth").boundingBox();
+  assert(
+    depthRange.x + depthRange.width <= depthInput.x &&
+      Math.abs(
+        depthRange.y +
+          depthRange.height / 2 -
+          depthInput.y -
+          depthInput.height / 2,
+      ) < 2,
+    "Slider and numeric input share compact row, input on right",
+  );
   await expect(
     page.getByText("パスから、かたちへ。", { exact: true }),
   ).toHaveCount(0);
@@ -185,7 +210,17 @@ try {
     page.on("download", collect);
     try {
       await page.locator("#export").click();
-      await expect.poll(() => downloads.length).toBe(2);
+      await expect
+        .poll(async () => {
+          if (
+            await page
+              .locator("#message")
+              .evaluate((el) => el.classList.contains("error"))
+          )
+            throw new Error(await page.locator("#message").textContent());
+          return downloads.length;
+        })
+        .toBe(2);
       const result = {};
       for (const download of downloads) {
         const name = download.suggestedFilename();
@@ -280,6 +315,22 @@ try {
   await expect(page.locator("#depth")).toHaveValue("24");
   await page.locator('[data-object="1"]').click();
   await expect(page.locator("#depth")).toHaveValue("40");
+  await expect(page.locator('[data-range="bevelSize"]')).toHaveAttribute(
+    "max",
+    "20",
+  );
+  await page.locator('[data-range="bevelSize"]').evaluate((el) => {
+    el.value = el.max;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await expect(page.locator("#bevelSize")).toHaveValue("20");
+  await expect(page.locator("#geometry-status")).toContainText(
+    /奥行方向：20(?:\.0+)? \//,
+  );
+  await page.locator("#bevelSize").fill("3");
+  await expect(page.locator("#geometry-status")).toContainText(
+    "奥行方向：3.00",
+  );
   const initialTransforms = await page.evaluate(() => window.__sceneSnapshot);
   await page.locator("#position-x").fill("12");
   await page.locator("#rotation-z").fill("35");
@@ -404,7 +455,7 @@ try {
   const points = page.locator("circle[data-curve-point]");
   await expect(points).toHaveCount(3);
   const curveBox = await curve.boundingBox();
-  await curve.dblclick({
+  await curve.click({
     position: { x: curveBox.width * 0.7, y: curveBox.height * 0.35 },
   });
   await expect(points).toHaveCount(4);
@@ -478,6 +529,30 @@ try {
   await curve.focus();
   await page.keyboard.press("Delete");
   await expect(points).toHaveCount(3);
+  const exactBox = await curve.boundingBox();
+  await curve.click({
+    position: {
+      x: (exactBox.width * (30 + 0.7 * 420)) / 480,
+      y: (exactBox.height * (245 - 0.1 * 215)) / 280,
+    },
+  });
+  await expect(points).toHaveCount(4);
+  const exactAdded = page.locator("circle[data-curve-point].selected");
+  assert(
+    Math.abs(Number(await exactAdded.getAttribute("cx")) - (30 + 0.7 * 420)) <
+      1.5,
+    "Click preserves requested X",
+  );
+  assert(
+    Math.abs(Number(await exactAdded.getAttribute("cy")) - (245 - 0.1 * 215)) <
+      1.5,
+    "Click preserves Y below prior vertex",
+  );
+  await page.keyboard.press("Delete");
+  await expect(points).toHaveCount(3);
+  const beforeAppend = await page.evaluate(() => window.__sceneSnapshot);
+  const oldProfile = await page.locator("#curve-path").getAttribute("d");
+  await page.locator("#position-x").fill("7");
   await page.locator("#file").setInputFiles({
     name: "rectangle.svg",
     mimeType: "image/svg+xml",
@@ -485,7 +560,29 @@ try {
       '<svg xmlns="http://www.w3.org/2000/svg"><path id="Box" d="M0 0H100V100H0Z"/></svg>',
     ),
   });
-  await expect(page.locator("#object-count")).toHaveText("1");
+  await expect(page.locator("#object-count")).toHaveText("3");
+  const afterAppend = await page.evaluate(() => window.__sceneSnapshot);
+  assert.deepEqual(
+    afterAppend.objects[0],
+    beforeAppend.objects[0],
+    "Import preserves prior geometry and world position",
+  );
+  assert.deepEqual(
+    afterAppend.camera,
+    beforeAppend.camera,
+    "Appending preserves camera",
+  );
+  assert.deepEqual(
+    afterAppend.target,
+    beforeAppend.target,
+    "Appending preserves orbit origin",
+  );
+  await page.locator('[data-object="1"]').click();
+  await expect(page.locator("#position-x")).toHaveValue("7");
+  await expect(page.locator("#color")).toHaveValue("#ff0000");
+  assert.equal(await page.locator("#curve-path").getAttribute("d"), oldProfile);
+  await page.locator('[data-object="2"]').click();
+  await expect(page.locator("#position-x")).toHaveValue("0");
   await page.locator("#hollow").check();
   await expect(page.locator("#message")).not.toHaveClass(/error/);
   const hollow = await exported();
@@ -548,7 +645,7 @@ try {
     ),
   });
   await expect(page.locator("#message")).toHaveClass(/error/);
-  await expect(page.locator("#object-count")).toHaveText("1");
+  await expect(page.locator("#object-count")).toHaveText("3");
   await expect(page.locator("#selected-name")).toHaveText("Box");
   const orbitBox = await page.locator("#viewport canvas").boundingBox();
   await page.mouse.move(orbitBox.x + 30, orbitBox.y + 40);
@@ -577,28 +674,26 @@ try {
       const a = (i * Math.PI * 2) / 400;
       return `${i ? "L" : "M"}${100 + 100 * Math.cos(a)} ${100 + 100 * Math.sin(a)}`;
     }).join(" ") + "Z";
-  await page
-    .locator("#file")
-    .setInputFiles({
-      name: "dense-curve.svg",
-      mimeType: "image/svg+xml",
-      buffer: Buffer.from(
-        `<svg xmlns="http://www.w3.org/2000/svg"><path id="Dense" d="${densePath}"/></svg>`,
-      ),
-    });
-  await expect(page.locator("#object-count")).toHaveText("1");
+  await page.locator("#file").setInputFiles({
+    name: "dense-curve.svg",
+    mimeType: "image/svg+xml",
+    buffer: Buffer.from(
+      `<svg xmlns="http://www.w3.org/2000/svg"><path id="Dense" d="${densePath}"/></svg>`,
+    ),
+  });
+  await expect(page.locator("#object-count")).toHaveText("4");
   await expect(page.locator("#message")).not.toHaveClass(/error/);
   await expect(page.locator("#reduction-info")).toContainText("400");
   const unreduced = await exported();
   await page.locator("#reductionTolerance").fill("0.5");
   const reduced = await exported();
   assert(
-    lines(reduced["model.obj"], "v ").length <
-      lines(unreduced["model.obj"], "v ").length / 2,
+    lines(reduced["model.obj"].split("o Dense_4\n")[1], "v ").length <
+      lines(unreduced["model.obj"].split("o Dense_4\n")[1], "v ").length / 2,
     "Reduction parameter reduces exported mesh complexity",
   );
   assert(!/NaN|Infinity/.test(reduced["model.obj"]));
-  await expect(page.locator("#geometry-status")).toContainText("ベベル");
+  await expect(page.locator("#geometry-status")).toContainText("奥行方向");
   await page.locator("#hollow").check();
   await page.locator("#wallThickness").fill("150");
   const narrow = await exported();
@@ -610,17 +705,15 @@ try {
       const a = (i * Math.PI * 2) / 3200;
       return `${i ? "L" : "M"}${100 + 100 * Math.cos(a)} ${100 + 100 * Math.sin(a)}`;
     }).join(" ") + "Z";
-  await page
-    .locator("#file")
-    .setInputFiles({
-      name: "3200-points.svg",
-      mimeType: "image/svg+xml",
-      buffer: Buffer.from(
-        `<svg xmlns="http://www.w3.org/2000/svg"><path id="Huge" d="${hugePath}"/></svg>`,
-      ),
-    });
+  await page.locator("#file").setInputFiles({
+    name: "3200-points.svg",
+    mimeType: "image/svg+xml",
+    buffer: Buffer.from(
+      `<svg xmlns="http://www.w3.org/2000/svg"><path id="Huge" d="${hugePath}"/></svg>`,
+    ),
+  });
   await expect(page.locator("#selected-name")).toHaveText("Huge");
-  await expect(page.locator("#object-count")).toHaveText("1");
+  await expect(page.locator("#object-count")).toHaveText("5");
   await expect(page.locator("#message")).not.toHaveClass(/error/);
   assert(
     Number(await page.locator("#reductionTolerance").inputValue()) > 0,
@@ -631,15 +724,13 @@ try {
   );
   assert.equal(Number(hugeStats[1].replaceAll(",", "")), 3200);
   assert(Number(hugeStats[2].replaceAll(",", "")) <= 3000);
-  await page
-    .locator("#file")
-    .setInputFiles({
-      name: "tiny.svg",
-      mimeType: "image/svg+xml",
-      buffer: Buffer.from(
-        '<svg xmlns="http://www.w3.org/2000/svg"><path id="Tiny" d="M0 0H2V2H0Z"/></svg>',
-      ),
-    });
+  await page.locator("#file").setInputFiles({
+    name: "tiny.svg",
+    mimeType: "image/svg+xml",
+    buffer: Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg"><path id="Tiny" d="M0 0H2V2H0Z"/></svg>',
+    ),
+  });
   await expect(page.locator("#selected-name")).toHaveText("Tiny");
   assert(
     Math.abs(Number(await page.locator("#depth").inputValue()) - 0.6) < 1e-8,
@@ -656,6 +747,30 @@ try {
   const tiny = await exported();
   await expect(page.locator("#message")).not.toHaveClass(/error/);
   assert(!/NaN|Infinity/.test(tiny["model.obj"]));
+  const beforeRepeated = await page.evaluate(
+    () => window.__sceneSnapshot.objects,
+  );
+  const repeatedFile = {
+    name: "tiny.svg",
+    mimeType: "image/svg+xml",
+    buffer: Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg"><path id="Tiny" d="M0 0H2V2H0Z"/></svg>',
+    ),
+  };
+  await page.locator("#file").setInputFiles(repeatedFile);
+  await expect(page.locator("#object-count")).toHaveText("7");
+  await page.locator("#file").setInputFiles(repeatedFile);
+  await expect(page.locator("#object-count")).toHaveText("8");
+  const afterRepeated = await page.evaluate(
+    () => window.__sceneSnapshot.objects,
+  );
+  assert.deepEqual(
+    afterRepeated.slice(0, 6),
+    beforeRepeated,
+    "Repeated same-name path IDs preserve earlier objects",
+  );
+  const repeatedExport = await exported();
+  assert.equal((repeatedExport["model.mtl"].match(/newmtl /g) || []).length, 8);
   await page.setViewportSize({ width: 390, height: 844 });
   await expect
     .poll(() =>
@@ -666,7 +781,7 @@ try {
     .toBe(true);
   assert.deepEqual(errors, []);
   console.log(
-    "Browser smoke passed: collapsible right sidebar, 3D/UV tabs, reduced orbit inertia, WebGL, SVG import, selected-object transform controls and actual gizmo drag, transform persistence/export, enlarged curve editor, per-vertex linear/Bezier and handle drag, UV transforms and vertex drag/reset, material, hollow, OBJ/MTL downloads, invalid input preservation, mobile layout, selected-only/debounced rebuilds, UV/material geometry reuse, reduction and automatic wall safety.",
+    "Browser smoke passed: empty startup, additive and repeated imports, previous object/camera persistence, maximum bevel axial reach, slim sidebar controls, single-click curve insertion, Delete removal, collapsible right sidebar, 3D/UV tabs, reduced orbit inertia, WebGL, SVG import, selected-object transform controls and actual gizmo drag, transform persistence/export, enlarged curve editor, per-vertex linear/Bezier and handle drag, UV transforms and vertex drag/reset, material, hollow, OBJ/MTL downloads, invalid input preservation, mobile layout, selected-only/debounced rebuilds, UV/material geometry reuse, reduction and automatic wall safety.",
   );
 } finally {
   if (browser) await browser.close();

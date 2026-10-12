@@ -747,3 +747,50 @@ test("in-place UV updates match full builds and restore original UVs without rep
   assert.deepEqual(Array.from(position.array), positions);
   assert.deepEqual(Array.from(normal.array), normals);
 });
+
+test("maximum bevel reaches extrusion middle while narrow walls retain safe lateral inset", () => {
+  const shape = parseSvg(
+    '<svg xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M0 0H40V40H0Z M1 1V39H39V1Z"/></svg>',
+  ).objects[0].shape;
+  const geometry = buildMesh(shape, {
+    depth: 24,
+    bevelSize: 12,
+    bevelSegments: 5,
+    sharpCorners: true,
+  });
+  assert.equal(geometry.userData.effectiveBevelDepth, 12);
+  assert(
+    geometry.userData.effectiveBevel > 0 &&
+      geometry.userData.effectiveBevel <= 0.5,
+  );
+  for (const name of ["position", "normal", "uv"])
+    assert(Array.from(geometry.attributes[name].array).every(Number.isFinite));
+  const triangles = triangleVertices(geometry);
+  const edges = new Map();
+  const key = (p) => p.map((v) => v.toFixed(5)).join(",");
+  let middleCount = 0;
+  for (const tri of triangles) {
+    const [a, b, c] = tri;
+    const ab = b.map((v, i) => v - a[i]),
+      ac = c.map((v, i) => v - a[i]);
+    assert(
+      Math.hypot(
+        ab[1] * ac[2] - ab[2] * ac[1],
+        ab[2] * ac[0] - ab[0] * ac[2],
+        ab[0] * ac[1] - ab[1] * ac[0],
+      ) > 1e-9,
+      "No zero-area triangles",
+    );
+    for (let i = 0; i < 3; i++) {
+      const edge = [key(tri[i]), key(tri[(i + 1) % 3])].sort().join("|");
+      edges.set(edge, (edges.get(edge) || 0) + 1);
+      if (Math.abs(tri[i][2] - 12) < 1e-5) middleCount++;
+    }
+  }
+  assert(middleCount > 0, "Bevel profile reaches extrusion center");
+  assert(
+    [...edges.values()].every((n) => n === 2),
+    "Mesh remains closed",
+  );
+  geometry.dispose();
+});
