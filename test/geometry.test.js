@@ -2006,3 +2006,129 @@ test("small SVG contours keep a hole at the UI maximum wall thickness", () => {
     );
   }
 });
+
+function acuteStarOutline(importedHole = false) {
+  const shape = new Shape();
+  for (let i = 0; i <= 20; i++) {
+    const angle = ((i % 20) * Math.PI) / 10;
+    const radius = i % 2 ? 20 : 60;
+    const x = Math.cos(angle) * radius,
+      y = Math.sin(angle) * radius;
+    if (i === 0) shape.moveTo(x, y);
+    else shape.lineTo(x, y);
+  }
+  if (importedHole) {
+    const hole = new Path();
+    for (let i = 0; i <= 32; i++) {
+      const angle = (-(i % 32) * Math.PI) / 16;
+      const x = Math.cos(angle) * 10,
+        y = Math.sin(angle) * 10;
+      if (i === 0) hole.moveTo(x, y);
+      else hole.lineTo(x, y);
+    }
+    shape.holes.push(hole);
+  }
+  return shape;
+}
+
+for (const importedHole of [false, true]) {
+  for (const bevelContinue of [false, true]) {
+    test(`acute hollow stars retain tips and avoid shelves (importedHole=${importedHole}, continue=${bevelContinue})`, () => {
+      const geometry = buildMesh(acuteStarOutline(importedHole), {
+        depth: 20,
+        bevelSize: 5,
+        bevelWidth: 100,
+        bevelSegments: 4,
+        bevelContinue,
+        hollow: !importedHole,
+        wallThickness: 5,
+        sharpCorners: true,
+        curvePoints: ridgeProfile,
+      });
+      assertClosedFiniteSolid(geometry);
+      const height = geometry.userData.effectiveBevelDepth;
+      assert.ok(
+        height > 0,
+        "a real bevel survives near disappearing acute branches",
+      );
+      let slopingFrontFaces = 0;
+      for (const triangle of triangleVertices(geometry)) {
+        const z = triangle.map((p) => p[2]);
+        if (z.some((v) => v > height + 1e-5)) continue;
+        const min = Math.min(...z),
+          max = Math.max(...z);
+        if (min <= 1e-5 || max >= height - 1e-5) continue;
+        assert.ok(
+          max - min > 1e-5,
+          `a disappearing sharp branch must form a ridge instead of an intermediate horizontal shelf at ${min}`,
+        );
+        slopingFrontFaces++;
+      }
+      assert.ok(
+        slopingFrontFaces > 10,
+        "the bevel contains actual intermediate sloping faces",
+      );
+      const positions = triangleVertices(geometry).flat();
+      for (let i = 0; i < 20; i++) {
+        const angle = (i * Math.PI) / 10,
+          radius = i % 2 ? 20 : 60;
+        assert.ok(
+          positions.some(
+            (p) =>
+              Math.hypot(
+                p[0] - Math.cos(angle) * radius,
+                p[1] + Math.sin(angle) * radius,
+              ) < 1e-5,
+          ),
+          `source corner ${i} remains present without implicit path reduction`,
+        );
+      }
+      geometry.dispose();
+    });
+  }
+}
+
+for (const bevelContinue of [false, true]) {
+  test(`zigzag lightning with a hole preserves a closed ridge bevel (continue=${bevelContinue})`, () => {
+    const points = [
+      [-15, 0], [60, 0], [50, 15], [90, 30], [55, 35], [95, 60],
+      [60, 65], [100, 90], [20, 90], [35, 75], [-5, 60], [30, 55],
+      [-10, 30], [25, 25],
+    ];
+    const shape = new Shape();
+    points.forEach(([x, y], i) =>
+      i ? shape.lineTo(x, y) : shape.moveTo(x, y),
+    );
+    shape.closePath();
+    const hole = new Path();
+    for (let i = 0; i <= 16; i++) {
+      const angle = (-(i % 16) * Math.PI) / 8;
+      const x = 45 + 4 * Math.cos(angle),
+        y = 45 + 4 * Math.sin(angle);
+      if (i) hole.lineTo(x, y);
+      else hole.moveTo(x, y);
+    }
+    shape.holes.push(hole);
+    const geometry = buildMesh(shape, {
+      depth: 20,
+      bevelSize: 5,
+      bevelWidth: 100,
+      bevelSegments: 6,
+      bevelContinue,
+      sharpCorners: true,
+      curvePoints: ridgeProfile,
+    });
+    assertClosedFiniteSolid(geometry);
+    const height = geometry.userData.effectiveBevelDepth;
+    for (const triangle of triangleVertices(geometry)) {
+      const z = triangle.map((p) => p[2]);
+      if (Math.min(...z) > 1e-5 && Math.max(...z) < height - 1e-5) {
+        assert.ok(
+          Math.max(...z) - Math.min(...z) > 1e-5,
+          "no intermediate flat shelf where a zigzag branch disappears",
+        );
+      }
+    }
+    geometry.dispose();
+  });
+}

@@ -410,9 +410,9 @@ export function buildMesh(shape, settings = {}) {
   let roof = null;
   let roofFailure = null;
   if (
-    settings.bevelContinue === true &&
     Number(settings.bevelSize) > 0 &&
-    rings.length === 1
+    (settings.bevelContinue === true ||
+      (explicitWidth && requestedBevelWidth > variant.maximumBevelWidth + EPS))
   ) {
     try {
       roof = prepareBevelRoof(rings);
@@ -424,11 +424,9 @@ export function buildMesh(shape, settings = {}) {
   // locally inside the bevel instead of restricting the entire contour.
   if (
     Number(settings.bevelSize) > 0 &&
-    ((!roof &&
-      ((explicitWidth &&
-        requestedBevelWidth > variant.maximumBevelWidth + EPS) ||
-        settings.bevelContinue === true)) ||
-      (roof && explicitWidth && requestedBevelWidth > roof.maximumWidth + EPS))
+    !roof &&
+    ((explicitWidth && requestedBevelWidth > variant.maximumBevelWidth + EPS) ||
+      settings.bevelContinue === true)
   ) {
     const offsetRoof = prepareOffsetBevelRoof(
       rings,

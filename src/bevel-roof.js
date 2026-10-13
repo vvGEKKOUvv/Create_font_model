@@ -6,11 +6,19 @@ const { SkeletonBuilder } = skeletonPackage;
 const EPS = 1e-8;
 // Cache the expensive topology, which is independent of extrusion/profile edits.
 const cache = new WeakMap();
+const failures = new WeakMap();
 export function prepareBevelRoof(rings) {
   if (cache.has(rings)) return cache.get(rings);
-  const result = SkeletonBuilder.BuildFromGeoJSON([
-    rings.map((ring) => ring.map((p) => [p.x, p.y])),
-  ]);
+  if (failures.has(rings)) throw failures.get(rings);
+  let result;
+  try {
+    result = SkeletonBuilder.BuildFromGeoJSON([
+      rings.map((ring) => ring.map((p) => [p.x, p.y])),
+    ]);
+  } catch (error) {
+    failures.set(rings, error);
+    throw error;
+  }
   if (!result?.Edges?.length)
     throw new Error("輪郭の稜線を生成できませんでした。");
   const distanceByPoint = new Map(
@@ -57,7 +65,7 @@ function cut(poly, limit, keepAbove) {
 }
 
 // Every face is a plane whose time is distance from its source edge. Cutting
-// triangles at common distance levels gives matching vertices along shared
+// faces at common distance levels gives matching vertices along shared
 // skeleton edges, including topology changes at narrow-stroke collisions.
 export function triangulateBevelRoof(roof, width, samples, profile) {
   const sampled = samples.map((t) => ({ time: width * (1 - profile(t)), t }));
@@ -88,9 +96,9 @@ export function triangulateBevelRoof(roof, width, samples, profile) {
       index,
       (index + 1) % contour.length,
     ]);
-    const cells =
-      roof.faceCells[faceIndex] ||
-      (roof.faceCells[faceIndex] =
+    let cells = roof.faceCells[faceIndex];
+    if (!cells) {
+      cells =
         face.length === 3
           ? [[0, 1, 2]]
           : face.length === 4
@@ -98,7 +106,14 @@ export function triangulateBevelRoof(roof, width, samples, profile) {
                 face.map((p) => new Vector2(p.x, p.y)),
                 [],
               )
-            : cdt2d(contour, boundary, { exterior: false }));
+            : cdt2d(contour, boundary, { exterior: false });
+      if (!cells.length)
+        cells = ShapeUtils.triangulateShape(
+          face.map((p) => new Vector2(p.x, p.y)),
+          [],
+        );
+      roof.faceCells[faceIndex] = cells;
+    }
     for (const indices of cells) {
       const base = indices.map((i) => face[i]);
       for (let band = 0; band < limits.length - 1; band++) {
