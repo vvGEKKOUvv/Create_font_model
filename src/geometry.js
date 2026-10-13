@@ -579,7 +579,9 @@ export function buildMesh(shape, settings = {}) {
   if (roofTriangles) {
     for (const back of [false, true]) {
       for (const face of roofTriangles) {
-        surfaceGroup = face.faceIndex + 2;
+        surfaceGroup = face.points.every((p) => Math.abs(p.height) < EPS)
+          ? 2
+          : 3;
         const points = face.points.map(
           (p) =>
             new THREE.Vector3(
@@ -708,29 +710,65 @@ export function buildMesh(shape, settings = {}) {
     groups.get(key).push(i);
   }
   const threshold = Math.cos(Math.PI / 6);
-  for (const indices of groups.values())
-    for (const i of indices) {
-      const index = i * 3,
-        rx = originalNormals[index],
-        ry = originalNormals[index + 1],
-        rz = originalNormals[index + 2];
+  // A corner angle weight is invariant when a face is split into skinny
+  // triangles. Build shared smoothing components once; filtering separately
+  // from each face creates several different normals at one smooth vertex.
+  const cornerWeights = new Float64Array(surfaceGroups.length);
+  for (let i = 0; i < surfaceGroups.length; i++) {
+    const tri = i - (i % 3),
+      next = tri + ((i + 1) % 3),
+      prev = tri + ((i + 2) % 3);
+    const a = new THREE.Vector3(
+      positions[next * 3] - positions[i * 3],
+      positions[next * 3 + 1] - positions[i * 3 + 1],
+      positions[next * 3 + 2] - positions[i * 3 + 2],
+    );
+    const b = new THREE.Vector3(
+      positions[prev * 3] - positions[i * 3],
+      positions[prev * 3 + 1] - positions[i * 3 + 1],
+      positions[prev * 3 + 2] - positions[i * 3 + 2],
+    );
+    cornerWeights[i] = a.lengthSq() && b.lengthSq() ? a.angleTo(b) : 0;
+  }
+  for (const indices of groups.values()) {
+    const smoothThreshold =
+      roofTriangles && surfaceGroups[indices[0]] === 3
+        ? Math.cos(Math.PI / 3)
+        : threshold;
+    const pending = new Set(indices);
+    while (pending.size) {
+      const cluster = [pending.values().next().value];
+      pending.delete(cluster[0]);
+      for (let cursor = 0; cursor < cluster.length; cursor++) {
+        const i = cluster[cursor] * 3;
+        for (const j of pending) {
+          const k = j * 3;
+          if (
+            originalNormals[i] * originalNormals[k] +
+              originalNormals[i + 1] * originalNormals[k + 1] +
+              originalNormals[i + 2] * originalNormals[k + 2] >=
+            smoothThreshold
+          ) {
+            cluster.push(j);
+            pending.delete(j);
+          }
+        }
+      }
       let sx = 0,
         sy = 0,
         sz = 0;
-      for (const j of indices) {
-        const base = j * 3,
-          x = originalNormals[base],
-          y = originalNormals[base + 1],
-          z = originalNormals[base + 2];
-        if (rx * x + ry * y + rz * z >= threshold) {
-          sx += x;
-          sy += y;
-          sz += z;
-        }
+      for (const i of cluster) {
+        const k = i * 3,
+          w = cornerWeights[i];
+        sx += originalNormals[k] * w;
+        sy += originalNormals[k + 1] * w;
+        sz += originalNormals[k + 2] * w;
       }
       const length = Math.hypot(sx, sy, sz) || 1;
-      normals.setXYZ(i, sx / length, sy / length, sz / length);
+      for (const i of cluster)
+        normals.setXYZ(i, sx / length, sy / length, sz / length);
     }
+  }
   geometry.userData = {
     warnings,
     effectiveBevel: bevel,

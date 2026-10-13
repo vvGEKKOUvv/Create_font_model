@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Shape, Path, Matrix4 } from "three";
+import { Shape, Path, Matrix4, Vector2 } from "three";
 import { DOMParser } from "@xmldom/xmldom";
 import {
   parseSvg,
@@ -10,8 +10,128 @@ import {
 } from "../src/geometry.js";
 
 import { moveProfileHandle } from "../src/bevel-profile.js";
+import {
+  prepareOffsetBevelRoof,
+  triangulateOffsetBevelRoof,
+} from "../src/offset-bevel-roof.js";
 
 globalThis.DOMParser = DOMParser;
+
+test("offset bevel triangles follow local curved contour slopes without diagonal dents", () => {
+  const ring = Array.from({ length: 100 }, (_, i) => {
+    const angle = (i * 2 * Math.PI) / 100;
+    return new Vector2(50 * Math.cos(angle), 50 * Math.sin(angle));
+  });
+  const width = 2;
+  for (const profile of [(t) => t, (t) => 1 - Math.cos((t * Math.PI) / 2)]) {
+    const samples = Array.from({ length: 17 }, (_, i) => i / 16);
+    const levels = samples.map((height) => ({
+      height,
+      inset: width * (1 - profile(height)),
+    }));
+    const triangles = triangulateOffsetBevelRoof(
+      prepareOffsetBevelRoof([ring]),
+      width,
+      samples,
+      profile,
+    );
+    let slopes = 0;
+    for (const triangle of triangles) {
+      if (triangle.faceIndex === 0) continue;
+      slopes++;
+      const center = triangle.points.reduce(
+        (sum, p) => ({
+          x: sum.x + p.x / 3,
+          y: sum.y + p.y / 3,
+          height: sum.height + p.height / 3,
+        }),
+        { x: 0, y: 0, height: 0 },
+      );
+      let distance = Infinity;
+      for (let i = 0; i < ring.length; i++) {
+        const a = ring[i],
+          b = ring[(i + 1) % ring.length];
+        const dx = b.x - a.x,
+          dy = b.y - a.y;
+        const t = Math.max(
+          0,
+          Math.min(
+            1,
+            ((center.x - a.x) * dx + (center.y - a.y) * dy) /
+              (dx * dx + dy * dy),
+          ),
+        );
+        distance = Math.min(
+          distance,
+          Math.hypot(center.x - a.x - t * dx, center.y - a.y - t * dy),
+        );
+      }
+      const upper = levels.findIndex((p, i) => i > 0 && distance >= p.inset);
+      assert.ok(upper > 0, "the triangle lies in a sampled bevel band");
+      const a = levels[upper - 1],
+        b = levels[upper];
+      const expectedHeight =
+        a.height +
+        ((b.height - a.height) * (a.inset - distance)) / (a.inset - b.inset);
+      assert.ok(
+        Math.abs(center.height - expectedHeight) < 0.002,
+        `a bevel triangle must follow its local contour slope, not dent diagonally (${center.height} vs ${expectedHeight})`,
+      );
+    }
+    assert.ok(slopes > 100, "the curved contour has actual bevel faces");
+  }
+});
+
+test("curved hollow bevels keep joined normals and a closed solid across sampled bands", () => {
+  for (const bevelContinue of [false, true]) {
+    const geometry = buildMesh(fineCurvedBumpOutline(), {
+      depth: 20,
+      bevelSize: 10,
+      bevelWidth: 1,
+      bevelContinue,
+      hollow: true,
+      wallThickness: 3,
+      bevelSegments: 16,
+      curve: 1,
+    });
+    assertClosedFiniteSolid(geometry);
+    assert.ok(geometry.userData.effectiveWallThickness >= 2.99);
+    assert.ok(geometry.userData.effectiveBevel >= 0.99);
+    const positions = geometry.attributes.position;
+    const normals = geometry.attributes.normal;
+    const shared = new Map();
+    let compared = 0;
+    for (let i = 0; i < positions.count; i++) {
+      const x = positions.getX(i),
+        y = positions.getY(i),
+        z = positions.getZ(i);
+      // On the finely sampled smooth bump, adjacent triangulation
+      // faces share one shading normal even though the profile is curved.
+      if (
+        x > 1 ||
+        y > -50.05 ||
+        y < -50.95 ||
+        z <= 0 ||
+        z >= geometry.userData.effectiveBevelDepth - 1e-5
+      )
+        continue;
+      const key = `${x},${y},${z}`;
+      const normal = [normals.getX(i), normals.getY(i), normals.getZ(i)];
+      if (shared.has(key)) {
+        const other = shared.get(key);
+        assert.ok(
+          Math.hypot(...normal.map((v, axis) => v - other[axis])) < 1e-5,
+          `the same smooth bevel vertex must not receive triangle-dependent normals (continue=${bevelContinue}, pos=${key}, n=${normal}, other=${other})`,
+        );
+        compared++;
+      } else shared.set(key, normal);
+    }
+    assert.ok(
+      compared > 5,
+      "sampled bevel bands contain shared smooth vertices",
+    );
+  }
+});
 
 test("Illustrator SVG external DTD is accepted without entity expansion", () => {
   const svg =
@@ -1201,7 +1321,12 @@ test("OBJ preserves Unicode names and disambiguates renamed objects after saniti
 function fineCurvedBumpOutline() {
   const shape = new Shape();
   shape.moveTo(0, 0);
-  for (const point of [[100, 0], [100, 100], [0, 100], [0, 51]])
+  for (const point of [
+    [100, 0],
+    [100, 100],
+    [0, 100],
+    [0, 51],
+  ])
     shape.lineTo(...point);
   // A smooth, tiny outward bump contains edges that legitimately disappear
   // from the inset. It must not shrink every wall of the imported outline.
@@ -1217,10 +1342,15 @@ function fineCurvedBumpOutline() {
 function frontProjectedArea(geometry) {
   return triangleVertices(geometry)
     .filter((tri) => tri.every((point) => Math.abs(point[2]) < 1e-7))
-    .reduce((sum, [a, b, c]) => sum + Math.abs(
-      (b[0] - a[0]) * (c[1] - a[1]) -
-      (b[1] - a[1]) * (c[0] - a[0]),
-    ) / 2, 0);
+    .reduce(
+      (sum, [a, b, c]) =>
+        sum +
+        Math.abs(
+          (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]),
+        ) /
+          2,
+      0,
+    );
 }
 
 test("fine curved outline details do not collapse the requested hollow front rim", () => {
@@ -1235,22 +1365,35 @@ test("fine curved outline details do not collapse the requested hollow front rim
       reductionTolerance,
     });
     assertClosedFiniteSolid(geometry);
-    assert.ok(geometry.userData.effectiveWallThickness >= 2.99,
-      "a short convex edge must not globally halve the requested wall");
+    assert.ok(
+      geometry.userData.effectiveWallThickness >= 2.99,
+      "a short convex edge must not globally halve the requested wall",
+    );
     const frontArea = frontProjectedArea(geometry);
-    assert.ok(frontArea >= 1160 && frontArea <= 1170,
-      `the front rim keeps its requested width (area ${frontArea})`);
+    assert.ok(
+      frontArea >= 1160 && frontArea <= 1170,
+      `the front rim keeps its requested width (area ${frontArea})`,
+    );
     frontAreas.push(frontArea);
     if (reductionTolerance === 0) {
       const positions = geometry.attributes.position;
-      assert.ok(Array.from({ length: positions.count }, (_, index) =>
-        Math.abs(positions.getX(index) + 0.1) < 1e-6,
-      ).some(Boolean), "the original outer detail is preserved without reduction");
-      assert.equal(geometry.userData.reducedCount, geometry.userData.originalCount);
+      assert.ok(
+        Array.from(
+          { length: positions.count },
+          (_, index) => Math.abs(positions.getX(index) + 0.1) < 1e-6,
+        ).some(Boolean),
+        "the original outer detail is preserved without reduction",
+      );
+      assert.equal(
+        geometry.userData.reducedCount,
+        geometry.userData.originalCount,
+      );
     }
   }
-  assert.ok(Math.abs(frontAreas[0] - frontAreas[1]) < 1,
-    "reduction is not required to obtain a substantial front rim");
+  assert.ok(
+    Math.abs(frontAreas[0] - frontAreas[1]) < 1,
+    "reduction is not required to obtain a substantial front rim",
+  );
 });
 
 test("fine curved hollow outlines retain requested bevel widths and actual sloped faces", () => {
@@ -1269,82 +1412,141 @@ test("fine curved hollow outlines retain requested bevel widths and actual slope
       });
       assertWallBodyThickness(geometry, 20);
       assert.ok(geometry.userData.effectiveWallThickness >= 2.99);
-      assert.ok(geometry.userData.effectiveBevel >= bevelWidth * 0.99,
-        `a local fine detail must not globally shrink requested width ${bevelWidth}`);
+      assert.ok(
+        geometry.userData.effectiveBevel >= bevelWidth * 0.99,
+        `a local fine detail must not globally shrink requested width ${bevelWidth}`,
+      );
       const slopedFrontArea = triangleVertices(geometry)
         .filter((tri) => {
           const z = tri.map((point) => point[2]);
           return Math.max(...z) <= 10 && Math.max(...z) - Math.min(...z) > 1e-6;
         })
-        .reduce((sum, [a, b, c]) => sum + Math.abs(
-          (b[0] - a[0]) * (c[1] - a[1]) -
-          (b[1] - a[1]) * (c[0] - a[0]),
-        ) / 2, 0);
-      assert.ok(slopedFrontArea > bevelWidth * 500,
-        `the front has visible bevel slopes rather than only metadata (${slopedFrontArea})`);
-      assert.ok(frontProjectedArea(geometry) > 300,
-        "a modest bevel leaves a substantial flat front rim");
+        .reduce(
+          (sum, [a, b, c]) =>
+            sum +
+            Math.abs(
+              (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]),
+            ) /
+              2,
+          0,
+        );
+      assert.ok(
+        slopedFrontArea > bevelWidth * 500,
+        `the front has visible bevel slopes rather than only metadata (${slopedFrontArea})`,
+      );
+      assert.ok(
+        frontProjectedArea(geometry) > 300,
+        "a modest bevel leaves a substantial flat front rim",
+      );
       applyUvSettings(geometry, { uvScale: 1.2, uvRotation: 15 });
       const exported = exportObj([{ name: "fine-hollow", geometry }]);
       assert.ok(!/NaN|Infinity/.test(exported.obj));
       assert.match(exported.obj, /^vt /m);
       exportedWidths.push(exported.obj);
     }
-    assert.notEqual(exportedWidths[0], exportedWidths[1],
-      "changing lateral bevel width changes actual exported geometry");
+    assert.notEqual(
+      exportedWidths[0],
+      exportedWidths[1],
+      "changing lateral bevel width changes actual exported geometry",
+    );
   }
 });
 
 test("hollow offsets can split an inner cavity without thinning the outer walls", () => {
   const shape = new Shape();
-  const outline = [[0, 0], [40, 0], [40, 18], [60, 18], [60, 0],
-    [100, 0], [100, 40], [60, 40], [60, 22], [40, 22], [40, 40], [0, 40]];
+  const outline = [
+    [0, 0],
+    [40, 0],
+    [40, 18],
+    [60, 18],
+    [60, 0],
+    [100, 0],
+    [100, 40],
+    [60, 40],
+    [60, 22],
+    [40, 22],
+    [40, 40],
+    [0, 40],
+  ];
   shape.moveTo(...outline[0]);
   for (const point of outline.slice(1)) shape.lineTo(...point);
   shape.closePath();
   for (const bevelContinue of [false, true]) {
     const geometry = buildMesh(shape, {
-      depth: 20, bevelSize: 1, bevelWidth: 0.5, bevelContinue,
-      hollow: true, wallThickness: 3, curvePoints: ridgeProfile,
+      depth: 20,
+      bevelSize: 1,
+      bevelWidth: 0.5,
+      bevelContinue,
+      hollow: true,
+      wallThickness: 3,
+      curvePoints: ridgeProfile,
     });
     assertClosedFiniteSolid(geometry);
-    assert.ok(geometry.userData.effectiveWallThickness >= 2.99,
-      "a narrow bridge may close internally without thinning both rooms");
+    assert.ok(
+      geometry.userData.effectiveWallThickness >= 2.99,
+      "a narrow bridge may close internally without thinning both rooms",
+    );
     const caps = triangleVertices(geometry).filter((tri) =>
-      tri.every((p) => Math.abs(p[2]) < 1e-7));
-    for (const [x, y] of [[20, -20], [80, -20]]) {
-      assert.ok(!caps.some((triangle) => {
-        const crosses = triangle.map((a, index) => {
-          const b = triangle[(index + 1) % 3];
-          return (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
-        });
-        return crosses.every((value) => value >= -1e-6) ||
-          crosses.every((value) => value <= 1e-6);
-      }), "both resulting inner cavities remain open through the caps");
+      tri.every((p) => Math.abs(p[2]) < 1e-7),
+    );
+    for (const [x, y] of [
+      [20, -20],
+      [80, -20],
+    ]) {
+      assert.ok(
+        !caps.some((triangle) => {
+          const crosses = triangle.map((a, index) => {
+            const b = triangle[(index + 1) % 3];
+            return (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
+          });
+          return (
+            crosses.every((value) => value >= -1e-6) ||
+            crosses.every((value) => value <= 1e-6)
+          );
+        }),
+        "both resulting inner cavities remain open through the caps",
+      );
     }
   }
 });
 
 test("a tiny acute hollow outline spike keeps its detail without suppressing the bevel", () => {
   const shape = new Shape();
-  const outline = [[0, 0], [100, 0], [100, 100], [0, 100],
-    [0, 50.01], [-0.1, 50], [0, 49.99]];
+  const outline = [
+    [0, 0],
+    [100, 0],
+    [100, 100],
+    [0, 100],
+    [0, 50.01],
+    [-0.1, 50],
+    [0, 49.99],
+  ];
   shape.moveTo(...outline[0]);
   for (const point of outline.slice(1)) shape.lineTo(...point);
   shape.closePath();
   for (const bevelContinue of [false, true]) {
     const geometry = buildMesh(shape, {
-      depth: 20, bevelSize: 10, bevelWidth: 1, bevelContinue,
-      hollow: true, wallThickness: 3, curvePoints: ridgeProfile,
+      depth: 20,
+      bevelSize: 10,
+      bevelWidth: 1,
+      bevelContinue,
+      hollow: true,
+      wallThickness: 3,
+      curvePoints: ridgeProfile,
     });
     assertWallBodyThickness(geometry, 20);
     assert.ok(geometry.userData.effectiveBevel >= 0.99);
     assert.ok(geometry.userData.effectiveWallThickness >= 2.99);
     const positions = geometry.attributes.position;
-    assert.ok(Array.from({ length: positions.count }, (_, index) =>
-      Math.abs(positions.getX(index) + 0.1) < 1e-6 &&
-      Math.abs(positions.getY(index) + 50) < 1e-6,
-    ).some(Boolean), "the acute original detail remains at the outer boundary");
+    assert.ok(
+      Array.from(
+        { length: positions.count },
+        (_, index) =>
+          Math.abs(positions.getX(index) + 0.1) < 1e-6 &&
+          Math.abs(positions.getY(index) + 50) < 1e-6,
+      ).some(Boolean),
+      "the acute original detail remains at the outer boundary",
+    );
   }
 });
 
@@ -1360,20 +1562,37 @@ test("fine curved imported compound holes retain bevel slopes with or without ho
   for (const hollow of [false, true]) {
     for (const bevelContinue of [false, true]) {
       const geometry = buildMesh(shape, {
-        depth: 20, bevelSize: 10, bevelWidth: 1, bevelContinue,
-        hollow, wallThickness: 3, curvePoints: ridgeProfile,
+        depth: 20,
+        bevelSize: 10,
+        bevelWidth: 1,
+        bevelContinue,
+        hollow,
+        wallThickness: 3,
+        curvePoints: ridgeProfile,
       });
       assertWallBodyThickness(geometry, 20);
-      assert.ok(geometry.userData.effectiveBevel >= 0.99,
-        "imported holes support the requested width independently of automatic hollowing");
+      assert.ok(
+        geometry.userData.effectiveBevel >= 0.99,
+        "imported holes support the requested width independently of automatic hollowing",
+      );
       const frontArea = frontProjectedArea(geometry);
-      assert.ok(frontArea > 300 && frontArea < 500,
-        `a three-unit imported rim retains its flat front plus substantial slopes (${frontArea})`);
+      assert.ok(
+        frontArea > 300 && frontArea < 500,
+        `a three-unit imported rim retains its flat front plus substantial slopes (${frontArea})`,
+      );
       const positions = geometry.attributes.position;
-      assert.ok(Array.from({ length: positions.count }, (_, index) =>
-        Math.abs(positions.getX(index) + 0.1) < 1e-6,
-      ).some(Boolean), "the original fine outer detail is retained");
-      assert.ok(!/NaN|Infinity/.test(exportObj([{ name: "imported-hole", geometry }]).obj));
+      assert.ok(
+        Array.from(
+          { length: positions.count },
+          (_, index) => Math.abs(positions.getX(index) + 0.1) < 1e-6,
+        ).some(Boolean),
+        "the original fine outer detail is retained",
+      );
+      assert.ok(
+        !/NaN|Infinity/.test(
+          exportObj([{ name: "imported-hole", geometry }]).obj,
+        ),
+      );
     }
   }
 });

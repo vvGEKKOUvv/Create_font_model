@@ -83,6 +83,107 @@ function boundaryDistance(p, paths) {
       );
   return best;
 }
+// Walk two corresponding offset loops together instead of letting an unconstrained
+// hole triangulator connect distant portions of a curved bevel. Only existing
+// boundary vertices are used, so adjacent bands and the cap remain watertight.
+function triangulateMatchedBand(subject, clip, a, b, roof) {
+  if (!clip.length || subject.length !== clip.length) return null;
+  const unused = new Set(clip.map((_, i) => i));
+  const triangles = [];
+  const point = (p, height) => {
+    const original = roof.exactSource.get(`${p.X},${p.Y}`);
+    return {
+      x: original?.x ?? p.X / roof.scale + roof.origin.x,
+      y: original?.y ?? p.Y / roof.scale + roof.origin.y,
+      height,
+    };
+  };
+  for (const outer of subject) {
+    let chosen = -1,
+      best = Infinity;
+    for (const index of unused) {
+      const candidate = clip[index];
+      if (
+        ClipperLib.Clipper.Orientation(outer) !==
+        ClipperLib.Clipper.Orientation(candidate)
+      )
+        continue;
+      const distance = boundaryDistance(outer[0], [candidate]);
+      if (distance < best) {
+        best = distance;
+        chosen = index;
+      }
+    }
+    if (chosen < 0) return null;
+    unused.delete(chosen);
+    const inner = clip[chosen];
+    let oi = 0,
+      ii = 0,
+      nearest = Infinity;
+    for (let j = 0; j < inner.length; j++) {
+      const d = Math.hypot(outer[0].X - inner[j].X, outer[0].Y - inner[j].Y);
+      if (d < nearest) {
+        nearest = d;
+        ii = j;
+      }
+    }
+    let o = 0,
+      k = 0,
+      area = 0;
+    const signed =
+      ClipperLib.Clipper.Area(outer) - ClipperLib.Clipper.Area(inner);
+    const winding = Math.sign(signed);
+    const outerContainsInner =
+      Math.abs(ClipperLib.Clipper.Area(outer)) >
+      Math.abs(ClipperLib.Clipper.Area(inner));
+    const local = [];
+    while (o < outer.length || k < inner.length) {
+      const op = outer[(oi + o) % outer.length],
+        ip = inner[(ii + k) % inner.length];
+      const on = outer[(oi + o + 1) % outer.length],
+        inn = inner[(ii + k + 1) % inner.length];
+      const advanceOuter =
+        k === inner.length ||
+        (o < outer.length &&
+          Math.hypot(on.X - ip.X, on.Y - ip.Y) <=
+            Math.hypot(op.X - inn.X, op.Y - inn.Y));
+      const raw = advanceOuter ? [op, on, ip] : [op, inn, ip];
+      const cross =
+        (raw[1].X - raw[0].X) * (raw[2].Y - raw[0].Y) -
+        (raw[1].Y - raw[0].Y) * (raw[2].X - raw[0].X);
+      if (cross * winding < -1) return null;
+      area += cross / 2;
+      if (Math.abs(cross) > 1) {
+        const centroid = {
+          X: (raw[0].X + raw[1].X + raw[2].X) / 3,
+          Y: (raw[0].Y + raw[1].Y + raw[2].Y) / 3,
+        };
+        // A local connection must stay inside the actual band, including concave tips.
+        const insideOuter =
+          ClipperLib.Clipper.PointInPolygon(centroid, outer) !== 0;
+        const insideInner =
+          ClipperLib.Clipper.PointInPolygon(centroid, inner) !== 0;
+        if (
+          outerContainsInner
+            ? !insideOuter || insideInner
+            : !insideInner || insideOuter
+        )
+          return null;
+        const tri = advanceOuter
+          ? [point(op, a.height), point(on, a.height), point(ip, b.height)]
+          : [point(op, a.height), point(inn, b.height), point(ip, b.height)];
+        if (cross < 0) tri.reverse();
+        local.push({ faceIndex: 1, points: tri });
+      }
+      if (advanceOuter) o++;
+      else k++;
+    }
+    if (Math.abs(area - signed) > Math.max(2, Math.abs(signed) * 1e-8))
+      return null;
+    triangles.push(...local);
+  }
+  return triangles;
+}
 // Triangulate the difference of successive offset regions. Offsets can remove
 // small tips or split cavities without shrinking the bevel on every other edge.
 export function triangulateOffsetBevelRoof(roof, width, samples, profile) {
@@ -97,6 +198,13 @@ export function triangulateOffsetBevelRoof(roof, width, samples, profile) {
   const triangles = [];
   const addRegion = (subject, clip, a, b, cap = false) => {
     if (!subject.length) return;
+    if (!cap) {
+      const matched = triangulateMatchedBand(subject, clip, a, b, roof);
+      if (matched) {
+        triangles.push(...matched);
+        return;
+      }
+    }
     const key = (p) => `${p.X},${p.Y}`;
     const subjectKeys = new Set(subject.flat().map(key));
     const clipKeys = new Set(clip.flat().map(key));
