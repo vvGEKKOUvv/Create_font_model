@@ -12,6 +12,7 @@
     "test:browser": "node scripts/browser-smoke.mjs"
   },
   "dependencies": {
+    "clipper-lib": "6.4.2",
     "straight-skeleton": "1.1.0",
     "three": "0.180.0"
   },

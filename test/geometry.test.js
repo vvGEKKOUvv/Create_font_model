@@ -1197,3 +1197,109 @@ test("OBJ preserves Unicode names and disambiguates renamed objects after saniti
   assert.equal(new Set(names).size, 4);
   assert.equal((mtl.match(/^newmtl /gm) || []).length, 4);
 });
+
+function fineCurvedBumpOutline() {
+  const shape = new Shape();
+  shape.moveTo(0, 0);
+  for (const point of [[100, 0], [100, 100], [0, 100], [0, 51]])
+    shape.lineTo(...point);
+  // A smooth, tiny outward bump contains edges that legitimately disappear
+  // from the inset. It must not shrink every wall of the imported outline.
+  for (let i = 1; i <= 50; i++) {
+    const t = i / 50;
+    shape.lineTo(-0.1 * Math.sin(Math.PI * t) ** 2, 51 - t);
+  }
+  shape.lineTo(0, 0);
+  shape.closePath();
+  return shape;
+}
+
+function frontProjectedArea(geometry) {
+  return triangleVertices(geometry)
+    .filter((tri) => tri.every((point) => Math.abs(point[2]) < 1e-7))
+    .reduce((sum, [a, b, c]) => sum + Math.abs(
+      (b[0] - a[0]) * (c[1] - a[1]) -
+      (b[1] - a[1]) * (c[0] - a[0]),
+    ) / 2, 0);
+}
+
+test("fine curved outline details do not collapse the requested hollow front rim", () => {
+  const shape = fineCurvedBumpOutline();
+  const frontAreas = [];
+  for (const reductionTolerance of [0, 0.1]) {
+    const geometry = buildMesh(shape, {
+      depth: 20,
+      bevelSize: 0,
+      hollow: true,
+      wallThickness: 3,
+      reductionTolerance,
+    });
+    assertClosedFiniteSolid(geometry);
+    assert.ok(geometry.userData.effectiveWallThickness >= 2.99,
+      "a short convex edge must not globally halve the requested wall");
+    const frontArea = frontProjectedArea(geometry);
+    assert.ok(frontArea >= 1160 && frontArea <= 1170,
+      `the front rim keeps its requested width (area ${frontArea})`);
+    frontAreas.push(frontArea);
+    if (reductionTolerance === 0) {
+      const positions = geometry.attributes.position;
+      assert.ok(Array.from({ length: positions.count }, (_, index) =>
+        Math.abs(positions.getX(index) + 0.1) < 1e-6,
+      ).some(Boolean), "the original outer detail is preserved without reduction");
+      assert.equal(geometry.userData.reducedCount, geometry.userData.originalCount);
+    }
+  }
+  assert.ok(Math.abs(frontAreas[0] - frontAreas[1]) < 1,
+    "reduction is not required to obtain a substantial front rim");
+});
+
+test("fine curved hollow outlines keep substantial front faces with either bevel mode", () => {
+  const shape = fineCurvedBumpOutline();
+  for (const bevelContinue of [false, true]) {
+    const geometry = buildMesh(shape, {
+      depth: 20,
+      bevelSize: 10,
+      bevelWidth: 0.4,
+      bevelContinue,
+      hollow: true,
+      wallThickness: 3,
+      curvePoints: ridgeProfile,
+    });
+    assertWallBodyThickness(geometry, 20);
+    assert.ok(geometry.userData.effectiveWallThickness >= 2.99);
+    assert.ok(frontProjectedArea(geometry) > 800,
+      "a modest bevel leaves the front rim visibly wider than a thin sheet");
+    assert.ok(geometry.userData.effectiveBevel > 0,
+      "the preserved wall still supports bevel geometry");
+  }
+});
+
+test("hollow offsets can split an inner cavity without thinning the outer walls", () => {
+  const shape = new Shape();
+  const outline = [[0, 0], [40, 0], [40, 18], [60, 18], [60, 0],
+    [100, 0], [100, 40], [60, 40], [60, 22], [40, 22], [40, 40], [0, 40]];
+  shape.moveTo(...outline[0]);
+  for (const point of outline.slice(1)) shape.lineTo(...point);
+  shape.closePath();
+  for (const bevelContinue of [false, true]) {
+    const geometry = buildMesh(shape, {
+      depth: 20, bevelSize: 1, bevelWidth: 0.5, bevelContinue,
+      hollow: true, wallThickness: 3, curvePoints: ridgeProfile,
+    });
+    assertClosedFiniteSolid(geometry);
+    assert.ok(geometry.userData.effectiveWallThickness >= 2.99,
+      "a narrow bridge may close internally without thinning both rooms");
+    const caps = triangleVertices(geometry).filter((tri) =>
+      tri.every((p) => Math.abs(p[2]) < 1e-7));
+    for (const [x, y] of [[20, -20], [80, -20]]) {
+      assert.ok(!caps.some((triangle) => {
+        const crosses = triangle.map((a, index) => {
+          const b = triangle[(index + 1) % 3];
+          return (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
+        });
+        return crosses.every((value) => value >= -1e-6) ||
+          crosses.every((value) => value <= 1e-6);
+      }), "both resulting inner cavities remain open through the caps");
+    }
+  }
+});

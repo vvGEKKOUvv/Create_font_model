@@ -5,6 +5,7 @@ import { prepareContours } from "./path-reduction.js";
 
 import { normalizeProfile, evaluateProfile } from "./bevel-profile.js";
 import { prepareBevelRoof, triangulateBevelRoof } from "./bevel-roof.js";
+import { hollowContours } from "./hollow-offset.js";
 
 const EPS = 1e-7;
 export function parseSvg(text) {
@@ -284,34 +285,25 @@ export function buildMesh(shape, settings = {}) {
       if (rings.length > 1)
         localWarnings.push("既存の穴を優先し、自動中抜きは追加していません。");
       else {
-        const checkWall = (wall) => {
-          const inner = offset(rings[0], wall, true);
-          if (
-            !edgesForward(inner, rings[0]) ||
-            !validRings([inner]) ||
-            !inner.every((p) => inside(p, rings[0])) ||
-            Math.abs(area(inner)) >= Math.abs(area(rings[0]))
-          )
-            return null;
-          const candidate = [rings[0], [...inner].reverse()];
-          return validRings(candidate) ? candidate : null;
-        };
-        let wall = requestedWall,
-          candidate = checkWall(wall);
-        for (let attempt = 0; !candidate && attempt < 24; attempt++) {
+        let wall = requestedWall;
+        let inner = hollowContours(rings[0], wall);
+        // Only reduce an actually oversized wall whose cavities disappear.
+        // Topology changes inside a surviving cavity do not reduce thickness.
+        for (let attempt = 0; !inner.length && attempt < 8; attempt++) {
           wall *= 0.5;
-          candidate = checkWall(wall);
+          inner = hollowContours(rings[0], wall);
         }
-        if (candidate) {
-          if (wall < requestedWall)
-            localWarnings.push(
-              `細い輪郭・交差を考慮し、壁厚を ${wall.toPrecision(3)} に縮小しました。`,
-            );
+        const candidate = inner.length ? [rings[0], ...inner] : null;
+        if (candidate && validRings(candidate)) {
           rings = candidate;
           effectiveWallThickness = wall;
+          if (wall < requestedWall)
+            localWarnings.push(
+              `指定の壁厚では穴が消えるため、壁厚を ${wall.toPrecision(3)} に縮小しました。`,
+            );
         } else
           localWarnings.push(
-            "輪郭が細すぎるため、自動中抜きを生成できませんでした。元の輪郭を保持しています。",
+            "指定の壁厚では内側の穴が残らないため、自動中抜きを生成できませんでした。元の輪郭を保持しています。壁厚を小さくしてください。",
           );
       }
     }
