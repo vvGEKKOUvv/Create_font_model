@@ -1843,3 +1843,166 @@ test("curved bevel bands choose local diagonals that avoid narrow triangle fans"
     "quality check covers interior bevel diagonals",
   );
 });
+
+function assertOpenDepthRay(geometry, x, y, description) {
+  for (const triangle of triangleVertices(geometry)) {
+    const [a, b, c] = triangle;
+    const area = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    // Side walls parallel to the viewing ray do not cover an opening.
+    if (Math.abs(area) < 1e-9) continue;
+    const crosses = triangle.map((p, i) => {
+      const q = triangle[(i + 1) % 3];
+      return (q[0] - p[0]) * (y - p[1]) - (q[1] - p[1]) * (x - p[0]);
+    });
+    assert.ok(
+      !(crosses.every((v) => v >= -1e-8) || crosses.every((v) => v <= 1e-8)),
+      description,
+    );
+  }
+}
+
+test("automatic hollow never silently becomes solid for an extremely oversized wall", () => {
+  const shape = new Shape();
+  shape.moveTo(0, 0);
+  shape.lineTo(40, 0);
+  shape.lineTo(40, 40);
+  shape.lineTo(0, 40);
+  shape.closePath();
+  for (const bevelContinue of [false, true]) {
+    const geometry = buildMesh(shape, {
+      depth: 20,
+      hollow: true,
+      wallThickness: 1e12,
+      bevelSize: 10,
+      bevelWidth: 100,
+      bevelContinue,
+      curvePoints: ridgeProfile,
+    });
+    assert.ok(
+      geometry.userData.effectiveWallThickness > 0,
+      "automatic wall clamping must retain a genuine cavity",
+    );
+    assertOpenDepthRay(
+      geometry,
+      20.123,
+      -20.456,
+      "no cap or bevel may cover the hollow opening",
+    );
+  }
+});
+
+test("hollow openings stay unobstructed through all bevel layers across parameter combinations", () => {
+  const shape = new Shape();
+  for (let i = 0; i < 80; i++) {
+    const angle = (2 * Math.PI * i) / 80;
+    const radius = 30 + 0.4 * Math.sin(angle * 11);
+    const point = [radius * Math.cos(angle), radius * Math.sin(angle)];
+    if (i === 0) shape.moveTo(...point);
+    else shape.lineTo(...point);
+  }
+  shape.closePath();
+  for (const bevelContinue of [false, true]) {
+    for (const depth of [1, 20]) {
+      for (const bevelWidth of [0, 0.5, 100]) {
+        const geometry = buildMesh(shape, {
+          hollow: true,
+          wallThickness: 3,
+          depth,
+          bevelSize: depth / 2,
+          bevelWidth,
+          bevelContinue,
+          bevelSegments: 4,
+          curvePoints: ridgeProfile,
+        });
+        for (const [x, y] of [
+          [0.123, -0.456],
+          [10.321, 3.765],
+          [-8.765, -9.321],
+        ]) {
+          assertOpenDepthRay(
+            geometry,
+            x,
+            y,
+            `opening survives width=${bevelWidth}, depth=${depth}, continue=${bevelContinue}`,
+          );
+        }
+        geometry.dispose();
+      }
+    }
+  }
+});
+
+test("split hollow cavities remain open through bevel faces at maximum width", () => {
+  const shape = new Shape();
+  const outline = [
+    [0, 0],
+    [40, 0],
+    [40, 18],
+    [60, 18],
+    [60, 0],
+    [100, 0],
+    [100, 40],
+    [60, 40],
+    [60, 22],
+    [40, 22],
+    [40, 40],
+    [0, 40],
+  ];
+  shape.moveTo(...outline[0]);
+  for (const p of outline.slice(1)) shape.lineTo(...p);
+  shape.closePath();
+  for (const bevelContinue of [false, true]) {
+    for (const bevelWidth of [0.5, 100]) {
+      const geometry = buildMesh(shape, {
+        hollow: true,
+        wallThickness: 3,
+        depth: 20,
+        bevelSize: 10,
+        bevelWidth,
+        bevelContinue,
+        bevelSegments: 4,
+        curvePoints: ridgeProfile,
+      });
+      for (const [x, y] of [
+        [20.123, -20.456],
+        [80.123, -20.456],
+        [10.123, -10.456],
+        [90.123, -30.456],
+      ]) {
+        assertOpenDepthRay(
+          geometry,
+          x,
+          y,
+          `split cavity survives width=${bevelWidth}, continue=${bevelContinue}`,
+        );
+      }
+      geometry.dispose();
+    }
+  }
+});
+
+test("small SVG contours keep a hole at the UI maximum wall thickness", () => {
+  for (const bevelContinue of [false, true]) {
+    const geometry = buildMesh(denseRectangle(0.08, 4), {
+      depth: 0.2,
+      hollow: true,
+      wallThickness: 30,
+      bevelSize: 0.1,
+      bevelWidth: 0.03,
+      bevelContinue,
+      curvePoints: ridgeProfile,
+    });
+    assert.ok(geometry.userData.effectiveWallThickness > 0);
+    assert.ok(geometry.userData.effectiveWallThickness < 0.04);
+    assertClosedFiniteSolid(geometry);
+    assertOpenDepthRay(
+      geometry,
+      0.04123,
+      -0.03876,
+      "the small contour remains open instead of reverting to a solid mesh",
+    );
+    assert.ok(
+      geometry.userData.warnings.some((message) => message.includes("壁厚")),
+    );
+  }
+});

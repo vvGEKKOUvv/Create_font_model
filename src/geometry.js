@@ -289,11 +289,21 @@ export function buildMesh(shape, settings = {}) {
       if (rings.length > 1)
         localWarnings.push("既存の穴を優先し、自動中抜きは追加していません。");
       else {
-        let wall = requestedWall;
+        const outerBox = new THREE.Box2().setFromPoints(rings[0]);
+        // Start inside the contour's scale. A fixed number of halvings from
+        // the requested value can never find a cavity for very small imports
+        // or an oversized numeric input, and previously returned a solid mesh.
+        let wall = Math.min(
+          requestedWall,
+          Math.min(
+            outerBox.max.x - outerBox.min.x,
+            outerBox.max.y - outerBox.min.y,
+          ) / 2,
+        );
         let inner = hollowContours(rings[0], wall);
         // Only reduce an actually oversized wall whose cavities disappear.
         // Topology changes inside a surviving cavity do not reduce thickness.
-        for (let attempt = 0; !inner.length && attempt < 8; attempt++) {
+        for (let attempt = 0; !inner.length && attempt < 32; attempt++) {
           wall *= 0.5;
           inner = hollowContours(rings[0], wall);
         }
@@ -306,8 +316,8 @@ export function buildMesh(shape, settings = {}) {
               `指定の壁厚では穴が消えるため、壁厚を ${wall.toPrecision(3)} に縮小しました。`,
             );
         } else
-          localWarnings.push(
-            "指定の壁厚では内側の穴が残らないため、自動中抜きを生成できませんでした。元の輪郭を保持しています。壁厚を小さくしてください。",
+          throw new Error(
+            "内側の穴を保持できないため、中抜きの生成を中止しました。壁厚を小さくしてください。",
           );
       }
     }
