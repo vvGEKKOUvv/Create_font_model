@@ -69,6 +69,9 @@ try {
          objects: group.children.map(mesh => ({
            geometryId: mesh.geometry.uuid,
            wireframe: mesh.material.wireframe,
+           colorWrite: mesh.material.colorWrite,
+           occluder: Boolean(mesh.userData.wireframeOccluder?.visible),
+           occluderGeometry: mesh.userData.wireframeOccluder?.geometry.uuid,
            visible: mesh.visible,
            overlay: Boolean(mesh.userData.wireframeOverlay?.visible),
            overlayCount: mesh.children.filter(c => c.isLineSegments).length,
@@ -288,6 +291,34 @@ try {
     .poll(() =>
       page.evaluate(() =>
         window.__sceneSnapshot.objects.every((o) => o.overlayCount === 1),
+      ),
+    )
+    .toBe(true);
+  await page.locator("#wireframe-mode").selectOption("hidden");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__sceneSnapshot.objects.every(
+          (o) =>
+            !o.wireframe &&
+            o.overlay &&
+            o.occluder &&
+            !o.colorWrite &&
+            o.occluderGeometry === o.geometryId,
+        ),
+      ),
+    )
+    .toBe(true);
+  assert.equal(
+    (await exported())["model.obj"],
+    wireframeBaseline["model.obj"],
+    "Hidden-line display never changes OBJ geometry",
+  );
+  await page.locator("#wireframe-mode").selectOption("overlay");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__sceneSnapshot.objects.every((o) => !o.occluder && o.colorWrite),
       ),
     )
     .toBe(true);

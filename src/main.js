@@ -39,7 +39,7 @@ app.innerHTML = `
       <button id="tab-uv" role="tab" aria-selected="false" aria-controls="view-uv" tabindex="-1">UV MAP</button>
     </div>
     <div id="view-3d" class="workspace-view" role="tabpanel" aria-labelledby="tab-3d">
-      <div class="viewport-heading"><span><i class="live-dot"></i> LIVE PREVIEW</span><label class="wireframe-toggle"><input id="wireframe" type="checkbox"/> ワイヤーフレーム</label><select id="wireframe-mode" aria-label="ワイヤーフレーム表示方式"><option value="lines">線のみ</option><option value="overlay">シェーダーに重ねる</option></select><button id="fit" class="subtle">⊡ 全体表示</button></div>
+      <div class="viewport-heading"><span><i class="live-dot"></i> LIVE PREVIEW</span><label class="wireframe-toggle"><input id="wireframe" type="checkbox"/> ワイヤーフレーム</label><select id="wireframe-mode" aria-label="ワイヤーフレーム表示方式"><option value="lines">線のみ</option><option value="hidden">線のみ（奥の面を隠す）</option><option value="overlay">シェーダーに重ねる</option></select><button id="fit" class="subtle">⊡ 全体表示</button></div>
       <div id="viewport"></div>
       <div class="view-caption"><span id="mesh-info">—</span></div>
     </div>
@@ -186,6 +186,12 @@ function dispose() {
   });
 }
 function disposeWireframe(mesh) {
+  const occluder = mesh.userData.wireframeOccluder;
+  if (occluder) {
+    mesh.remove(occluder);
+    occluder.material.dispose();
+    delete mesh.userData.wireframeOccluder;
+  }
   const overlay = mesh.userData.wireframeOverlay;
   if (!overlay) return;
   mesh.remove(overlay);
@@ -195,10 +201,12 @@ function disposeWireframe(mesh) {
 }
 function applyDisplayStyle(mesh, object) {
   const enabled = $("wireframe").checked;
-  const overlayMode = $("wireframe-mode").value === "overlay";
+  const hiddenMode = $("wireframe-mode").value === "hidden";
+  const overlayMode = $("wireframe-mode").value === "overlay" || hiddenMode;
   mesh.visible = object.visible !== false;
   mesh.material.wireframe = enabled && !overlayMode;
   mesh.material.color.set(mesh.material.wireframe ? "#c4d8ef" : object.color);
+  mesh.material.colorWrite = !(enabled && hiddenMode);
   mesh.material.polygonOffset = enabled && overlayMode;
   mesh.material.polygonOffsetFactor = 1;
   mesh.material.polygonOffsetUnits = 1;
@@ -217,7 +225,29 @@ function applyDisplayStyle(mesh, object) {
     mesh.userData.wireframeOverlay = overlay;
     mesh.add(overlay);
   }
-  if (overlay) overlay.visible = enabled && overlayMode;
+  if (overlay) {
+    overlay.visible = enabled && overlayMode;
+    overlay.material.color.set(hiddenMode ? "#c4d8ef" : "#17212b");
+  }
+  let occluder = mesh.userData.wireframeOccluder;
+  if (enabled && hiddenMode && !occluder) {
+    // An opaque background-coloured surface hides both rear wires and the grid.
+    // It shares geometry, so only its material is disposed when rebuilding.
+    occluder = new THREE.Mesh(
+      mesh.geometry,
+      new THREE.MeshBasicMaterial({
+        color: scene.background,
+        side: THREE.DoubleSide,
+        polygonOffset: true,
+        polygonOffsetFactor: 1,
+        polygonOffsetUnits: 1,
+      }),
+    );
+    occluder.raycast = () => {};
+    mesh.userData.wireframeOccluder = occluder;
+    mesh.add(occluder);
+  }
+  if (occluder) occluder.visible = enabled && hiddenMode;
 }
 function makeMeshes(entries) {
   const meshes = [];

@@ -1,5 +1,6 @@
 import ClipperLib from "clipper-lib";
 import cdt2d from "cdt2d";
+import { validateRoofTriangles } from "./roof-topology.js";
 
 const cache = new WeakMap();
 export function prepareOffsetBevelRoof(rings, widthHint) {
@@ -80,7 +81,7 @@ export function prepareOffsetBevelRoof(rings, widthHint) {
         Math.max(scale * scale * 1e-7, Math.abs(clippedArea) * 1e-7);
     const value = compatible
       ? direct
-      : result.map((ring) => retainContourDensity(ring, paths));
+      : result.map((ring) => retainContourDensity(ring, paths, origin, scale));
     if (layerCache.size >= 64)
       layerCache.delete(layerCache.keys().next().value);
     layerCache.set(cacheKey, value);
@@ -139,7 +140,7 @@ function parallelOffset(path, distance, ringIndex) {
 // Offset cleanup may collapse dozens of short input edges into one long edge.
 // Reinsert their closest boundary positions, keeping the offset itself unchanged.
 // This controls tangential tessellation independently of bevel profile samples.
-function retainContourDensity(ring, sources) {
+function retainContourDensity(ring, sources, origin, scale) {
   const compatible = sources.filter(
     (source) =>
       ClipperLib.Clipper.Orientation(source) ===
@@ -190,6 +191,20 @@ function retainContourDensity(ring, sources) {
         sample: true,
       };
       const previous = points.at(-1);
+      const nearRenderedCorner = (corner) => {
+        const px = Math.fround(p.X / scale + origin.x),
+          py = Math.fround(p.Y / scale + origin.y),
+          cx = Math.fround(corner.X / scale + origin.x),
+          cy = Math.fround(corner.Y / scale + origin.y);
+        return (
+          (px === cx || py === cy) &&
+          Math.hypot(px - cx, py - cy) <=
+            Math.max(1, Math.abs(cx), Math.abs(cy)) * 2 ** -23 * 4
+        );
+      };
+      // Only optional density samples are suppressed near a rendered corner.
+      // Original contour vertices and offset corners remain unchanged.
+      if (nearRenderedCorner(a) || nearRenderedCorner(b)) continue;
       if (
         Math.hypot(p.X - previous.X, p.Y - previous.Y) > 2 &&
         Math.hypot(p.X - b.X, p.Y - b.Y) > 2
@@ -317,7 +332,7 @@ function triangulateMatchedBand(subject, clip, a, b, roof) {
         (raw[1].Y - raw[0].Y) * (raw[2].X - raw[0].X);
       if (cross * winding < -roof.scale * 4) return null;
       area += cross / 2;
-      if (Math.abs(cross) > roof.scale * 4) {
+      if (Math.abs(cross) > roof.scale * roof.scale * 1e-12) {
         const centroid = {
           X: (raw[0].X + raw[1].X + raw[2].X) / 3,
           Y: (raw[0].Y + raw[1].Y + raw[2].Y) / 3,
@@ -558,7 +573,7 @@ export function triangulateOffsetBevelRoof(roof, width, samples, profile) {
           start += loop.length;
         }
         const cells = cdt2d(
-          flat.map((p) => [Math.fround(p.x), Math.fround(p.y)]),
+          flat.map((p) => [p.x, p.y]),
           edges,
           { exterior: false },
         );
@@ -640,6 +655,19 @@ export function triangulateOffsetBevelRoof(roof, width, samples, profile) {
     addRegion(next, previous, levels[i], levels[i - 1]);
     previous = next;
   }
+  const equalRendered = (a, b) =>
+    Math.fround(a.x) === Math.fround(b.x) &&
+    Math.fround(a.y) === Math.fround(b.y) &&
+    Math.fround(a.height) === Math.fround(b.height);
+  let kept = 0;
+  for (const triangle of triangles) {
+    const [a, b, c] = triangle.points;
+    if (equalRendered(a, b) || equalRendered(b, c) || equalRendered(c, a))
+      continue;
+    triangles[kept++] = triangle;
+  }
+  triangles.length = kept;
+  validateRoofTriangles(triangles, roof.rings);
   if (roof.triangleCache.size >= 8)
     roof.triangleCache.delete(roof.triangleCache.keys().next().value);
   roof.triangleCache.set(triangleKey, triangles);

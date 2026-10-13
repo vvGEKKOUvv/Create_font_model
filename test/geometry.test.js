@@ -2238,3 +2238,60 @@ test("dense wavy compound contours cannot leave a gap between bevel and side wal
   );
   geometry.dispose();
 });
+
+for (const bevelWidth of [1, 3]) {
+  test(`solid curved outlines with acute branches retain complete bevel and cap coverage (width=${bevelWidth})`, () => {
+    const shape = new Shape();
+    const outline = [];
+    for (let i = 0; i < 128; i++) {
+      const angle = 2 * Math.PI * (i / 128) ** 1.5;
+      let radius = 100 * (1 + 0.2 * Math.cos(3 * angle));
+      if (i >= 44 && i < 50) radius = i % 2 ? 40 : 170;
+      const point = [radius * Math.cos(angle), radius * Math.sin(angle)];
+      outline.push(point);
+      if (i) shape.lineTo(...point);
+      else shape.moveTo(...point);
+    }
+    shape.closePath();
+    const geometry = buildMesh(shape, {
+      depth: 30,
+      bevelSize: 15,
+      bevelWidth,
+      bevelSegments: 6,
+      bevelContinue: true,
+      hollow: false,
+      curvePoints: ridgeProfile,
+    });
+    const triangles = triangleVertices(geometry);
+    const sourceArea =
+      Math.abs(
+        outline.reduce((sum, a, i) => {
+          const b = outline[(i + 1) % outline.length];
+          return sum + a[0] * b[1] - b[0] * a[1];
+        }, 0),
+      ) / 2;
+    let frontArea = 0;
+    for (const [a, b, c] of triangles) {
+      if ([a, b, c].some((p) => p[2] > 15 + 1e-5)) continue;
+      const cross =
+        (b[0] - a[0]) * (c[1] - a[1]) -
+        (b[1] - a[1]) * (c[0] - a[0]);
+      // Front-facing triangles have negative XY winding after the Y flip.
+      // Exclude back-facing faces meeting the front at half extrusion depth.
+      if (cross < 0) frontArea -= cross / 2;
+    }
+    assert.ok(
+      Math.abs(frontArea / sourceArea - 1) < 1e-5,
+      `bevel and front cap cover the full source silhouette (${frontArea / sourceArea})`,
+    );
+    assertClosedFiniteSolid(geometry);
+    const positions = triangles.flat();
+    for (const [x, y] of outline) {
+      assert.ok(
+        positions.some((p) => Math.hypot(p[0] - x, p[1] + y) < 1e-5),
+        "sharp branch and smooth curve vertices remain without implicit reduction",
+      );
+    }
+    geometry.dispose();
+  });
+}
