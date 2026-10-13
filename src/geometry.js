@@ -4,7 +4,11 @@ import { SVGLoader } from "three/addons/loaders/SVGLoader.js";
 import { prepareContours } from "./path-reduction.js";
 
 import { normalizeProfile, evaluateProfile } from "./bevel-profile.js";
-import { prepareBevelRoof, triangulateBevelRoof } from "./bevel-roof.js";
+import {
+  prepareBevelRoof,
+  triangulateBevelRoof,
+  invalidateBevelRoof,
+} from "./bevel-roof.js";
 import { hollowContours } from "./hollow-offset.js";
 import {
   prepareOffsetBevelRoof,
@@ -591,6 +595,10 @@ export function buildMesh(shape, settings = {}) {
         ? triangulateOffsetBevelRoof(roof, bevel, samples, profile)
         : triangulateBevelRoof(roof, bevel, samples, profile);
     } catch (error) {
+      if (!roof.offsetRoof && error.code === "INVALID_BEVEL_TOPOLOGY") {
+        invalidateBevelRoof(rings, error);
+        return buildMesh(shape, settings);
+      }
       throw new Error(error.message);
     }
   }

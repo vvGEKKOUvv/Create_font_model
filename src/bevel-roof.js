@@ -7,6 +7,10 @@ const EPS = 1e-8;
 // Cache the expensive topology, which is independent of extrusion/profile edits.
 const cache = new WeakMap();
 const failures = new WeakMap();
+export function invalidateBevelRoof(rings, error) {
+  cache.delete(rings);
+  failures.set(rings, error);
+}
 export function prepareBevelRoof(rings) {
   if (cache.has(rings)) return cache.get(rings);
   if (failures.has(rings)) throw failures.get(rings);
@@ -31,13 +35,58 @@ export function prepareBevelRoof(rings) {
       time: distanceByPoint.get(`${p.X},${p.Y}`) ?? 0,
     })),
   );
+  // A kernel can return finite faces after a near-simultaneous event while
+  // silently dropping a boundary edge. Reject that topology before it is used
+  // for the bevel; the original side wall must share every boundary edge.
+  const pointKey = (p) => `${Math.round(p.x * 1e7)},${Math.round(p.y * 1e7)}`;
+  const edgeKey = (a, b) => [pointKey(a), pointKey(b)].sort().join("|");
+  const boundary = new Set();
+  for (const ring of rings)
+    for (let i = 0; i < ring.length; i++)
+      boundary.add(edgeKey(ring[i], ring[(i + 1) % ring.length]));
+  const incidence = new Map();
+  const times = new Map();
+  let invalidTimes = false;
+  for (const face of faces)
+    for (let i = 0; i < face.length; i++) {
+      const a = face[i],
+        b = face[(i + 1) % face.length];
+      if (Math.hypot(a.x - b.x, a.y - b.y) < EPS) continue;
+      const key = edgeKey(a, b);
+      incidence.set(key, (incidence.get(key) || 0) + 1);
+      if (
+        boundary.has(key) &&
+        (Math.abs(a.time) > EPS || Math.abs(b.time) > EPS)
+      )
+        invalidTimes = true;
+      for (const point of [a, b]) {
+        const pk = pointKey(point),
+          previous = times.get(pk);
+        if (
+          previous !== undefined &&
+          Math.abs(previous - point.time) >
+            EPS * Math.max(1, previous, point.time)
+        )
+          invalidTimes = true;
+        times.set(pk, point.time);
+      }
+    }
+  if (
+    invalidTimes ||
+    [...boundary].some((key) => incidence.get(key) !== 1) ||
+    [...incidence].some(([key, count]) => count !== (boundary.has(key) ? 1 : 2))
+  ) {
+    const error = new Error("輪郭の稜線が側面の境界と一致しません。");
+    failures.set(rings, error);
+    throw error;
+  }
   const maximumWidth = Math.max(...faces.flat().map((p) => p.time));
   if (
     !(maximumWidth > EPS) ||
     faces.flat().some((p) => ![p.x, p.y, p.time].every(Number.isFinite))
   )
     throw new Error("輪郭の稜線が不正です。");
-  const roof = { faces, maximumWidth };
+  const roof = { faces, maximumWidth, rings };
   cache.set(rings, roof);
   return roof;
 }
@@ -136,6 +185,38 @@ export function triangulateBevelRoof(roof, width, samples, profile) {
         }
       }
     }
+  }
+  // Validate the sampled surface too: clipping and triangulation can fail even
+  // when the skeleton's raw faces pass validation. Compare coordinates as they
+  // will be stored in the renderer's Float32 position buffer.
+  const pointKey = (p) =>
+    `${Math.fround(p.x)},${Math.fround(p.y)},${Math.round(p.height * 1e7)}`;
+  const edgeKey = (a, b) => [pointKey(a), pointKey(b)].sort().join("|");
+  const boundary = new Set();
+  for (const ring of roof.rings)
+    for (let i = 0; i < ring.length; i++) {
+      const a = { ...ring[i], height: 1 },
+        b = { ...ring[(i + 1) % ring.length], height: 1 };
+      if (pointKey(a) !== pointKey(b)) boundary.add(edgeKey(a, b));
+    }
+  const incidence = new Map();
+  for (const triangle of triangles) {
+    const keys = triangle.points.map(pointKey);
+    for (let i = 0; i < 3; i++) {
+      const a = keys[i],
+        b = keys[(i + 1) % 3];
+      if (a === b) continue;
+      const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+      incidence.set(key, (incidence.get(key) || 0) + 1);
+    }
+  }
+  if (
+    [...boundary].some((key) => incidence.get(key) !== 1) ||
+    [...incidence].some(([key, count]) => count !== (boundary.has(key) ? 1 : 2))
+  ) {
+    const error = new Error("ベベル面の境界が閉じていません。");
+    error.code = "INVALID_BEVEL_TOPOLOGY";
+    throw error;
   }
   return triangles;
 }

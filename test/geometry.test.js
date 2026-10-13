@@ -2132,3 +2132,109 @@ for (const bevelContinue of [false, true]) {
     geometry.dispose();
   });
 }
+
+for (const importedHole of [false, true]) {
+  test(`dense nonuniform curved hollow boundaries stay joined after wall edits (importedHole=${importedHole})`, () => {
+    const count = 128;
+    for (const lobes of [0, 3]) {
+      const shape = new Shape();
+      const outer = [];
+      for (let i = 0; i < count; i++) {
+        const angle = 2 * Math.PI * (i / count) ** 1.5;
+        const radius = 100 * (1 + (lobes ? 0.2 * Math.cos(lobes * angle) : 0));
+        const point = [radius * Math.cos(angle), radius * Math.sin(angle)];
+        outer.push(point);
+        if (i) shape.lineTo(...point);
+        else shape.moveTo(...point);
+      }
+      shape.closePath();
+      if (importedHole) {
+        const hole = new Path();
+        for (let i = 0; i < count; i++) {
+          const angle = -2 * Math.PI * (i / count) ** 1.5;
+          const point = [70 * Math.cos(angle), 70 * Math.sin(angle)];
+          if (i) hole.lineTo(...point);
+          else hole.moveTo(...point);
+        }
+        hole.closePath();
+        shape.holes.push(hole);
+      }
+      for (const wallThickness of [17.031, 40]) {
+        const geometry = buildMesh(shape, {
+          depth: 64.01,
+          bevelSize: 18.018,
+          bevelWidth: 3.0247,
+          bevelSegments: 6,
+          bevelContinue: true,
+          hollow: true,
+          wallThickness,
+          curvePoints: ridgeProfile,
+        });
+        assertClosedFiniteSolid(geometry);
+        const positions = triangleVertices(geometry).flat();
+        for (const [x, y] of outer) {
+          assert.ok(
+            positions.some((p) => Math.hypot(p[0] - x, p[1] + y) < 1e-5),
+            "all un-reduced source boundary vertices remain shared with the body",
+          );
+        }
+        assertOpenDepthRay(
+          geometry,
+          0.123,
+          -0.456,
+          "wall edits keep the cavity open across all bevel layers",
+        );
+        geometry.dispose();
+      }
+    }
+  });
+}
+
+test("dense wavy compound contours cannot leave a gap between bevel and side wall", () => {
+  const count = 128;
+  const shape = new Shape();
+  const outline = [];
+  for (let i = 0; i < count; i++) {
+    const angle = 2 * Math.PI * (i / count) ** 1.5;
+    const radius = 100 * (1 + 0.2 * Math.cos(11 * angle));
+    const point = [radius * Math.cos(angle), radius * Math.sin(angle)];
+    outline.push(point);
+    if (i) shape.lineTo(...point);
+    else shape.moveTo(...point);
+  }
+  shape.closePath();
+  const hole = new Path();
+  for (let i = 0; i < count; i++) {
+    const angle = (-2 * Math.PI * i) / count + 0.123;
+    const point = [65 * Math.cos(angle), 65 * Math.sin(angle)];
+    if (i) hole.lineTo(...point);
+    else hole.moveTo(...point);
+  }
+  hole.closePath();
+  shape.holes.push(hole);
+  const geometry = buildMesh(shape, {
+    depth: 64.01,
+    bevelSize: 18.018,
+    bevelWidth: 3.0247,
+    bevelSegments: 6,
+    bevelContinue: true,
+    hollow: true,
+    wallThickness: 17.031,
+    curvePoints: ridgeProfile,
+  });
+  assertClosedFiniteSolid(geometry);
+  const positions = triangleVertices(geometry).flat();
+  for (const [x, y] of outline) {
+    assert.ok(
+      positions.some((p) => Math.hypot(p[0] - x, p[1] + y) < 1e-5),
+      "bevel repairs preserve every original outline vertex",
+    );
+  }
+  assertOpenDepthRay(
+    geometry,
+    0.123,
+    -0.456,
+    "repair keeps the central cavity open",
+  );
+  geometry.dispose();
+});
