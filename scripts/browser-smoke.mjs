@@ -73,6 +73,7 @@ try {
            overlay: Boolean(mesh.userData.wireframeOverlay?.visible),
            overlayCount: mesh.children.filter(c => c.isLineSegments).length,
            effectiveBevel: mesh.geometry.userData.effectiveBevel,
+           effectiveWallThickness: mesh.geometry.userData.effectiveWallThickness,
            effectiveBevelDepth: mesh.geometry.userData.effectiveBevelDepth,
            centralWallDepth: mesh.geometry.userData.centralWallDepth,
            matrix: mesh.matrixWorld.toArray(),
@@ -1005,6 +1006,40 @@ try {
   assert(!/NaN|Infinity/.test(ridgeExport["model.obj"]));
   await page.locator("#tab-3d").click();
   await page.screenshot({ path: join(work, "ridge-L-browser.png") });
+  // Regression: many fine, unreduced edges must not suppress an otherwise
+  // modest bevel on a substantial hollow rim.
+  const fineOutline = ["M0 0", "L100 0", "L100 100", "L0 100", "L0 51"];
+  for (let index = 1; index <= 50; index++) {
+    const t = index / 50;
+    fineOutline.push(`L${-0.1 * Math.sin(Math.PI * t) ** 2} ${51 - t}`);
+  }
+  fineOutline.push("L0 0Z");
+  await page.locator("#file").setInputFiles({
+    name: "fine-hollow.svg",
+    mimeType: "image/svg+xml",
+    buffer: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg"><path id="Fine-hollow" d="${fineOutline.join(" ")}"/></svg>`),
+  });
+  await expect(page.locator("#selected-name")).toHaveText(/Fine-hollow/);
+  await page.locator("#depth").fill("20");
+  await page.locator("#hollow").check();
+  await page.locator("#wallThickness").fill("3");
+  await page.locator("#bevelSize").fill("10");
+  await page.locator("#bevelWidth").fill("0.4");
+  await expect.poll(async () =>
+    (await page.evaluate(() => window.__sceneSnapshot)).objects.at(-1).effectiveBevel,
+  ).toBeGreaterThan(0.399);
+  const fineBevelSmall = await exported();
+  await page.locator("#bevelWidth").fill("1");
+  await expect.poll(async () =>
+    (await page.evaluate(() => window.__sceneSnapshot)).objects.at(-1).effectiveBevel,
+  ).toBeGreaterThan(0.99);
+  const fineBevelLarge = await exported();
+  assert.notEqual(fineBevelLarge["model.obj"], fineBevelSmall["model.obj"],
+    "Changing a hollow bevel width updates actual exported geometry");
+  assert(!/NaN|Infinity/.test(fineBevelLarge["model.obj"]));
+  assert.ok((await page.evaluate(() => window.__sceneSnapshot)).objects.at(-1)
+    .effectiveWallThickness > 2.99);
+  await expect(page.locator("#message")).not.toHaveClass(/error/);
   await page.setViewportSize({ width: 390, height: 844 });
   await expect
     .poll(() =>

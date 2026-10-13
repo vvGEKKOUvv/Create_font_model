@@ -6,6 +6,10 @@ import { prepareContours } from "./path-reduction.js";
 import { normalizeProfile, evaluateProfile } from "./bevel-profile.js";
 import { prepareBevelRoof, triangulateBevelRoof } from "./bevel-roof.js";
 import { hollowContours } from "./hollow-offset.js";
+import {
+  prepareOffsetBevelRoof,
+  triangulateOffsetBevelRoof,
+} from "./offset-bevel-roof.js";
 
 const EPS = 1e-7;
 export function parseSvg(text) {
@@ -394,13 +398,35 @@ export function buildMesh(shape, settings = {}) {
   rings = variant.rings;
   const { box, effectiveWallThickness } = variant;
   let roof = null;
+  let roofFailure = null;
   if (settings.bevelContinue === true && Number(settings.bevelSize) > 0) {
     try {
       roof = prepareBevelRoof(rings);
     } catch (error) {
-      warnings.push(`${error.message} 通常ベベルを使用しました。`);
+      roofFailure = error;
     }
   }
+  // Preserve the original boundary while allowing tiny tips to disappear
+  // locally inside the bevel instead of restricting the entire contour.
+  if (
+    rings.length > 1 &&
+    Number(settings.bevelSize) > 0 &&
+    ((!roof &&
+      ((explicitWidth &&
+        requestedBevelWidth > variant.maximumBevelWidth + EPS) ||
+        settings.bevelContinue === true)) ||
+      (roof && explicitWidth && requestedBevelWidth > roof.maximumWidth + EPS))
+  ) {
+    const offsetRoof = prepareOffsetBevelRoof(rings);
+    if (!roof || offsetRoof.maximumWidth > roof.maximumWidth + EPS)
+      roof = offsetRoof;
+  }
+  if (roofFailure)
+    warnings.push(
+      roof?.offsetRoof
+        ? "安定した輪郭差分方式でベベルを生成しました。"
+        : `${roofFailure.message} 通常ベベルを使用しました。`,
+    );
   const bevel = roof
     ? explicitWidth
       ? Math.min(requestedBevelWidth, roof.maximumWidth)
@@ -543,7 +569,9 @@ export function buildMesh(shape, settings = {}) {
   let roofTriangles = null;
   if (roof && bevel > EPS) {
     try {
-      roofTriangles = triangulateBevelRoof(roof, bevel, samples, profile);
+      roofTriangles = roof.offsetRoof
+        ? triangulateOffsetBevelRoof(roof, bevel, samples, profile)
+        : triangulateBevelRoof(roof, bevel, samples, profile);
     } catch (error) {
       throw new Error(error.message);
     }

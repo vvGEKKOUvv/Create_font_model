@@ -1253,24 +1253,45 @@ test("fine curved outline details do not collapse the requested hollow front rim
     "reduction is not required to obtain a substantial front rim");
 });
 
-test("fine curved hollow outlines keep substantial front faces with either bevel mode", () => {
+test("fine curved hollow outlines retain requested bevel widths and actual sloped faces", () => {
   const shape = fineCurvedBumpOutline();
   for (const bevelContinue of [false, true]) {
-    const geometry = buildMesh(shape, {
-      depth: 20,
-      bevelSize: 10,
-      bevelWidth: 0.4,
-      bevelContinue,
-      hollow: true,
-      wallThickness: 3,
-      curvePoints: ridgeProfile,
-    });
-    assertWallBodyThickness(geometry, 20);
-    assert.ok(geometry.userData.effectiveWallThickness >= 2.99);
-    assert.ok(frontProjectedArea(geometry) > 800,
-      "a modest bevel leaves the front rim visibly wider than a thin sheet");
-    assert.ok(geometry.userData.effectiveBevel > 0,
-      "the preserved wall still supports bevel geometry");
+    const exportedWidths = [];
+    for (const bevelWidth of [0.4, 1]) {
+      const geometry = buildMesh(shape, {
+        depth: 20,
+        bevelSize: 10,
+        bevelWidth,
+        bevelContinue,
+        hollow: true,
+        wallThickness: 3,
+        curvePoints: ridgeProfile,
+      });
+      assertWallBodyThickness(geometry, 20);
+      assert.ok(geometry.userData.effectiveWallThickness >= 2.99);
+      assert.ok(geometry.userData.effectiveBevel >= bevelWidth * 0.99,
+        `a local fine detail must not globally shrink requested width ${bevelWidth}`);
+      const slopedFrontArea = triangleVertices(geometry)
+        .filter((tri) => {
+          const z = tri.map((point) => point[2]);
+          return Math.max(...z) <= 10 && Math.max(...z) - Math.min(...z) > 1e-6;
+        })
+        .reduce((sum, [a, b, c]) => sum + Math.abs(
+          (b[0] - a[0]) * (c[1] - a[1]) -
+          (b[1] - a[1]) * (c[0] - a[0]),
+        ) / 2, 0);
+      assert.ok(slopedFrontArea > bevelWidth * 500,
+        `the front has visible bevel slopes rather than only metadata (${slopedFrontArea})`);
+      assert.ok(frontProjectedArea(geometry) > 300,
+        "a modest bevel leaves a substantial flat front rim");
+      applyUvSettings(geometry, { uvScale: 1.2, uvRotation: 15 });
+      const exported = exportObj([{ name: "fine-hollow", geometry }]);
+      assert.ok(!/NaN|Infinity/.test(exported.obj));
+      assert.match(exported.obj, /^vt /m);
+      exportedWidths.push(exported.obj);
+    }
+    assert.notEqual(exportedWidths[0], exportedWidths[1],
+      "changing lateral bevel width changes actual exported geometry");
   }
 });
 
@@ -1300,6 +1321,59 @@ test("hollow offsets can split an inner cavity without thinning the outer walls"
         return crosses.every((value) => value >= -1e-6) ||
           crosses.every((value) => value <= 1e-6);
       }), "both resulting inner cavities remain open through the caps");
+    }
+  }
+});
+
+test("a tiny acute hollow outline spike keeps its detail without suppressing the bevel", () => {
+  const shape = new Shape();
+  const outline = [[0, 0], [100, 0], [100, 100], [0, 100],
+    [0, 50.01], [-0.1, 50], [0, 49.99]];
+  shape.moveTo(...outline[0]);
+  for (const point of outline.slice(1)) shape.lineTo(...point);
+  shape.closePath();
+  for (const bevelContinue of [false, true]) {
+    const geometry = buildMesh(shape, {
+      depth: 20, bevelSize: 10, bevelWidth: 1, bevelContinue,
+      hollow: true, wallThickness: 3, curvePoints: ridgeProfile,
+    });
+    assertWallBodyThickness(geometry, 20);
+    assert.ok(geometry.userData.effectiveBevel >= 0.99);
+    assert.ok(geometry.userData.effectiveWallThickness >= 2.99);
+    const positions = geometry.attributes.position;
+    assert.ok(Array.from({ length: positions.count }, (_, index) =>
+      Math.abs(positions.getX(index) + 0.1) < 1e-6 &&
+      Math.abs(positions.getY(index) + 50) < 1e-6,
+    ).some(Boolean), "the acute original detail remains at the outer boundary");
+  }
+});
+
+test("fine curved imported compound holes retain bevel slopes with or without hollow enabled", () => {
+  const shape = fineCurvedBumpOutline();
+  const hole = new Path();
+  hole.moveTo(3, 3);
+  hole.lineTo(3, 97);
+  hole.lineTo(97, 97);
+  hole.lineTo(97, 3);
+  hole.closePath();
+  shape.holes.push(hole);
+  for (const hollow of [false, true]) {
+    for (const bevelContinue of [false, true]) {
+      const geometry = buildMesh(shape, {
+        depth: 20, bevelSize: 10, bevelWidth: 1, bevelContinue,
+        hollow, wallThickness: 3, curvePoints: ridgeProfile,
+      });
+      assertWallBodyThickness(geometry, 20);
+      assert.ok(geometry.userData.effectiveBevel >= 0.99,
+        "imported holes support the requested width independently of automatic hollowing");
+      const frontArea = frontProjectedArea(geometry);
+      assert.ok(frontArea > 300 && frontArea < 500,
+        `a three-unit imported rim retains its flat front plus substantial slopes (${frontArea})`);
+      const positions = geometry.attributes.position;
+      assert.ok(Array.from({ length: positions.count }, (_, index) =>
+        Math.abs(positions.getX(index) + 0.1) < 1e-6,
+      ).some(Boolean), "the original fine outer detail is retained");
+      assert.ok(!/NaN|Infinity/.test(exportObj([{ name: "imported-hole", geometry }]).obj));
     }
   }
 });
