@@ -399,7 +399,11 @@ export function buildMesh(shape, settings = {}) {
   const { box, effectiveWallThickness } = variant;
   let roof = null;
   let roofFailure = null;
-  if (settings.bevelContinue === true && Number(settings.bevelSize) > 0 && rings.length === 1) {
+  if (
+    settings.bevelContinue === true &&
+    Number(settings.bevelSize) > 0 &&
+    rings.length === 1
+  ) {
     try {
       roof = prepareBevelRoof(rings);
     } catch (error) {
@@ -417,8 +421,15 @@ export function buildMesh(shape, settings = {}) {
         settings.bevelContinue === true)) ||
       (roof && explicitWidth && requestedBevelWidth > roof.maximumWidth + EPS))
   ) {
-    const offsetRoof = prepareOffsetBevelRoof(rings);
-    if (settings.bevelContinue === true || !roof || offsetRoof.maximumWidth > roof.maximumWidth + EPS)
+    const offsetRoof = prepareOffsetBevelRoof(
+      rings,
+      effectiveWallThickness > 0 ? effectiveWallThickness / 2 : undefined,
+    );
+    if (
+      settings.bevelContinue === true ||
+      !roof ||
+      offsetRoof.maximumWidth > roof.maximumWidth + EPS
+    )
       roof = offsetRoof;
   }
   if (roofFailure)
@@ -502,7 +513,7 @@ export function buildMesh(shape, settings = {}) {
         b = points[i + 1];
       if (a.mode !== "bezier" && b.mode !== "bezier") continue;
       // Curved segments need intermediate rings even with a low division setting.
-      const count = Math.max(8, Math.ceil(segments * (b.x - a.x)));
+      const count = Math.max(2, Math.ceil(Math.max(8, segments) * (b.x - a.x)));
       for (let j = 1; j < count; j++)
         bezierSamples.push(a.x + ((b.x - a.x) * j) / count);
     }

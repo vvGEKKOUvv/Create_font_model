@@ -9,7 +9,7 @@ import {
   applyUvSettings,
 } from "../src/geometry.js";
 
-import { moveProfileHandle } from "../src/bevel-profile.js";
+import { defaultProfile, moveProfileHandle } from "../src/bevel-profile.js";
 import {
   prepareOffsetBevelRoof,
   triangulateOffsetBevelRoof,
@@ -31,7 +31,18 @@ test("nonuniform outline sampling retains longitudinal bevel vertices without wi
     const samples = Array.from({ length: segments + 1 }, (_, i) => i / segments);
     const triangles = triangulateOffsetBevelRoof(roof, 2, samples, (t) => t);
     const boundary = new Map();
+    const faceIncidence = new Map();
     for (const triangle of triangles) {
+      if (triangle.faceIndex !== 0) {
+        for (const p of triangle.points) {
+          // The closure joins a tiny edge to the longest edge. Its inset
+          // legitimately removes several tiny edges, so exclude that corner
+          // when measuring correspondence on the unchanged smooth contour.
+          if (Math.abs(Math.atan2(p.y, p.x)) < 0.1) continue;
+          const key = `${p.x},${p.y},${p.height}`;
+          faceIncidence.set(key, (faceIncidence.get(key) ?? 0) + 1);
+        }
+      }
       for (let i = 0; i < 3; i++) {
         const a = triangle.points[i],
           b = triangle.points[(i + 1) % 3];
@@ -43,6 +54,10 @@ test("nonuniform outline sampling retains longitudinal bevel vertices without wi
         );
       }
     }
+    assert.ok(
+      Math.max(...faceIncidence.values()) <= 10,
+      `smooth offsets retain local correspondence rather than concentrating triangles in a fan (${Math.max(...faceIncidence.values())})`,
+    );
     for (const p of ring) {
       assert.ok(
         [...boundary.values()].some(
@@ -85,6 +100,39 @@ test("nonuniform hollow bevel bands share cap and body boundaries and export edi
     assert.match(result.obj, /^vt /m);
     assert.match(result.obj, /^f \d+\/\d+\/\d+/m);
   }
+});
+
+test("curved profile control points share the requested bevel resolution budget", () => {
+  const shape = new Shape();
+  const count = 128;
+  for (let i = 0; i < count; i++) {
+    const angle = 2 * Math.PI * (i / count) ** 1.5;
+    const point = [50 * Math.cos(angle), 50 * Math.sin(angle)];
+    if (i === 0) shape.moveTo(...point);
+    else shape.lineTo(...point);
+  }
+  shape.closePath();
+  const settings = {
+    depth: 12,
+    bevelSize: 6,
+    bevelWidth: 1,
+    hollow: true,
+    wallThickness: 3,
+    bevelSegments: 8,
+    curvePoints: defaultProfile(),
+  };
+  const geometry = buildMesh(shape, settings);
+  assertClosedFiniteSolid(geometry);
+  assert.ok(
+    geometry.attributes.position.count <= 32000,
+    `two Bezier spans must share eight bevel bands instead of independently doubling them (${geometry.attributes.position.count} vertices)`,
+  );
+  const linear = buildMesh(shape, { ...settings, curvePoints: ridgeProfile });
+  assert.notDeepEqual(
+    Array.from(geometry.attributes.position.array),
+    Array.from(linear.attributes.position.array),
+    "the curved profile remains different from a straight bevel",
+  );
 });
 
 test("offset bevel triangles follow local curved contour slopes without diagonal dents", () => {

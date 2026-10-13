@@ -2,7 +2,7 @@ import ClipperLib from "clipper-lib";
 import { ShapeUtils, Vector2 } from "three";
 
 const cache = new WeakMap();
-export function prepareOffsetBevelRoof(rings) {
+export function prepareOffsetBevelRoof(rings, widthHint) {
   if (cache.has(rings)) return cache.get(rings);
   const origin = rings[0][0];
   const extent = Math.max(
@@ -25,8 +25,23 @@ export function prepareOffsetBevelRoof(rings) {
   paths.forEach((path, i) => {
     if (ClipperLib.Clipper.Orientation(path) !== (i === 0)) path.reverse();
   });
+  const precisePaths = paths.map((path) =>
+    path.map((p) => {
+      const original = exactSource.get(`${p.X},${p.Y}`);
+      return {
+        X: (original.x - origin.x) * scale,
+        Y: (original.y - origin.y) * scale,
+      };
+    }),
+  );
+  const layerCache = new Map();
   const inset = (distance, density = true) => {
-    if (distance < 1 / scale) return paths;
+    const cacheKey = `${distance}:${density}`;
+    if (layerCache.has(cacheKey)) return layerCache.get(cacheKey);
+    if (distance < 1 / scale)
+      return paths.map((ring, r) =>
+        ring.map((p, i) => ({ ...p, sourceRing: r, sourceIndex: i })),
+      );
     const offset = new ClipperLib.ClipperOffset(10, 0.01 * scale);
     offset.AddPaths(
       paths,
@@ -35,11 +50,48 @@ export function prepareOffsetBevelRoof(rings) {
     );
     const result = new ClipperLib.Paths();
     offset.Execute(result, -distance * scale);
-    return density ? result.map((ring) => retainContourDensity(ring, paths)) : result;
+    if (!density) return result;
+    // A valid parallel offset retains source indices, including short collinear
+    // edges that Clipper intentionally removes. This is exact correspondence,
+    // not a nearest-neighbor triangle fan.
+    const direct = precisePaths.map((path, index) =>
+      parallelOffset(path, distance * scale, index),
+    );
+    const directArea = direct.reduce(
+      (sum, ring) => sum + ClipperLib.Clipper.Area(ring),
+      0,
+    );
+    const clippedArea = result.reduce(
+      (sum, ring) => sum + ClipperLib.Clipper.Area(ring),
+      0,
+    );
+    const forward = direct.every((ring, r) =>
+      ring.every((p, i) => {
+        const q = ring[(i + 1) % ring.length],
+          a = precisePaths[r][i],
+          b = precisePaths[r][(i + 1) % ring.length];
+        return (q.X - p.X) * (b.X - a.X) + (q.Y - p.Y) * (b.Y - a.Y) > 0;
+      }),
+    );
+    const compatible =
+      direct.length === result.length &&
+      forward &&
+      Math.abs(directArea - clippedArea) <=
+        Math.max(scale * scale * 1e-7, Math.abs(clippedArea) * 1e-7);
+    const value = compatible
+      ? direct
+      : result.map((ring) => retainContourDensity(ring, paths));
+    if (layerCache.size >= 64)
+      layerCache.delete(layerCache.keys().next().value);
+    layerCache.set(cacheKey, value);
+    return value;
   };
   let low = 0,
-    high = extent;
-  for (let i = 0; i < 24; i++) {
+    high =
+      Number.isFinite(widthHint) && widthHint > 0
+        ? Math.min(extent, widthHint)
+        : extent;
+  for (let i = 0; i < 16; i++) {
     const mid = (low + high) / 2;
     if (inset(mid, false).length) low = mid;
     else high = mid;
@@ -57,50 +109,91 @@ export function prepareOffsetBevelRoof(rings) {
       low - Math.max(low * 0.0001, extent * 2 ** -23 * 2),
     ),
     faces: [null, null],
+    triangleCache: new Map(),
   };
   cache.set(rings, roof);
   return roof;
+}
+function parallelOffset(path, distance, ringIndex) {
+  return path.map((p, i) => {
+    const prev = path[(i + path.length - 1) % path.length],
+      next = path[(i + 1) % path.length];
+    const al = Math.hypot(p.X - prev.X, p.Y - prev.Y),
+      bl = Math.hypot(next.X - p.X, next.Y - p.Y);
+    const ax = (p.X - prev.X) / al,
+      ay = (p.Y - prev.Y) / al,
+      bx = (next.X - p.X) / bl,
+      by = (next.Y - p.Y) / bl;
+    const sx = -ay - by,
+      sy = ax + bx,
+      denom = sx * -by + sy * bx;
+    const t = Math.abs(denom) < 1e-12 ? 0 : distance / denom;
+    return {
+      X: p.X + sx * t,
+      Y: p.Y + sy * t,
+      sourceRing: ringIndex,
+      sourceIndex: i,
+    };
+  });
 }
 // Offset cleanup may collapse dozens of short input edges into one long edge.
 // Reinsert their closest boundary positions, keeping the offset itself unchanged.
 // This controls tangential tessellation independently of bevel profile samples.
 function retainContourDensity(ring, sources) {
-  const compatible = sources.filter((source) =>
-    ClipperLib.Clipper.Orientation(source) === ClipperLib.Clipper.Orientation(ring),
+  const compatible = sources.filter(
+    (source) =>
+      ClipperLib.Clipper.Orientation(source) ===
+      ClipperLib.Clipper.Orientation(ring),
   );
   const candidates = compatible.length ? compatible : sources;
   const source = candidates.reduce((best, candidate) =>
     boundaryDistance(ring[0], [candidate]) < boundaryDistance(ring[0], [best])
-      ? candidate : best,
+      ? candidate
+      : best,
   );
-  const spacing = source.reduce((sum, p, i) => {
-    const q = source[(i + 1) % source.length];
-    return sum + Math.hypot(q.X - p.X, q.Y - p.Y);
-  }, 0) / source.length;
   const inserts = ring.map(() => []);
   for (const p of source) {
-    let nearest = Infinity, edge = 0, parameter = 0;
+    let nearest = Infinity,
+      edge = 0,
+      parameter = 0;
     for (let i = 0; i < ring.length; i++) {
-      const a = ring[i], b = ring[(i + 1) % ring.length];
-      const dx = b.X - a.X, dy = b.Y - a.Y;
-      const t = Math.max(0, Math.min(1,
-        ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / (dx * dx + dy * dy || 1)));
+      const a = ring[i],
+        b = ring[(i + 1) % ring.length];
+      const dx = b.X - a.X,
+        dy = b.Y - a.Y;
+      const t = Math.max(
+        0,
+        Math.min(
+          1,
+          ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / (dx * dx + dy * dy || 1),
+        ),
+      );
       const distance = Math.hypot(p.X - a.X - t * dx, p.Y - a.Y - t * dy);
-      if (distance < nearest) { nearest = distance; edge = i; parameter = t; }
+      if (distance < nearest) {
+        nearest = distance;
+        edge = i;
+        parameter = t;
+      }
     }
     if (parameter > 1e-10 && parameter < 1 - 1e-10)
       inserts[edge].push(parameter);
   }
   return ring.flatMap((a, i) => {
     const b = ring[(i + 1) % ring.length];
-    const pieces = Math.max(1, Math.ceil(Math.hypot(b.X - a.X, b.Y - a.Y) / spacing));
-    for (let k = 1; k < pieces; k++) inserts[i].push(k / pieces);
+    // Source correspondence alone bounds sampling; never subdivide by global mean edge length.
     const sorted = inserts[i].sort((x, y) => x - y);
     const points = [a];
     for (const t of sorted) {
-      const p = { X: a.X + t * (b.X - a.X), Y: a.Y + t * (b.Y - a.Y), sample: true };
+      const p = {
+        X: a.X + t * (b.X - a.X),
+        Y: a.Y + t * (b.Y - a.Y),
+        sample: true,
+      };
       const previous = points.at(-1);
-      if (Math.hypot(p.X - previous.X, p.Y - previous.Y) > 2 && Math.hypot(p.X - b.X, p.Y - b.Y) > 2)
+      if (
+        Math.hypot(p.X - previous.X, p.Y - previous.Y) > 2 &&
+        Math.hypot(p.X - b.X, p.Y - b.Y) > 2
+      )
         points.push(p);
     }
     return points;
@@ -162,6 +255,32 @@ function triangulateMatchedBand(subject, clip, a, b, roof) {
     if (chosen < 0) return null;
     unused.delete(chosen);
     const inner = clip[chosen];
+    if (
+      outer.length === inner.length &&
+      outer.every((p) => p.sourceIndex !== undefined) &&
+      inner.every((p) => p.sourceIndex !== undefined) &&
+      outer[0].sourceRing === inner[0].sourceRing
+    ) {
+      const byIndex = new Map(inner.map((p) => [p.sourceIndex, p]));
+      for (let j = 0; j < outer.length; j++) {
+        const op = outer[j],
+          on = outer[(j + 1) % outer.length];
+        const ip = byIndex.get(op.sourceIndex),
+          inn = byIndex.get(on.sourceIndex);
+        for (const raw of [
+          [point(op, a.height), point(on, a.height), point(ip, b.height)],
+          [point(on, a.height), point(inn, b.height), point(ip, b.height)],
+        ]) {
+          const cross =
+            (raw[1].x - raw[0].x) * (raw[2].y - raw[0].y) -
+            (raw[1].y - raw[0].y) * (raw[2].x - raw[0].x);
+          if (Math.abs(cross) < 1e-12) continue;
+          if (cross < 0) raw.reverse();
+          triangles.push({ faceIndex: 1, points: raw });
+        }
+      }
+      continue;
+    }
     let oi = 0,
       ii = 0,
       nearest = Infinity;
@@ -210,8 +329,10 @@ function triangulateMatchedBand(subject, clip, a, b, roof) {
           ClipperLib.Clipper.PointInPolygon(centroid, inner) !== 0;
         if (
           outerContainsInner
-            ? (!insideOuter && boundaryDistance(centroid, [outer]) > 2) || (insideInner && boundaryDistance(centroid, [inner]) > 2)
-            : (!insideInner && boundaryDistance(centroid, [inner]) > 2) || (insideOuter && boundaryDistance(centroid, [outer]) > 2)
+            ? (!insideOuter && boundaryDistance(centroid, [outer]) > 2) ||
+              (insideInner && boundaryDistance(centroid, [inner]) > 2)
+            : (!insideInner && boundaryDistance(centroid, [inner]) > 2) ||
+              (insideOuter && boundaryDistance(centroid, [outer]) > 2)
         )
           return null;
         const tri = advanceOuter
@@ -232,6 +353,9 @@ function triangulateMatchedBand(subject, clip, a, b, roof) {
 // Triangulate the difference of successive offset regions. Offsets can remove
 // small tips or split cavities without shrinking the bevel on every other edge.
 export function triangulateOffsetBevelRoof(roof, width, samples, profile) {
+  const triangleKey = JSON.stringify([width, samples, samples.map(profile)]);
+  if (roof.triangleCache.has(triangleKey))
+    return roof.triangleCache.get(triangleKey);
   const levels = samples.map((t) => ({
     height: t,
     inset: width * (1 - profile(t)),
@@ -264,8 +388,17 @@ export function triangulateOffsetBevelRoof(roof, width, samples, profile) {
     };
     const c = new ClipperLib.Clipper();
     c.PreserveCollinear = true;
-    c.AddPaths(subject.map((r) => r.filter((p) => !p.sample)), ClipperLib.PolyType.ptSubject, true);
-    if (clip.length) c.AddPaths(clip.map((r) => r.filter((p) => !p.sample)), ClipperLib.PolyType.ptClip, true);
+    c.AddPaths(
+      subject.map((r) => r.filter((p) => !p.sample)),
+      ClipperLib.PolyType.ptSubject,
+      true,
+    );
+    if (clip.length)
+      c.AddPaths(
+        clip.map((r) => r.filter((p) => !p.sample)),
+        ClipperLib.PolyType.ptClip,
+        true,
+      );
     const tree = new ClipperLib.PolyTree();
     c.Execute(
       clip.length
@@ -274,6 +407,24 @@ export function triangulateOffsetBevelRoof(roof, width, samples, profile) {
       tree,
       ClipperLib.PolyFillType.pftNonZero,
       ClipperLib.PolyFillType.pftNonZero,
+    );
+    const boundaryRings = [...subject, ...clip].map((ring) =>
+      ring.map((p) => {
+        const original = roof.exactSource.get(`${p.X},${p.Y}`);
+        return {
+          x: original?.x ?? p.X / roof.scale + roof.origin.x,
+          y: original?.y ?? p.Y / roof.scale + roof.origin.y,
+          height: pointHeight(p),
+        };
+      }),
+    );
+    const boundaryLookup = new Map();
+    boundaryRings.forEach((ring, r) =>
+      ring.forEach((p, i) => {
+        const k = `${Math.fround(p.x)},${Math.fround(p.y)},${p.height}`;
+        if (!boundaryLookup.has(k)) boundaryLookup.set(k, []);
+        boundaryLookup.get(k).push({ ring: r, index: i });
+      }),
     );
     const visit = (node) => {
       if (!node.IsHole() && node.Contour().length) {
@@ -288,8 +439,11 @@ export function triangulateOffsetBevelRoof(roof, width, samples, profile) {
           path.map((p) => {
             // Boolean intersection rounding must reuse the neighboring layer's
             // actual boundary coordinate rather than invent a second seam point.
-            const original = [...subject, ...clip].flat().find((q) =>
-              Math.hypot(q.X - p.X, q.Y - p.Y) < roof.scale * 1e-5);
+            const original = [...subject, ...clip]
+              .flat()
+              .find(
+                (q) => Math.hypot(q.X - p.X, q.Y - p.Y) < roof.scale * 1e-5,
+              );
             if (original) p = original;
             const source = roof.exactSource.get(`${p.X},${p.Y}`);
             return {
@@ -313,31 +467,55 @@ export function triangulateOffsetBevelRoof(roof, width, samples, profile) {
           // Earcut omits collinear boundary samples. Split its boundary edges
           // back at those samples so the cap and adjacent bands share seams.
           const pending = [tri];
-          for (const boundary of [...subject, ...clip].flat().map((p) => ({
-            x: roof.exactSource.get(`${p.X},${p.Y}`)?.x ?? p.X / roof.scale + roof.origin.x,
-            y: roof.exactSource.get(`${p.X},${p.Y}`)?.y ?? p.Y / roof.scale + roof.origin.y,
-            height: pointHeight(p),
-          }))) {
-            for (let n = 0; n < pending.length; n++) {
-              const face = pending[n];
-              if (face.some((p) => Math.fround(p.x) === Math.fround(boundary.x) &&
-                Math.fround(p.y) === Math.fround(boundary.y) && p.height === boundary.height)) continue;
-              let split = false;
-              for (let j = 0; j < 3; j++) {
-                const a = face[j], b = face[(j + 1) % 3], c = face[(j + 2) % 3];
-                const dx = b.x - a.x, dy = b.y - a.y;
-                const length2 = dx * dx + dy * dy;
-                const t = ((boundary.x - a.x) * dx + (boundary.y - a.y) * dy) / length2;
-                if (!(t > 1e-8 && t < 1 - 1e-8)) continue;
-                if (Math.hypot(boundary.x - a.x, boundary.y - a.y) < 1e-6 ||
-                    Math.hypot(boundary.x - b.x, boundary.y - b.y) < 1e-6) continue;
-                if (Math.abs(dx * (boundary.y - a.y) - dy * (boundary.x - a.x))
-                  > Math.sqrt(length2) * 1e-7) continue;
-                if (Math.abs(boundary.height - (a.height + t * (b.height - a.height))) > 1e-7) continue;
-                pending[n] = [a, boundary, c];
-                pending.push([boundary, b, c]);
-                split = true;
-                break;
+          // An earcut boundary edge either has consecutive loop indices or
+          // skips collinear points. Inspect only that index interval, never all
+          // boundary points for every face (the former quadratic bottleneck).
+          const pointKey = (p) =>
+            `${Math.fround(p.x)},${Math.fround(p.y)},${p.height}`;
+          for (let n = 0; n < pending.length; n++) {
+            const face = pending[n];
+            let split = false;
+            for (let j = 0; j < 3; j++) {
+              const a = face[j],
+                b = face[(j + 1) % 3],
+                c = face[(j + 2) % 3];
+              const locationsA = boundaryLookup.get(pointKey(a)) || [];
+              const locationsB = boundaryLookup.get(pointKey(b)) || [];
+              const dx = b.x - a.x,
+                dy = b.y - a.y,
+                length2 = dx * dx + dy * dy;
+              if (!length2) continue;
+              for (const la of locationsA) {
+                const lb = locationsB.find((v) => v.ring === la.ring);
+                if (!lb) continue;
+                const boundaryRing = boundaryRings[la.ring];
+                for (const step of [1, -1]) {
+                  let index =
+                    (la.index + step + boundaryRing.length) %
+                    boundaryRing.length;
+                  if (index === lb.index) continue;
+                  const q = boundaryRing[index];
+                  const t = ((q.x - a.x) * dx + (q.y - a.y) * dy) / length2;
+                  if (
+                    !(t > 1e-8 && t < 1 - 1e-8) ||
+                    Math.abs(dx * (q.y - a.y) - dy * (q.x - a.x)) >
+                      Math.sqrt(length2) * 1e-7 ||
+                    Math.abs(
+                      q.height - (a.height + t * (b.height - a.height)),
+                    ) > 1e-7
+                  )
+                    continue;
+                  if (
+                    Math.hypot(q.x - a.x, q.y - a.y) < 1e-6 ||
+                    Math.hypot(q.x - b.x, q.y - b.y) < 1e-6
+                  )
+                    continue;
+                  pending[n] = [a, q, c];
+                  pending.push([q, b, c]);
+                  split = true;
+                  break;
+                }
+                if (split) break;
               }
               if (split) break;
             }
@@ -357,5 +535,8 @@ export function triangulateOffsetBevelRoof(roof, width, samples, profile) {
     addRegion(next, previous, levels[i], levels[i - 1]);
     previous = next;
   }
+  if (roof.triangleCache.size >= 8)
+    roof.triangleCache.delete(roof.triangleCache.keys().next().value);
+  roof.triangleCache.set(triangleKey, triangles);
   return triangles;
 }
