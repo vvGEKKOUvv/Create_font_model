@@ -17,6 +17,76 @@ import {
 
 globalThis.DOMParser = DOMParser;
 
+test("nonuniform outline sampling retains longitudinal bevel vertices without wide triangle fans", () => {
+  const count = 400;
+  const ring = Array.from({ length: count }, (_, i) => {
+    const angle = 2 * Math.PI * (i / count) ** 3;
+    return new Vector2(50 * Math.cos(angle), 50 * Math.sin(angle));
+  });
+  const longestSourceEdge = Math.max(
+    ...ring.map((p, i) => p.distanceTo(ring[(i + 1) % count])),
+  );
+  const roof = prepareOffsetBevelRoof([ring]);
+  for (const segments of [2, 8]) {
+    const samples = Array.from({ length: segments + 1 }, (_, i) => i / segments);
+    const triangles = triangulateOffsetBevelRoof(roof, 2, samples, (t) => t);
+    const boundary = new Map();
+    for (const triangle of triangles) {
+      for (let i = 0; i < 3; i++) {
+        const a = triangle.points[i],
+          b = triangle.points[(i + 1) % 3];
+        if (a.height === 1) boundary.set(`${a.x},${a.y}`, a);
+        if (triangle.faceIndex === 0 || a.height !== b.height) continue;
+        assert.ok(
+          Math.hypot(a.x - b.x, a.y - b.y) <= longestSourceEdge * 1.2,
+          `bevel segments ${segments} must not merge local outline edges into long diagonals`,
+        );
+      }
+    }
+    for (const p of ring) {
+      assert.ok(
+        [...boundary.values()].some(
+          (q) => Math.hypot(p.x - q.x, p.y - q.y) < 1e-7,
+        ),
+        `the source outline vertex ${p.x},${p.y} survives without reduction`,
+      );
+    }
+  }
+});
+
+test("nonuniform hollow bevel bands share cap and body boundaries and export editable UVs", () => {
+  const shape = new Shape();
+  for (let i = 0; i < 128; i++) {
+    const angle = 2 * Math.PI * (i / 128) ** 1.5;
+    const x = 50 * Math.cos(angle),
+      y = 50 * Math.sin(angle);
+    if (i === 0) shape.moveTo(x, y);
+    else shape.lineTo(x, y);
+  }
+  shape.closePath();
+  for (const bevelContinue of [false, true]) {
+    const geometry = buildMesh(shape, {
+      depth: 12,
+      bevelSize: 6,
+      bevelWidth: 1,
+      hollow: true,
+      wallThickness: 3,
+      bevelContinue,
+      bevelSegments: 4,
+      curvePoints: ridgeProfile,
+    });
+    assertClosedFiniteSolid(geometry);
+    const positions = geometry.attributes.position;
+    const uv = geometry.attributes.uv;
+    assert.equal(positions.count, uv.count);
+    applyUvSettings(geometry, { uvScale: 1.3, uvRotation: 20 });
+    const result = exportObj([{ name: "nonuniform-bevel", geometry }]);
+    assert.ok(!/NaN|Infinity/.test(result.obj));
+    assert.match(result.obj, /^vt /m);
+    assert.match(result.obj, /^f \d+\/\d+\/\d+/m);
+  }
+});
+
 test("offset bevel triangles follow local curved contour slopes without diagonal dents", () => {
   const ring = Array.from({ length: 100 }, (_, i) => {
     const angle = (i * 2 * Math.PI) / 100;

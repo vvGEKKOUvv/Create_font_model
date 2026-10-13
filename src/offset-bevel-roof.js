@@ -25,8 +25,8 @@ export function prepareOffsetBevelRoof(rings) {
   paths.forEach((path, i) => {
     if (ClipperLib.Clipper.Orientation(path) !== (i === 0)) path.reverse();
   });
-  const inset = (distance) => {
-    if (distance === 0) return paths;
+  const inset = (distance, density = true) => {
+    if (distance < 1 / scale) return paths;
     const offset = new ClipperLib.ClipperOffset(10, 0.01 * scale);
     offset.AddPaths(
       paths,
@@ -35,13 +35,13 @@ export function prepareOffsetBevelRoof(rings) {
     );
     const result = new ClipperLib.Paths();
     offset.Execute(result, -distance * scale);
-    return result;
+    return density ? result.map((ring) => retainContourDensity(ring, paths)) : result;
   };
   let low = 0,
     high = extent;
   for (let i = 0; i < 24; i++) {
     const mid = (low + high) / 2;
-    if (inset(mid).length) low = mid;
+    if (inset(mid, false).length) low = mid;
     else high = mid;
   }
   const roof = {
@@ -60,6 +60,51 @@ export function prepareOffsetBevelRoof(rings) {
   };
   cache.set(rings, roof);
   return roof;
+}
+// Offset cleanup may collapse dozens of short input edges into one long edge.
+// Reinsert their closest boundary positions, keeping the offset itself unchanged.
+// This controls tangential tessellation independently of bevel profile samples.
+function retainContourDensity(ring, sources) {
+  const compatible = sources.filter((source) =>
+    ClipperLib.Clipper.Orientation(source) === ClipperLib.Clipper.Orientation(ring),
+  );
+  const candidates = compatible.length ? compatible : sources;
+  const source = candidates.reduce((best, candidate) =>
+    boundaryDistance(ring[0], [candidate]) < boundaryDistance(ring[0], [best])
+      ? candidate : best,
+  );
+  const spacing = source.reduce((sum, p, i) => {
+    const q = source[(i + 1) % source.length];
+    return sum + Math.hypot(q.X - p.X, q.Y - p.Y);
+  }, 0) / source.length;
+  const inserts = ring.map(() => []);
+  for (const p of source) {
+    let nearest = Infinity, edge = 0, parameter = 0;
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i], b = ring[(i + 1) % ring.length];
+      const dx = b.X - a.X, dy = b.Y - a.Y;
+      const t = Math.max(0, Math.min(1,
+        ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / (dx * dx + dy * dy || 1)));
+      const distance = Math.hypot(p.X - a.X - t * dx, p.Y - a.Y - t * dy);
+      if (distance < nearest) { nearest = distance; edge = i; parameter = t; }
+    }
+    if (parameter > 1e-10 && parameter < 1 - 1e-10)
+      inserts[edge].push(parameter);
+  }
+  return ring.flatMap((a, i) => {
+    const b = ring[(i + 1) % ring.length];
+    const pieces = Math.max(1, Math.ceil(Math.hypot(b.X - a.X, b.Y - a.Y) / spacing));
+    for (let k = 1; k < pieces; k++) inserts[i].push(k / pieces);
+    const sorted = inserts[i].sort((x, y) => x - y);
+    const points = [a];
+    for (const t of sorted) {
+      const p = { X: a.X + t * (b.X - a.X), Y: a.Y + t * (b.Y - a.Y), sample: true };
+      const previous = points.at(-1);
+      if (Math.hypot(p.X - previous.X, p.Y - previous.Y) > 2 && Math.hypot(p.X - b.X, p.Y - b.Y) > 2)
+        points.push(p);
+    }
+    return points;
+  });
 }
 const segmentDistance = (p, a, b) => {
   const dx = b.X - a.X,
@@ -151,9 +196,9 @@ function triangulateMatchedBand(subject, clip, a, b, roof) {
       const cross =
         (raw[1].X - raw[0].X) * (raw[2].Y - raw[0].Y) -
         (raw[1].Y - raw[0].Y) * (raw[2].X - raw[0].X);
-      if (cross * winding < -1) return null;
+      if (cross * winding < -roof.scale * 4) return null;
       area += cross / 2;
-      if (Math.abs(cross) > 1) {
+      if (Math.abs(cross) > roof.scale * 4) {
         const centroid = {
           X: (raw[0].X + raw[1].X + raw[2].X) / 3,
           Y: (raw[0].Y + raw[1].Y + raw[2].Y) / 3,
@@ -165,8 +210,8 @@ function triangulateMatchedBand(subject, clip, a, b, roof) {
           ClipperLib.Clipper.PointInPolygon(centroid, inner) !== 0;
         if (
           outerContainsInner
-            ? !insideOuter || insideInner
-            : !insideInner || insideOuter
+            ? (!insideOuter && boundaryDistance(centroid, [outer]) > 2) || (insideInner && boundaryDistance(centroid, [inner]) > 2)
+            : (!insideInner && boundaryDistance(centroid, [inner]) > 2) || (insideOuter && boundaryDistance(centroid, [outer]) > 2)
         )
           return null;
         const tri = advanceOuter
@@ -219,8 +264,8 @@ export function triangulateOffsetBevelRoof(roof, width, samples, profile) {
     };
     const c = new ClipperLib.Clipper();
     c.PreserveCollinear = true;
-    c.AddPaths(subject, ClipperLib.PolyType.ptSubject, true);
-    if (clip.length) c.AddPaths(clip, ClipperLib.PolyType.ptClip, true);
+    c.AddPaths(subject.map((r) => r.filter((p) => !p.sample)), ClipperLib.PolyType.ptSubject, true);
+    if (clip.length) c.AddPaths(clip.map((r) => r.filter((p) => !p.sample)), ClipperLib.PolyType.ptClip, true);
     const tree = new ClipperLib.PolyTree();
     c.Execute(
       clip.length
@@ -241,6 +286,11 @@ export function triangulateOffsetBevelRoof(roof, width, samples, profile) {
         ];
         const points = paths.map((path) =>
           path.map((p) => {
+            // Boolean intersection rounding must reuse the neighboring layer's
+            // actual boundary coordinate rather than invent a second seam point.
+            const original = [...subject, ...clip].flat().find((q) =>
+              Math.hypot(q.X - p.X, q.Y - p.Y) < roof.scale * 1e-5);
+            if (original) p = original;
             const source = roof.exactSource.get(`${p.X},${p.Y}`);
             return {
               x: source?.x ?? p.X / roof.scale + roof.origin.x,
@@ -260,7 +310,40 @@ export function triangulateOffsetBevelRoof(roof, width, samples, profile) {
             (tri[1].y - tri[0].y) * (tri[2].x - tri[0].x);
           if (Math.abs(cross) < 1e-10) continue;
           if (cross < 0) tri.reverse();
-          triangles.push({ faceIndex: cap ? 0 : 1, points: tri });
+          // Earcut omits collinear boundary samples. Split its boundary edges
+          // back at those samples so the cap and adjacent bands share seams.
+          const pending = [tri];
+          for (const boundary of [...subject, ...clip].flat().map((p) => ({
+            x: roof.exactSource.get(`${p.X},${p.Y}`)?.x ?? p.X / roof.scale + roof.origin.x,
+            y: roof.exactSource.get(`${p.X},${p.Y}`)?.y ?? p.Y / roof.scale + roof.origin.y,
+            height: pointHeight(p),
+          }))) {
+            for (let n = 0; n < pending.length; n++) {
+              const face = pending[n];
+              if (face.some((p) => Math.fround(p.x) === Math.fround(boundary.x) &&
+                Math.fround(p.y) === Math.fround(boundary.y) && p.height === boundary.height)) continue;
+              let split = false;
+              for (let j = 0; j < 3; j++) {
+                const a = face[j], b = face[(j + 1) % 3], c = face[(j + 2) % 3];
+                const dx = b.x - a.x, dy = b.y - a.y;
+                const length2 = dx * dx + dy * dy;
+                const t = ((boundary.x - a.x) * dx + (boundary.y - a.y) * dy) / length2;
+                if (!(t > 1e-8 && t < 1 - 1e-8)) continue;
+                if (Math.hypot(boundary.x - a.x, boundary.y - a.y) < 1e-6 ||
+                    Math.hypot(boundary.x - b.x, boundary.y - b.y) < 1e-6) continue;
+                if (Math.abs(dx * (boundary.y - a.y) - dy * (boundary.x - a.x))
+                  > Math.sqrt(length2) * 1e-7) continue;
+                if (Math.abs(boundary.height - (a.height + t * (b.height - a.height))) > 1e-7) continue;
+                pending[n] = [a, boundary, c];
+                pending.push([boundary, b, c]);
+                split = true;
+                break;
+              }
+              if (split) break;
+            }
+          }
+          for (const face of pending)
+            triangles.push({ faceIndex: cap ? 0 : 1, points: face });
         }
       }
       for (const child of node.Childs()) visit(child);

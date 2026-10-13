@@ -399,7 +399,7 @@ export function buildMesh(shape, settings = {}) {
   const { box, effectiveWallThickness } = variant;
   let roof = null;
   let roofFailure = null;
-  if (settings.bevelContinue === true && Number(settings.bevelSize) > 0) {
+  if (settings.bevelContinue === true && Number(settings.bevelSize) > 0 && rings.length === 1) {
     try {
       roof = prepareBevelRoof(rings);
     } catch (error) {
@@ -418,7 +418,7 @@ export function buildMesh(shape, settings = {}) {
       (roof && explicitWidth && requestedBevelWidth > roof.maximumWidth + EPS))
   ) {
     const offsetRoof = prepareOffsetBevelRoof(rings);
-    if (!roof || offsetRoof.maximumWidth > roof.maximumWidth + EPS)
+    if (settings.bevelContinue === true || !roof || offsetRoof.maximumWidth > roof.maximumWidth + EPS)
       roof = offsetRoof;
   }
   if (roofFailure)
