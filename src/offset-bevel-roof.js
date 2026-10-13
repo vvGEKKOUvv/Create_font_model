@@ -1,5 +1,5 @@
 import ClipperLib from "clipper-lib";
-import { ShapeUtils, Vector2 } from "three";
+import cdt2d from "cdt2d";
 
 const cache = new WeakMap();
 export function prepareOffsetBevelRoof(rings, widthHint) {
@@ -350,6 +350,72 @@ function triangulateMatchedBand(subject, clip, a, b, roof) {
   }
   return triangles;
 }
+// Preserve cross-slice correspondence as constraints. Flip only the free
+// diagonal inside each two-sided strip cell; unconstrained 2D triangulation
+// of an entire curved band can create flat, same-height ears.
+function improveStripDiagonals(matched) {
+  const out = [];
+  const equal = (a, b) => a.x === b.x && a.y === b.y && a.height === b.height;
+  const orient = (a, b, c) =>
+    (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  for (let i = 0; i < matched.length; i += 2) {
+    const first = matched[i],
+      second = matched[i + 1];
+    const shared = second
+      ? first.points.filter((p) => second.points.some((q) => equal(p, q)))
+      : [];
+    if (shared.length !== 2) {
+      for (const tri of second ? [first, second] : [first]) {
+        const constraints = tri.points.map((p, j) => [
+          p,
+          tri.points[(j + 1) % 3],
+        ]);
+        out.push({ ...tri, constraints });
+      }
+      continue;
+    }
+    const [a, b] = shared;
+    const c = first.points.find((p) => !shared.some((q) => equal(p, q)));
+    const d = second.points.find((p) => !shared.some((q) => equal(p, q)));
+    const points = [a, b, c, d];
+    const quad = points.filter((p) => p.height === a.height).length === 2;
+    const constraints = [
+      [a, c],
+      [c, b],
+      [b, d],
+      [d, a],
+    ];
+    if (!quad) constraints.push([a, b]);
+    let cells = [first.points, second.points];
+    if (
+      quad &&
+      orient(a, b, c) * orient(a, b, d) < 0 &&
+      orient(c, d, a) * orient(c, d, b) < 0
+    ) {
+      const ax = a.x - d.x,
+        ay = a.y - d.y,
+        bx = b.x - d.x,
+        by = b.y - d.y,
+        cx = c.x - d.x,
+        cy = c.y - d.y;
+      let determinant =
+        (ax * ax + ay * ay) * (bx * cy - by * cx) -
+        (bx * bx + by * by) * (ax * cy - ay * cx) +
+        (cx * cx + cy * cy) * (ax * by - ay * bx);
+      if (orient(a, b, c) < 0) determinant = -determinant;
+      if (determinant > 1e-10)
+        cells = [
+          [a, c, d],
+          [b, d, c],
+        ];
+    }
+    for (const cell of cells) {
+      if (orient(...cell) < 0) cell.reverse();
+      out.push({ faceIndex: 1, points: cell, constraints });
+    }
+  }
+  return out;
+}
 // Triangulate the difference of successive offset regions. Offsets can remove
 // small tips or split cavities without shrinking the bevel on every other edge.
 export function triangulateOffsetBevelRoof(roof, width, samples, profile) {
@@ -367,10 +433,30 @@ export function triangulateOffsetBevelRoof(roof, width, samples, profile) {
   const triangles = [];
   const addRegion = (subject, clip, a, b, cap = false) => {
     if (!subject.length) return;
+    // A simple annular cap uses the same local strip connectivity without
+    // expensive global triangulation. Topology changes retain the constrained
+    // polygon triangulator below.
+    if (cap && subject.length === 2) {
+      const outer = subject.find((p) => ClipperLib.Clipper.Area(p) > 0);
+      const hole = subject.find((p) => ClipperLib.Clipper.Area(p) < 0);
+      if (outer && hole) {
+        const matched = triangulateMatchedBand(
+          [outer],
+          [[...hole].reverse()],
+          a,
+          a,
+          roof,
+        );
+        if (matched) {
+          triangles.push(...matched.map((t) => ({ ...t, faceIndex: 0 })));
+          return;
+        }
+      }
+    }
     if (!cap) {
       const matched = triangulateMatchedBand(subject, clip, a, b, roof);
       if (matched) {
-        triangles.push(...matched);
+        triangles.push(...improveStripDiagonals(matched));
         return;
       }
     }
@@ -388,17 +474,8 @@ export function triangulateOffsetBevelRoof(roof, width, samples, profile) {
     };
     const c = new ClipperLib.Clipper();
     c.PreserveCollinear = true;
-    c.AddPaths(
-      subject.map((r) => r.filter((p) => !p.sample)),
-      ClipperLib.PolyType.ptSubject,
-      true,
-    );
-    if (clip.length)
-      c.AddPaths(
-        clip.map((r) => r.filter((p) => !p.sample)),
-        ClipperLib.PolyType.ptClip,
-        true,
-      );
+    c.AddPaths(subject, ClipperLib.PolyType.ptSubject, true);
+    if (clip.length) c.AddPaths(clip, ClipperLib.PolyType.ptClip, true);
     const tree = new ClipperLib.PolyTree();
     c.Execute(
       clip.length
@@ -408,6 +485,14 @@ export function triangulateOffsetBevelRoof(roof, width, samples, profile) {
       ClipperLib.PolyFillType.pftNonZero,
       ClipperLib.PolyFillType.pftNonZero,
     );
+    const allBoundary = [...subject, ...clip].flat();
+    const boundaryByKey = new Map(allBoundary.map((p) => [key(p), p]));
+    const boundaryGrid = new Map();
+    for (const p of allBoundary) {
+      const gridKey = `${Math.round(p.X)},${Math.round(p.Y)}`;
+      if (!boundaryGrid.has(gridKey)) boundaryGrid.set(gridKey, []);
+      boundaryGrid.get(gridKey).push(p);
+    }
     const boundaryRings = [...subject, ...clip].map((ring) =>
       ring.map((p) => {
         const original = roof.exactSource.get(`${p.X},${p.Y}`);
@@ -439,11 +524,22 @@ export function triangulateOffsetBevelRoof(roof, width, samples, profile) {
           path.map((p) => {
             // Boolean intersection rounding must reuse the neighboring layer's
             // actual boundary coordinate rather than invent a second seam point.
-            const original = [...subject, ...clip]
-              .flat()
-              .find(
-                (q) => Math.hypot(q.X - p.X, q.Y - p.Y) < roof.scale * 1e-5,
-              );
+            let original = boundaryByKey.get(key(p));
+            if (!original) {
+              let nearest = 2;
+              const gx = Math.round(p.X),
+                gy = Math.round(p.Y);
+              for (let dx = -2; dx <= 2; dx++)
+                for (let dy = -2; dy <= 2; dy++)
+                  for (const q of boundaryGrid.get(`${gx + dx},${gy + dy}`) ||
+                    []) {
+                    const distance = Math.hypot(q.X - p.X, q.Y - p.Y);
+                    if (distance < nearest) {
+                      nearest = distance;
+                      original = q;
+                    }
+                  }
+            }
             if (original) p = original;
             const source = roof.exactSource.get(`${p.X},${p.Y}`);
             return {
@@ -454,10 +550,19 @@ export function triangulateOffsetBevelRoof(roof, width, samples, profile) {
           }),
         );
         const flat = points.flat();
-        for (const ids of ShapeUtils.triangulateShape(
-          points[0].map((p) => new Vector2(p.x, p.y)),
-          points.slice(1).map((r) => r.map((p) => new Vector2(p.x, p.y))),
-        )) {
+        const edges = [];
+        let start = 0;
+        for (const loop of points) {
+          for (let i = 0; i < loop.length; i++)
+            edges.push([start + i, start + ((i + 1) % loop.length)]);
+          start += loop.length;
+        }
+        const cells = cdt2d(
+          flat.map((p) => [Math.fround(p.x), Math.fround(p.y)]),
+          edges,
+          { exterior: false },
+        );
+        for (const ids of cells) {
           const tri = ids.map((i) => flat[i]);
           const cross =
             (tri[1].x - tri[0].x) * (tri[2].y - tri[0].y) -

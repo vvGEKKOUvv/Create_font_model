@@ -1017,7 +1017,9 @@ try {
   await page.locator("#file").setInputFiles({
     name: "fine-hollow.svg",
     mimeType: "image/svg+xml",
-    buffer: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg"><path id="Fine-hollow" d="${fineOutline.join(" ")}"/></svg>`),
+    buffer: Buffer.from(
+      `<svg xmlns="http://www.w3.org/2000/svg"><path id="Fine-hollow" d="${fineOutline.join(" ")}"/></svg>`,
+    ),
   });
   await expect(page.locator("#selected-name")).toHaveText(/Fine-hollow/);
   await page.locator("#depth").fill("20");
@@ -1025,21 +1027,82 @@ try {
   await page.locator("#wallThickness").fill("3");
   await page.locator("#bevelSize").fill("10");
   await page.locator("#bevelWidth").fill("0.4");
-  await expect.poll(async () =>
-    (await page.evaluate(() => window.__sceneSnapshot)).objects.at(-1).effectiveBevel,
-  ).toBeGreaterThan(0.399);
+  await expect
+    .poll(
+      async () =>
+        (await page.evaluate(() => window.__sceneSnapshot)).objects.at(-1)
+          .effectiveBevel,
+    )
+    .toBeGreaterThan(0.399);
   const fineBevelSmall = await exported();
   await page.locator("#bevelWidth").fill("1");
-  await expect.poll(async () =>
-    (await page.evaluate(() => window.__sceneSnapshot)).objects.at(-1).effectiveBevel,
-  ).toBeGreaterThan(0.99);
+  await expect
+    .poll(
+      async () =>
+        (await page.evaluate(() => window.__sceneSnapshot)).objects.at(-1)
+          .effectiveBevel,
+    )
+    .toBeGreaterThan(0.99);
   const fineBevelLarge = await exported();
-  assert.notEqual(fineBevelLarge["model.obj"], fineBevelSmall["model.obj"],
-    "Changing a hollow bevel width updates actual exported geometry");
+  assert.notEqual(
+    fineBevelLarge["model.obj"],
+    fineBevelSmall["model.obj"],
+    "Changing a hollow bevel width updates actual exported geometry",
+  );
   assert(!/NaN|Infinity/.test(fineBevelLarge["model.obj"]));
-  assert.ok((await page.evaluate(() => window.__sceneSnapshot)).objects.at(-1)
-    .effectiveWallThickness > 2.99);
+  assert.ok(
+    (await page.evaluate(() => window.__sceneSnapshot)).objects.at(-1)
+      .effectiveWallThickness > 2.99,
+  );
   await expect(page.locator("#message")).not.toHaveClass(/error/);
+  // The same unreduced source must also bevel when automatic hollowing is off.
+  // Compare the exported selected object's real sloping faces, not only UI values.
+  await page.locator("#hollow").uncheck();
+  const solidSlopeArea = (obj) => {
+    const vertices = [];
+    let selected = false;
+    let area = 0;
+    for (const line of obj.split("\n")) {
+      if (line.startsWith("v "))
+        vertices.push(line.slice(2).trim().split(/\s+/).map(Number));
+      if (line.startsWith("o ")) selected = line.includes("Fine-hollow");
+      if (!selected || !line.startsWith("f ")) continue;
+      const [a, b, c] = line
+        .slice(2)
+        .trim()
+        .split(/\s+/)
+        .map((part) => vertices[Number(part.split("/")[0]) - 1]);
+      const z = [a[2], b[2], c[2]];
+      if (Math.max(...z) > 10.00001 || Math.max(...z) - Math.min(...z) < 1e-6)
+        continue;
+      area +=
+        Math.abs(
+          (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]),
+        ) / 2;
+    }
+    return area;
+  };
+  for (const continued of [false, true]) {
+    await page.locator("#bevelContinue").setChecked(continued);
+    const areas = [];
+    for (const width of [1, 3]) {
+      await page.locator("#bevelWidth").fill(String(width));
+      await expect
+        .poll(
+          async () =>
+            (await page.evaluate(() => window.__sceneSnapshot)).objects.at(-1)
+              .effectiveBevel,
+        )
+        .toBeGreaterThan(width * 0.99);
+      const result = await exported();
+      areas.push(solidSlopeArea(result["model.obj"]));
+      assert(areas.at(-1) > width * 380, "Solid bevel has actual sloped faces");
+    }
+    assert(
+      areas[1] > areas[0] * 2,
+      "A wider solid bevel changes the exported slope area",
+    );
+  }
   await page.setViewportSize({ width: 390, height: 844 });
   await expect
     .poll(() =>

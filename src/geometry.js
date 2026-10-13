@@ -413,7 +413,6 @@ export function buildMesh(shape, settings = {}) {
   // Preserve the original boundary while allowing tiny tips to disappear
   // locally inside the bevel instead of restricting the entire contour.
   if (
-    rings.length > 1 &&
     Number(settings.bevelSize) > 0 &&
     ((!roof &&
       ((explicitWidth &&

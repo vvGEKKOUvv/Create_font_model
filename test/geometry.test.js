@@ -28,7 +28,10 @@ test("nonuniform outline sampling retains longitudinal bevel vertices without wi
   );
   const roof = prepareOffsetBevelRoof([ring]);
   for (const segments of [2, 8]) {
-    const samples = Array.from({ length: segments + 1 }, (_, i) => i / segments);
+    const samples = Array.from(
+      { length: segments + 1 },
+      (_, i) => i / segments,
+    );
     const triangles = triangulateOffsetBevelRoof(roof, 2, samples, (t) => t);
     const boundary = new Map();
     const faceIncidence = new Map();
@@ -1253,7 +1256,11 @@ test("continued bevel crosses narrow-stroke collisions to join wider front faces
     bevelContinue: true,
     curvePoints: ridgeProfile,
   });
-  assert.ok(normal.userData.effectiveBevel < 5.01);
+  assert.ok(
+    normal.userData.effectiveBevel >= 19.9,
+    "ordinary bevel also keeps its requested width after a local narrow-edge collision",
+  );
+  assertClosedFiniteSolid(normal);
   assert.equal(continued.userData.continuedBevel, true);
   assert.equal(continued.userData.effectiveBevel, 20);
   assert.equal(continued.userData.effectiveBevelDepth, 4);
@@ -1713,4 +1720,126 @@ test("fine curved imported compound holes retain bevel slopes with or without ho
       );
     }
   }
+});
+
+test("solid fine outline details retain requested bevel width and visible slopes without hollowing", () => {
+  for (const bevelContinue of [false, true]) {
+    const shape = fineCurvedBumpOutline();
+    const baseline = buildMesh(shape, {
+      depth: 20,
+      bevelSize: 0,
+      bevelWidth: 0,
+      hollow: false,
+      bevelContinue,
+      curvePoints: ridgeProfile,
+    });
+    const baselineFrontArea = frontProjectedArea(baseline);
+    let previousArea = 0;
+    for (const bevelWidth of [0.4, 1, 3]) {
+      const geometry = buildMesh(shape, {
+        depth: 20,
+        bevelSize: 10,
+        bevelWidth,
+        hollow: false,
+        bevelContinue,
+        curvePoints: ridgeProfile,
+      });
+      assertClosedFiniteSolid(geometry);
+      assert.ok(
+        geometry.userData.effectiveBevel >= bevelWidth * 0.99,
+        "tiny outline details must not globally suppress a solid object's bevel",
+      );
+      const slopeArea = triangleVertices(geometry)
+        .filter((tri) => {
+          const z = tri.map((p) => p[2]);
+          return Math.max(...z) <= 10 && Math.max(...z) - Math.min(...z) > 1e-6;
+        })
+        .reduce(
+          (sum, [a, b, c]) =>
+            sum +
+            Math.abs(
+              (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]),
+            ) /
+              2,
+          0,
+        );
+      assert.ok(
+        slopeArea > bevelWidth * 380,
+        `solid bevel must have real sloping area at width ${bevelWidth}, got ${slopeArea}`,
+      );
+      assert.ok(
+        slopeArea > previousArea * 1.5,
+        "increasing lateral width must change actual geometry, not only its subdivisions",
+      );
+      assert.ok(
+        frontProjectedArea(geometry) < baselineFrontArea - bevelWidth * 375,
+        "the front cap must move inward as the solid bevel grows",
+      );
+      previousArea = slopeArea;
+    }
+  }
+});
+
+test("curved bevel bands choose local diagonals that avoid narrow triangle fans", () => {
+  const ring = Array.from({ length: 96 }, (_, index) => {
+    const angle = 2 * Math.PI * (index / 96) ** 1.6;
+    return new Vector2(60 * Math.cos(angle), 35 * Math.sin(angle));
+  });
+  const triangles = triangulateOffsetBevelRoof(
+    prepareOffsetBevelRoof([ring]),
+    3,
+    [0, 0.5, 1],
+    (t) => t,
+  );
+  const edges = new Map();
+  const constrained = new Set();
+  const key = (p) => `${p.x.toFixed(7)},${p.y.toFixed(7)},${p.height}`;
+  const orient = (a, b, c) =>
+    (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  for (const triangle of triangles) {
+    if (triangle.faceIndex === 0) continue;
+    for (const [a, b] of triangle.constraints || [])
+      constrained.add([key(a), key(b)].sort().join("|"));
+    for (let i = 0; i < 3; i++) {
+      const a = triangle.points[i],
+        b = triangle.points[(i + 1) % 3],
+        c = triangle.points[(i + 2) % 3];
+      const edgeKey = [key(a), key(b)].sort().join("|");
+      if (!edges.has(edgeKey)) edges.set(edgeKey, []);
+      edges.get(edgeKey).push({ a, b, c });
+    }
+  }
+  let interiorEdges = 0;
+  for (const [edgeKey, neighbors] of edges) {
+    if (constrained.has(edgeKey)) continue;
+    if (neighbors.length !== 2) continue;
+    const [{ a, b, c }, { c: d }] = neighbors;
+    // Constant-height edges delimit the requested bevel slices and are constraints.
+    if (a.height === b.height) continue;
+    if (
+      orient(a, b, c) * orient(a, b, d) >= -1e-10 ||
+      orient(c, d, a) * orient(c, d, b) >= -1e-10
+    )
+      continue;
+    const ax = a.x - d.x,
+      ay = a.y - d.y,
+      bx = b.x - d.x,
+      by = b.y - d.y,
+      cx = c.x - d.x,
+      cy = c.y - d.y;
+    let determinant =
+      (ax * ax + ay * ay) * (bx * cy - by * cx) -
+      (bx * bx + by * by) * (ax * cy - ay * cx) +
+      (cx * cx + cy * cy) * (ax * by - ay * bx);
+    if (orient(a, b, c) < 0) determinant = -determinant;
+    assert.ok(
+      determinant <= 1e-5,
+      `an unconstrained bevel diagonal must not create avoidable thin triangles (${determinant})`,
+    );
+    interiorEdges++;
+  }
+  assert.ok(
+    interiorEdges > 100,
+    "quality check covers interior bevel diagonals",
+  );
 });

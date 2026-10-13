@@ -1,4 +1,5 @@
-import * as THREE from "three";
+import cdt2d from "cdt2d";
+import { ShapeUtils, Vector2 } from "three";
 import skeletonPackage from "straight-skeleton";
 
 const { SkeletonBuilder } = skeletonPackage;
@@ -79,10 +80,26 @@ export function triangulateBevelRoof(roof, width, samples, profile) {
     return 0;
   };
   const triangles = [];
+  roof.faceCells ||= [];
   for (let faceIndex = 0; faceIndex < roof.faces.length; faceIndex++) {
     const face = roof.faces[faceIndex];
-    const contour = face.map((p) => new THREE.Vector2(p.x, p.y));
-    for (const indices of THREE.ShapeUtils.triangulateShape(contour, [])) {
+    const contour = face.map((p) => [p.x, p.y]);
+    const boundary = contour.map((_, index) => [
+      index,
+      (index + 1) % contour.length,
+    ]);
+    const cells =
+      roof.faceCells[faceIndex] ||
+      (roof.faceCells[faceIndex] =
+        face.length === 3
+          ? [[0, 1, 2]]
+          : face.length === 4
+            ? ShapeUtils.triangulateShape(
+                face.map((p) => new Vector2(p.x, p.y)),
+                [],
+              )
+            : cdt2d(contour, boundary, { exterior: false }));
+    for (const indices of cells) {
       const base = indices.map((i) => face[i]);
       for (let band = 0; band < limits.length - 1; band++) {
         const poly = cut(
