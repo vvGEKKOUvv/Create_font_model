@@ -1313,3 +1313,5 @@ header { gap: 14px; }
   flex-shrink: 0;
   white-space: nowrap;
 }
+.material-select { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:7px 0; color:var(--muted); font-size:12px; }
+.material-select select { width:150px; min-width:0; }

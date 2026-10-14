@@ -66,7 +66,10 @@ try {
         "renderer.render(scene, camera);",
         `scene.updateMatrixWorld(true);
        window.__sceneSnapshot = {
+         environmentId: scene.environment?.uuid,
          objects: group.children.map(mesh => ({
+           metalness: mesh.material.metalness,
+           roughness: mesh.material.roughness,
            geometryId: mesh.geometry.uuid,
            wireframe: mesh.material.wireframe,
            colorWrite: mesh.material.colorWrite,
@@ -1288,6 +1291,26 @@ try {
   assert.deepEqual((await projectData()).state.objects[2].shape,sourceBefore.shape,"Undo restores original editable path");
   await page.locator("#redo").click();
   assert.deepEqual((await projectData()).state.objects[2].shape,sourceAfter.shape,"Redo restores reduced source");
+  const materialGeometry = await page.evaluate(() => window.__sceneSnapshot.objects.map(o => o.geometryId));
+  await page.locator("#material-type").selectOption("metal");
+  await expect.poll(() => page.evaluate(() => window.__sceneSnapshot.objects[2].metalness)).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.__sceneSnapshot.objects[2].roughness)).toBe(0.25);
+  const maps = new Set();
+  for (const preset of ["studio","softbox","outdoor","sunset"]) {
+    await page.locator("#environment-preset").selectOption(preset);
+    await page.waitForTimeout(100);
+    maps.add(await page.evaluate(() => window.__sceneSnapshot.environmentId));
+  }
+  assert.equal(maps.size,4,"Four distinct environment maps are rendered");
+  assert.deepEqual(await page.evaluate(() => window.__sceneSnapshot.objects.map(o => o.geometryId)),materialGeometry,"Material and environment changes never rebuild geometry");
+  const metalState = await projectData();
+  assert.equal(metalState.state.objects[2].materialType,"metal");
+  assert.equal(metalState.state.view.environmentPreset,"sunset");
+  await page.locator("#material-type").selectOption("standard");
+  await page.locator("#environment-preset").selectOption("studio");
+  await page.locator("#project-file").setInputFiles({name:"metal.pathform",mimeType:"application/json",buffer:Buffer.from(JSON.stringify(metalState))});
+  await expect(page.locator("#material-type")).toHaveValue("metal");
+  await expect(page.locator("#environment-preset")).toHaveValue("sunset");
   await page.setViewportSize({ width: 390, height: 844 });
   await expect
     .poll(() =>

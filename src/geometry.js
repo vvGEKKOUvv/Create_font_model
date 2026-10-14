@@ -11,7 +11,7 @@ import {
   triangulateBevelRoof,
   invalidateBevelRoof,
 } from "./bevel-roof.js";
-import { hollowContours } from "./hollow-offset.js";
+import { hollowContours, hollowFilledRegion } from "./hollow-offset.js";
 import { offsetContours } from "./path-offset.js";
 import {
   prepareOffsetBevelRoof,
@@ -238,7 +238,8 @@ function validRings(rings) {
   return true;
 }
 
-export function buildMesh(shape, settings = {}) {
+// The third argument is an internal one-shot recovery, never a saved setting.
+export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
   const uvEdits = settings.uvEdits ?? {};
   if (typeof uvEdits !== "object" || Array.isArray(uvEdits))
     throw new Error("UV 編集データの形式が不正です。");
@@ -292,14 +293,74 @@ export function buildMesh(shape, settings = {}) {
   const variantKey = `${pathOffset}:` + (fullWidth
     ? `full:${!!settings.hollow}:${variantWall}:${sharp}`
     : `${!!settings.hollow}:${variantWall}:${sharp}:${Math.max(0, Number(settings.bevelSize) || 0)}:${Math.min(depth, 2 * Math.max(0, Number(settings.bevelSize) || 0))}`);
+  if (settings.hollow && rings.length > 1) {
+    let compound = prepared.variants.get(`compound:${variantKey}`);
+    if (!compound) {
+      const hollow = hollowFilledRegion(rings, requestedWall);
+      compound = { ...hollow, shapes: hollow.components.map(component => {
+        const result = new THREE.Shape(component[0]);
+        result.closePath();
+        result.holes = component.slice(1).map(ring => {
+          const hole = new THREE.Path(ring);
+          hole.closePath();
+          return hole;
+        });
+        return result;
+      }) };
+      if (prepared.variants.size >= 24) prepared.variants.delete(prepared.variants.keys().next().value);
+      prepared.variants.set(`compound:${variantKey}`, compound);
+    }
+    const children = [];
+    try {
+      for (let index = 0; index < compound.shapes.length; index++) {
+        const componentSettings = { ...settings, hollow: false, pathOffset: 0,
+          reductionTolerance: 0, uvEdits: {} };
+        // Islands around a native hole put that original inner boundary on
+        // their hole side, so the independent inner curve remains correctly assigned.
+        children.push(buildMesh(compound.shapes[index], componentSettings, safeHollowFallback));
+      }
+      const geometry = new THREE.BufferGeometry();
+      for (const name of ["position", "normal", "uv"]) {
+        const arrays = children.map(child => child.getAttribute(name));
+        const data = new Float32Array(arrays.reduce((n, attribute) => n + attribute.array.length, 0));
+        let cursor = 0;
+        for (const attribute of arrays) { data.set(attribute.array, cursor); cursor += attribute.array.length; }
+        geometry.setAttribute(name, new THREE.BufferAttribute(data, arrays[0].itemSize));
+      }
+      const base = [], keys = [];
+      children.forEach((child, index) => {
+        const values = child.userData.baseUVs;
+        for (let i = 0; i < values.length; i += 2) {
+          const u = (values[i] + index) / children.length, v = values[i + 1];
+          base.push(u, v);
+          keys.push(`${u.toFixed(6)},${v.toFixed(6)}`);
+        }
+      });
+      const min = key => Math.min(...children.map(child => child.userData[key]));
+      geometry.userData = { ...children[0].userData,
+        warnings: [...new Set([...warnings, ...children.flatMap(child => child.userData.warnings),
+          ...(compound.effectiveWallThickness < requestedWall
+            ? [`指定の壁厚では中抜きが消えるため、壁厚を ${compound.effectiveWallThickness.toPrecision(3)} に縮小しました。`] : [])])],
+        effectiveWallThickness: compound.effectiveWallThickness,
+        effectivePathOffset: shifted.effectivePathOffset,
+        effectiveBevel: min("effectiveBevel"),
+        effectiveBevelDepth: min("effectiveBevelDepth"),
+        maximumBevelWidth: min("maximumBevelWidth"),
+        maximumBevelControlWidth: min("maximumBevelControlWidth"),
+        originalCount: prepared.originalCount, reducedCount: prepared.reducedCount,
+        hollowComponentCount: children.length,
+        uvKeys: keys, baseUVs: new Float64Array(base),
+      };
+      applyUvSettings(geometry, settings);
+      return geometry;
+    } finally { for (const child of children) child.dispose(); }
+  }
   let variant = prepared.variants.get(variantKey);
   if (!variant) {
     let effectiveWallThickness = 0;
     const localWarnings = [];
     if (settings.hollow) {
-      if (rings.length > 1)
-        localWarnings.push("既存の穴を優先し、自動中抜きは追加していません。");
-      else {
+      {
         const outerBox = new THREE.Box2().setFromPoints(rings[0]);
         // Start inside the contour's scale. A fixed number of halvings from
         // the requested value can never find a cavity for very small imports
@@ -463,6 +524,7 @@ export function buildMesh(shape, settings = {}) {
   let roofFailure = null;
   if (
     Number(settings.bevelSize) > 0 &&
+    !safeHollowFallback &&
     !narrowDenseConvex &&
     (settings.bevelContinue === true ||
       separateInnerProfile ||
@@ -479,6 +541,7 @@ export function buildMesh(shape, settings = {}) {
   if (
     Number(settings.bevelSize) > 0 &&
     !roof &&
+    !safeHollowFallback &&
     (settings.bevelContinue === true ||
       separateInnerProfile ||
       (explicitWidth && requestedBevelWidth > variant.maximumBevelWidth + EPS))
@@ -502,6 +565,8 @@ export function buildMesh(shape, settings = {}) {
         ? "安定した輪郭差分方式でベベルを生成しました。"
         : `${roofFailure.message} 通常ベベルを使用しました。`,
     );
+  if (safeHollowFallback)
+    warnings.push("中抜きの穴と面の接続を保つため、通常ベベルで再生成し、輪郭幅を安全な最大幅に制限しました。");
   const bevel = roof
     ? explicitWidth
       ? Math.min(requestedBevelWidth, roof.maximumWidth)
@@ -610,19 +675,32 @@ export function buildMesh(shape, settings = {}) {
       if (!samples.some((p) => Math.abs(p - t) < 1e-7)) samples.push(t);
     samples.sort((a, b) => a - b);
   }
+  if (safeHollowFallback && separateInnerProfile) {
+    for (const evaluate of [profile, innerProfile]) {
+      let previous = evaluate(0);
+      for (let i = 1; i <= 512; i++) {
+        const value = evaluate(i / 512);
+        if (value < previous - 1e-8)
+          throw new Error("内側・外側のベベルカーブは、戻らない形状にしてください。");
+        previous = value;
+      }
+    }
+  }
   const levels = bevel
     ? samples.map((t) => ({
         z: bevelHeight * t,
         inset: bevel * (1 - profile(t)),
+        innerInset: bevel * (1 - innerProfile(t)),
       }))
-    : [{ z: 0, inset: 0 }];
+    : [{ z: 0, inset: 0, innerInset: 0 }];
   if (depth - bevelHeight - levels.at(-1).z > EPS)
-    levels.push({ z: depth - bevelHeight, inset: 0 });
+    levels.push({ z: depth - bevelHeight, inset: 0, innerInset: 0 });
   if (bevel)
     for (let i = samples.length - 2; i >= 0; i--)
       levels.push({
         z: depth - bevelHeight * samples[i],
         inset: bevel * (1 - profile(samples[i])),
+        innerInset: bevel * (1 - innerProfile(samples[i])),
       });
   const positions = [],
     uvs = [],
@@ -672,6 +750,11 @@ export function buildMesh(shape, settings = {}) {
         invalidateBevelRoof(rings, error);
         return buildMesh(shape, settings);
       }
+      // A failed roof must not leave a previous solid mesh in place when the
+      // user enables hollowing. Keep the cavity with the validated safe inset.
+      if (roof.offsetRoof && error.code === "INVALID_BEVEL_TOPOLOGY" &&
+          rings.length > 1 && !safeHollowFallback)
+        return buildMesh(shape, settings, true);
       throw new Error(error.message);
     }
   }
@@ -731,7 +814,7 @@ export function buildMesh(shape, settings = {}) {
   } else {
     for (const level of [levels[0], levels.at(-1)]) {
       surfaceGroup = level === levels[0] ? 0 : 1;
-      const contour = rings.map((p) => offset(p, level.inset, sharp));
+      const contour = rings.map((p, r) => offset(p, r ? level.innerInset : level.inset, sharp));
       const flat = contour.flat();
       for (const indices of THREE.ShapeUtils.triangulateShape(
         contour[0],
@@ -762,7 +845,7 @@ export function buildMesh(shape, settings = {}) {
         );
       const total = distances.at(-1);
       const layered = levels.map((l) =>
-        offset(ring, l.inset, sharp).map(
+        offset(ring, ringIndex ? l.innerInset : l.inset, sharp).map(
           (p) => new THREE.Vector3(p.x, p.y, l.z),
         ),
       );

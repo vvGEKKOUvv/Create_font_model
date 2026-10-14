@@ -1696,13 +1696,21 @@ test("fine curved imported compound holes retain bevel slopes with or without ho
       });
       assertWallBodyThickness(geometry, 20);
       assert.ok(
-        geometry.userData.effectiveBevel >= 0.99,
-        "imported holes support the requested width independently of automatic hollowing",
+        hollow ? geometry.userData.effectiveBevel > 0 && geometry.userData.effectiveBevel < 1
+          : geometry.userData.effectiveBevel >= 0.99,
+        "native holes retain requested bevels; additional hollowing bounds them to the new thinner walls",
       );
+      if (hollow) {
+        assert.equal(geometry.userData.hollowComponentCount, 2);
+        assert.ok(geometry.userData.effectiveWallThickness < 1.5,
+          "a cavity limited to the tiny bump cannot prevent forming the main hollow rim");
+        assertOpenDepthRay(geometry, 1.5, -30.13, "the filled imported rim is actually hollowed");
+        assertOpenDepthRay(geometry, 50.13, -50.31, "the original hole remains open");
+      }
       const frontArea = frontProjectedArea(geometry);
       assert.ok(
-        frontArea > 300 && frontArea < 500,
-        `a three-unit imported rim retains its flat front plus substantial slopes (${frontArea})`,
+        (hollow ? frontArea >= 0 : frontArea > 300) && frontArea < 500,
+        `the imported rim retains sloped bevels after hollowing (${frontArea})`,
       );
       const positions = geometry.attributes.position;
       assert.ok(
@@ -2466,4 +2474,51 @@ test("independent inner curves reject backtracking rather than producing folds",
     ],
   };
   assert.throws(() => buildMesh(denseRectangle(60, 4), settings), /戻らない/);
+});
+
+test("hollow roof failures preserve cavities with safe bevels across imported path scales", () => {
+  for (const [scale, divisions] of [[0.001, 32], [1000, 128]]) {
+    const shape = new Shape();
+    for (let i = 0; i <= divisions; i++) {
+      const t = i / divisions;
+      const p = [300 * t * scale, 480 * t * (1 - t) * scale];
+      if (i) shape.lineTo(...p); else shape.moveTo(...p);
+    }
+    for (let i = divisions - 1; i > 0; i--) {
+      const t = i / divisions;
+      shape.lineTo(300 * t * scale, 280 * t * (1 - t) * scale);
+    }
+    shape.closePath();
+    const settings = {
+      depth: 58.08 * scale, bevelSize: 28 * scale,
+      bevelWidth: 10.539 * scale, bevelSegments: 5,
+      bevelContinue: true, hollow: true, wallThickness: 4 * scale,
+      curvePoints: defaultProfile(), innerCurvePoints: defaultProfile(),
+    };
+    const before = JSON.stringify(settings);
+    const geometry = buildMesh(shape, settings);
+    assert.equal(JSON.stringify(settings), before, "fallback does not rewrite user settings");
+    assert.ok(geometry.userData.warnings.some(w => w.includes("通常ベベルで再生成")));
+    assert.ok(geometry.userData.effectiveWallThickness > 0);
+    assert.ok(geometry.userData.effectiveBevel > 0);
+    assert.equal(geometry.userData.effectiveBevelDepth, 28 * scale);
+    assertClosedFiniteSolid(geometry);
+    assertOpenDepthRay(geometry, 150.1 * scale, -95.01 * scale, "fallback preserves the hollow through every depth layer");
+    assert.ok([...geometry.attributes.uv.array].every(Number.isFinite));
+    assert.ok(!exportObj([{ name: "hollow-fallback", geometry }]).obj.includes("NaN"));
+    const independent = buildMesh(shape, {
+      ...settings,
+      innerCurvePoints: [{ x: 0, y: 0 }, { x: 0.5, y: 0.8 }, { x: 1, y: 1 }],
+    });
+    assertClosedFiniteSolid(independent);
+    assertOpenDepthRay(independent, 150.1 * scale, -95.01 * scale, "independent inner curves retain the fallback cavity");
+    assert.notDeepEqual(Array.from(independent.attributes.position.array), Array.from(geometry.attributes.position.array), "fallback keeps the inner curve independently editable");
+    assert.equal(independent.userData.effectiveBevelDepth, 28 * scale);
+    assert.throws(() => buildMesh(shape, {
+      ...settings,
+      innerCurvePoints: [{ x: 0, y: 0 }, { x: 0.3, y: 0.8 }, { x: 0.7, y: 0.2 }, { x: 1, y: 1 }],
+    }), /戻らない/);
+    independent.dispose();
+    geometry.dispose();
+  }
 });

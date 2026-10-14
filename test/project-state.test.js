@@ -68,3 +68,13 @@ test('independent bevel curves and active side survive project roundtrip', () =>
   assert.throws(()=>parseProject(JSON.stringify(invalid)));
   a.dispose(); b.dispose();
 });
+
+test('metal and environment selections roundtrip and reject unknown presets', () => {
+  const state=fixture();state.objects[0].materialType='metal';state.view.environmentPreset='sunset';
+  const loaded=parseProject(serializeProject(state));
+  assert.equal(loaded.objects[0].materialType,'metal');assert.equal(loaded.view.environmentPreset,'sunset');
+  const raw=JSON.parse(serializeProject(state));raw.state.view.environmentPreset='invalid';
+  assert.throws(()=>parseProject(JSON.stringify(raw)));
+  raw.state.view.environmentPreset='studio';raw.state.objects[0].materialType='invalid';
+  assert.throws(()=>parseProject(JSON.stringify(raw)));
+});

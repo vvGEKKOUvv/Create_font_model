@@ -9,6 +9,7 @@ import { createTransformTools, prepareObjectMesh } from "./transform-tools.js";
 import { createHistory } from "./history.js";
 import { serializeProject, parseProject } from "./project-state.js";
 import { saveObjFiles, saveProjectFile } from "./file-save.js";
+import { createEnvironmentController } from "./environment.js";
 import "./style.css";
 
 const defaults = {
@@ -109,6 +110,8 @@ app.innerHTML = `
     </details>
     <details class="control-section" open>
       <summary>マテリアル <span>MATERIAL</span></summary>
+      <label class="material-select"><span>質感</span><select id="material-type"><option value="standard">標準</option><option value="metal">金属</option></select></label>
+      <label class="material-select"><span>環境</span><select id="environment-preset"><option value="studio">スタジオ</option><option value="softbox">ソフトボックス</option><option value="outdoor">屋外</option><option value="sunset">夕景</option></select></label>
       <label class="color-row"><input type="color" id="color" value="#b6ee75"/><span id="color-value">#B6EE75</span><span class="muted">カラー</span></label>
     </details>
     <details id="uv-settings" class="control-section" open>
@@ -146,6 +149,8 @@ if (renderer) {
   controls.enableDamping = true;
   controls.dampingFactor = 0.35;
 }
+const environmentController = createEnvironmentController(renderer, scene);
+let environmentPreset = environmentController.set("studio");
 scene.add(new THREE.HemisphereLight(0xffffff, 0x4c5664, 2.2));
 const light = new THREE.DirectionalLight(0xffffff, 3);
 light.position.set(100, 200, 150);
@@ -220,6 +225,8 @@ function applyDisplayStyle(mesh, object) {
   const hiddenMode = $("wireframe-mode").value === "hidden";
   const overlayMode = $("wireframe-mode").value === "overlay" || hiddenMode;
   mesh.visible = object.visible !== false;
+  mesh.material.metalness = object.materialType === "metal" ? 1 : 0.1;
+  mesh.material.roughness = object.materialType === "metal" ? 0.25 : 0.44;
   mesh.material.wireframe = enabled && !overlayMode;
   mesh.material.color.set(mesh.material.wireframe ? "#c4d8ef" : object.color);
   mesh.material.colorWrite = !(enabled && hiddenMode);
@@ -524,6 +531,7 @@ function sync() {
     const range = document.querySelector(`[data-range="${key}"]`);
     if (range) range.value = o.settings[key];
   });
+  $("material-type").value = o.materialType === "metal" ? "metal" : "standard";
   $("color").value = safeColor(o.color);
   $("color-value").textContent = o.color.toUpperCase();
   syncBevelLimit();
@@ -704,6 +712,17 @@ $("color").oninput = () => {
   list();
   const mesh = group.children[selected];
   if (mesh) applyDisplayStyle(mesh, o);
+};
+$("material-type").onchange = () => {
+  const object = selectedObject();
+  if (!object) return;
+  object.materialType = $("material-type").value;
+  const mesh = group.children[selected];
+  if (mesh) applyDisplayStyle(mesh, object);
+  recordHistory(true);
+};
+$("environment-preset").onchange = () => {
+  environmentPreset = environmentController.set($("environment-preset").value);
 };
 $("wireframe").onchange = () =>
   group.children.forEach((mesh, index) =>
@@ -1118,9 +1137,11 @@ transformTools.sync();
 refreshMeshInfo();
 
 function captureView() {
-  return {cameraPosition: camera.position.toArray(), cameraQuaternion: camera.quaternion.toArray(), zoom: camera.zoom, target: controls?.target.toArray() || [0,0,0], wireframe: $("wireframe").checked, wireframeMode: $("wireframe-mode").value, tab: activeView, exportFolder: $("export-folder").checked, uvEditMode: $("uv-edit-mode").checked, sections: [...document.querySelectorAll("aside details")].map(el => el.open), sectionLayout: 2, curveSide: $("curve-side").value, transformMode: transformControls?.getMode() || "translate", transformSpace: $("transform-local").checked};
+  return {environmentPreset, cameraPosition: camera.position.toArray(), cameraQuaternion: camera.quaternion.toArray(), zoom: camera.zoom, target: controls?.target.toArray() || [0,0,0], wireframe: $("wireframe").checked, wireframeMode: $("wireframe-mode").value, tab: activeView, exportFolder: $("export-folder").checked, uvEditMode: $("uv-edit-mode").checked, sections: [...document.querySelectorAll("aside details")].map(el => el.open), sectionLayout: 2, curveSide: $("curve-side").value, transformMode: transformControls?.getMode() || "translate", transformSpace: $("transform-local").checked};
 }
 function restoreView(view) {
+  environmentPreset = environmentController.set(view.environmentPreset || "studio");
+  $("environment-preset").value = environmentPreset;
   camera.position.fromArray(view.cameraPosition);
   camera.quaternion.fromArray(view.cameraQuaternion);
   camera.zoom = view.zoom; camera.updateProjectionMatrix();

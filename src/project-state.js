@@ -51,6 +51,7 @@ function validateState(state) {
   const ids = new Set();
   for (const object of state.objects) {
     if (!record(object) || typeof object.id !== "string" || ids.has(object.id) || typeof object.name !== "string" || object.name.length > 1000 || !/^#[\da-f]{6}$/i.test(object.color) || !record(object.settings)) fail();
+    if (object.materialType !== undefined && !["standard", "metal"].includes(object.materialType)) fail();
     ids.add(object.id);
     if (object.visible !== undefined && typeof object.visible !== "boolean") fail();
     if (object.pivot !== undefined && !vector(object.pivot, 3)) fail();
@@ -72,6 +73,7 @@ function validateState(state) {
   }
   if (state.view !== undefined) {
     if (!record(state.view)) fail();
+    if (state.view.environmentPreset !== undefined && !["studio", "softbox", "outdoor", "sunset"].includes(state.view.environmentPreset)) fail();
     for (const key of ["cameraPosition", "target"]) if (!vector(state.view[key], 3)) fail();
     if (!vector(state.view.cameraQuaternion, 4)) fail();
     if (!(typeof state.view.zoom === "number" && state.view.zoom > 0)) fail();
