@@ -1232,6 +1232,39 @@ try {
   assert.deepEqual((await projectData()).state.objects, saved.state.objects, "Cancelling export preserves project data");
   await page.evaluate(() => { window.showDirectoryPicker = undefined; });
   assert.deepEqual(await exported(), savedExport, "Unsupported directory API falls back to same OBJ and MTL downloads");
+  await page.locator("#export-folder").uncheck();
+  await expect.poll(() => page.locator("#hollow-settings").evaluate(el => el.previousElementSibling.id)).toBe("bevel-settings");
+  const orderBefore = await projectData();
+  const orderMeshes = await page.evaluate(() => window.__sceneSnapshot.objects.map(o => o.geometryId));
+  await page.locator("#reorder-down").click();
+  const orderAfter = await projectData();
+  assert.deepEqual(orderAfter.state.objects.map(o => o.id), [...orderBefore.state.objects.map(o => o.id)].reverse());
+  assert.equal(orderAfter.state.objects[1].name, orderBefore.state.objects[0].name);
+  assert.deepEqual(await page.evaluate(() => window.__sceneSnapshot.objects.map(o => o.geometryId)), [...orderMeshes].reverse(), "Reorder preserves mesh instances");
+  await page.locator("#undo").click();
+  assert.deepEqual((await projectData()).state.objects.map(o => o.id), orderBefore.state.objects.map(o => o.id));
+  await page.locator("#redo").click();
+  assert.deepEqual((await projectData()).state.objects.map(o => o.id), orderAfter.state.objects.map(o => o.id));
+  const reducePath = Array.from({length:120},(_,i)=>{
+    const a=i*Math.PI*2/120;
+    return `${i ? "L" : "M"}${40+40*Math.cos(a)} ${40+40*Math.sin(a)}`;
+  }).join(" ")+" Z";
+  await page.locator("#file").setInputFiles({name:"source-reduction.svg",mimeType:"image/svg+xml",buffer:Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg"><path d="${reducePath}"/></svg>`)});
+  await expect(page.locator("#object-count")).toHaveText("3");
+  await editField("reductionTolerance",0.5);
+  const sourceBefore = (await projectData()).state.objects[2];
+  const previewExport = await exported();
+  await page.locator("#apply-reduction").click();
+  const sourceAfter = (await projectData()).state.objects[2];
+  assert(sourceAfter.shape.curves.length < sourceBefore.shape.curves.length, "Apply reduction changes the actual saved source path");
+  assert.notEqual(sourceAfter.shape.uuid, sourceBefore.shape.uuid);
+  assert.equal(sourceAfter.settings.reductionTolerance,0);
+  const appliedExport = await exported();
+  assert.equal(appliedExport["model.obj"],previewExport["model.obj"], "Applying source reduction keeps preview mesh unchanged");
+  await page.locator("#undo").click();
+  assert.deepEqual((await projectData()).state.objects[2].shape,sourceBefore.shape,"Undo restores original editable path");
+  await page.locator("#redo").click();
+  assert.deepEqual((await projectData()).state.objects[2].shape,sourceAfter.shape,"Redo restores reduced source");
   await page.setViewportSize({ width: 390, height: 844 });
   await expect
     .poll(() =>

@@ -1,3 +1,4 @@
+import { reduceSourcePath } from "./source-reduction.js";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { parseSvg, buildMesh, exportObj, applyUvSettings } from "./geometry.js";
@@ -68,7 +69,7 @@ app.innerHTML = `
       <summary>オブジェクト選択 <span id="object-count">0</span></summary>
       <div id="objects"></div>
       <label class="rename-row"><span>名前</span><input id="object-name" type="text" maxlength="120" aria-label="オブジェクト名" placeholder="選択オブジェクトの名前"/></label>
-      <button id="duplicate" class="subtle" disabled>選択オブジェクトを複製</button>
+      <div class="object-actions"><button id="duplicate" class="subtle" disabled>複製</button><button id="reorder-up" class="subtle" disabled>↑ 上へ</button><button id="reorder-down" class="subtle" disabled>↓ 下へ</button></div>
       <label class="export-folder-option"><input id="export-folder" type="checkbox"/> OBJ の保存先を指定</label>
       <p class="export-visibility-note">非表示のオブジェクトは書き出し対象外</p>
       <div class="selection-heading"><p id="selected-name" class="muted">オブジェクトを選択</p><button id="reset" class="subtle">リセット ↺</button></div>
@@ -77,6 +78,7 @@ app.innerHTML = `
       <summary>パスのリダクション <span>REDUCTION</span></summary>
       ${field("reductionTolerance", "許容誤差", 0, 0, 5, 0.01)}
       <p id="reduction-info" class="control-note">—</p>
+      <button id="apply-reduction" class="subtle" disabled>パスに適用</button>
     </details>
     <details class="control-section" id="offset-settings" open>
       <summary>輪郭のオフセット <span>OFFSET</span></summary>
@@ -87,20 +89,23 @@ app.innerHTML = `
       <summary>押し出し <span>EXTRUDE</span></summary>
       ${field("depth", "奥行き", 24, 0.01, 100, 0.1)}
     </details>
-    <details class="control-section" open>
+    <details id="bevel-settings" class="control-section" open>
       <summary>ベベル <span>BEVEL</span></summary>
       ${field("bevelSize", "奥行方向", 3, 0, 12, 0.1)}
       ${field("bevelWidth", "輪郭幅", 3, 0, 100, 0.1)}
       <label class="toggle-row"><span>正面が合流するまで広げる</span><input id="bevelContinue" type="checkbox" checked/><i></i></label>
       ${field("bevelSegments", "分割数", 5, 1, 16, 1)}
       <p id="geometry-status" class="control-note"></p>
-      <div class="curve-display"></div>
       <label class="toggle-row"><span>尖った角を保持</span><input id="sharpCorners" type="checkbox" checked/><i></i></label>
     </details>
-    <details class="control-section" open>
+    <details id="hollow-settings" class="control-section" open>
       <summary>内側をくり抜く <span>HOLLOW</span></summary>
       <label class="toggle-row"><span>中空にする</span><input id="hollow" type="checkbox"/><i></i></label>
       ${field("wallThickness", "壁の厚み", 4, 0.001, 30, 0.01)}
+    </details>
+    <details id="bevel-curve-settings" class="control-section" open>
+      <summary>ベベルカーブ <span>PROFILE</span></summary>
+      <div class="curve-display"></div>
     </details>
     <details class="control-section" open>
       <summary>マテリアル <span>MATERIAL</span></summary>
@@ -356,12 +361,12 @@ function refreshMeshInfo() {
   updateGeometryInfo();
   drawUV();
 }
-function rebuildObject(object) {
+function rebuildObject(object, replacement = null) {
   const index = objects.indexOf(object);
   if (index < 0) return true;
   try {
-    const replacement = makeMeshes([object])[0],
-      mesh = group.children[index];
+    replacement ??= makeMeshes([object])[0];
+    const mesh = group.children[index];
     const oldGeometry = mesh.geometry;
     mesh.geometry = replacement.geometry;
     applyDisplayStyle(mesh, object);
@@ -450,6 +455,9 @@ function fit() {
 }
 function list() {
   $("duplicate").disabled = !selectedObject();
+  $("apply-reduction").disabled = !selectedObject();
+  $("reorder-up").disabled = !objects.length || selected === 0;
+  $("reorder-down").disabled = !objects.length || selected === objects.length - 1;
   $("object-name").disabled = !selectedObject();
   $("object-count").textContent = objects.length;
   $("objects").innerHTML = objects
@@ -1112,7 +1120,7 @@ transformTools.sync();
 refreshMeshInfo();
 
 function captureView() {
-  return {cameraPosition: camera.position.toArray(), cameraQuaternion: camera.quaternion.toArray(), zoom: camera.zoom, target: controls?.target.toArray() || [0,0,0], wireframe: $("wireframe").checked, wireframeMode: $("wireframe-mode").value, tab: activeView, exportFolder: $("export-folder").checked, uvEditMode: $("uv-edit-mode").checked, sections: [...document.querySelectorAll("aside details")].map(el => el.open), transformMode: transformControls?.getMode() || "translate", transformSpace: $("transform-local").checked};
+  return {cameraPosition: camera.position.toArray(), cameraQuaternion: camera.quaternion.toArray(), zoom: camera.zoom, target: controls?.target.toArray() || [0,0,0], wireframe: $("wireframe").checked, wireframeMode: $("wireframe-mode").value, tab: activeView, exportFolder: $("export-folder").checked, uvEditMode: $("uv-edit-mode").checked, sections: [...document.querySelectorAll("aside details")].map(el => el.open), sectionLayout: 2, transformMode: transformControls?.getMode() || "translate", transformSpace: $("transform-local").checked};
 }
 function restoreView(view) {
   camera.position.fromArray(view.cameraPosition);
@@ -1125,7 +1133,12 @@ function restoreView(view) {
   $("wireframe").onchange();
   $("uv-edit-mode").checked = view.uvEditMode;
   $("export-folder").checked = view.exportFolder === true;
-  document.querySelectorAll("aside details").forEach((el, i) => { if (typeof view.sections?.[i] === "boolean") el.open = view.sections[i]; });
+  let sectionIndex = 0;
+  document.querySelectorAll("aside details").forEach(el => {
+    if (view.sectionLayout !== 2 && el.id === "bevel-curve-settings") return;
+    const value = view.sections?.[sectionIndex++];
+    if (typeof value === "boolean") el.open = value;
+  });
   $("transform-local").checked = view.transformSpace;
   $("transform-local").dispatchEvent(new Event("change"));
   $(`transform-${view.transformMode}`)?.click();
@@ -1169,5 +1182,45 @@ $("project-file").onchange = async (event) => {
     restoreHistory(state, true);
     recordHistory(true);
     notice("保存した状態を読み込みました。");
+  } catch (error) { notice(error.message, true); }
+};
+
+function reorderSelected(direction) {
+  if (!flushPending()) return;
+  const next = selected + direction;
+  if (next < 0 || next >= objects.length) return;
+  history.commit();
+  const object = objects.splice(selected, 1)[0];
+  const mesh = group.children.splice(selected, 1)[0];
+  objects.splice(next, 0, object);
+  group.children.splice(next, 0, mesh);
+  selected = next;
+  list(); sync(); transformTools.sync(); drawUV();
+  recordHistory(true);
+}
+$("reorder-up").onclick = () => reorderSelected(-1);
+$("reorder-down").onclick = () => reorderSelected(1);
+$("apply-reduction").onclick = () => {
+  try {
+    if (!flushPending()) return;
+    const object = selectedObject();
+    if (!object) return;
+    const reduced = reduceSourcePath(object.shape, object.settings.reductionTolerance);
+    if (reduced.shape === object.shape) {
+      notice("削減できる頂点がありません。許容誤差を調整してください。");
+      return;
+    }
+    const candidate = copyObjectState(object);
+    candidate.shape = reduced.shape;
+    candidate.settings.reductionTolerance = 0;
+    delete candidate.settings.uvEdits;
+    const replacement = makeMeshes([candidate])[0];
+    history.commit();
+    object.shape = candidate.shape;
+    object.settings = candidate.settings;
+    uvSelectedKey = null; uvDragKey = null;
+    rebuildObject(object, replacement);
+    sync(); transformTools.sync(); drawUV(); recordHistory(true);
+    notice(`パスの頂点を ${reduced.before} → ${reduced.after} に削減しました。`);
   } catch (error) { notice(error.message, true); }
 };
