@@ -2,18 +2,19 @@ import * as THREE from "three";
 import { TransformControls } from "three/addons/controls/TransformControls.js";
 
 export function prepareObjectMesh(mesh, object) {
+  mesh.geometry.computeBoundingBox();
+  const geometryCenter = mesh.geometry.boundingBox.getCenter(new THREE.Vector3());
   if (!object.pivot) {
-    mesh.geometry.computeBoundingBox();
-    object.pivot = mesh.geometry.boundingBox
-      .getCenter(new THREE.Vector3())
-      .toArray();
+    object.pivot = [geometryCenter.x, geometryCenter.y, 0];
   }
   object.transform ||= {
     position: [0, 0, 0],
     rotation: [0, 0, 0],
     scale: [1, 1, 1],
   };
-  mesh.geometry.translate(...object.pivot.map((v) => -v));
+  // Each rebuilt extrusion is centered around its stable local origin. Existing
+  // saved pivots still locate the object, without moving its center as depth changes.
+  mesh.geometry.translate(-object.pivot[0], -object.pivot[1], -geometryCenter.z);
   apply(mesh, object);
 }
 function apply(mesh, object) {

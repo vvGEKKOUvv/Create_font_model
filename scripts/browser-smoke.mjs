@@ -71,6 +71,8 @@ try {
            metalness: mesh.material.metalness,
            roughness: mesh.material.roughness,
            geometryId: mesh.geometry.uuid,
+           triangleCount: mesh.geometry.attributes.position.count / 3,
+           localZ: [mesh.geometry.boundingBox.min.z, mesh.geometry.boundingBox.max.z],
            wireframe: mesh.material.wireframe,
            colorWrite: mesh.material.colorWrite,
            occluder: Boolean(mesh.userData.wireframeOccluder?.visible),
@@ -1311,6 +1313,28 @@ try {
   await page.locator("#project-file").setInputFiles({name:"metal.pathform",mimeType:"application/json",buffer:Buffer.from(JSON.stringify(metalState))});
   await expect(page.locator("#material-type")).toHaveValue("metal");
   await expect(page.locator("#environment-preset")).toHaveValue("sunset");
+  await page.locator("#file").setInputFiles({name:"mesh-circle.svg",mimeType:"image/svg+xml",buffer:Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><circle id="MeshCircle" cx="50" cy="50" r="40" fill="#dddddd"/></svg>')});
+  await expect(page.locator("#selected-name")).toHaveText(/MeshCircle/);
+  await editField("bevelSize",0);
+  await editField("depth",20);
+  const meshIndex = (await projectData()).state.selected;
+  const triangleCount = await page.evaluate(i => window.__sceneSnapshot.objects[i].triangleCount,meshIndex);
+  await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].localZ,meshIndex)).toEqual([-10,10]);
+  await editField("depth",40);
+  await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].localZ,meshIndex)).toEqual([-20,20]);
+  await editField("meshReductionPercentage",50);
+  await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].triangleCount,meshIndex)).toBeLessThan(triangleCount);
+  const reducedTriangles = await page.evaluate(i => window.__sceneSnapshot.objects[i].triangleCount,meshIndex);
+  const reducedProject = await projectData();
+  assert.equal(reducedProject.state.objects[meshIndex].settings.meshReductionPercentage,50);
+  await page.locator("#duplicate").click();
+  await expect(page.locator("#meshReductionPercentage")).toHaveValue("50");
+  await editField("meshReductionPercentage",0);
+  await page.locator("#project-file").setInputFiles({name:"reduced.pathform",mimeType:"application/json",buffer:Buffer.from(JSON.stringify(reducedProject))});
+  await expect(page.locator("#meshReductionPercentage")).toHaveValue("50");
+  await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].triangleCount,meshIndex)).toBe(reducedTriangles);
+  await editField("meshReductionPercentage",0);
+  await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].triangleCount,meshIndex)).toBe(triangleCount);
   await page.setViewportSize({ width: 390, height: 844 });
   await expect
     .poll(() =>

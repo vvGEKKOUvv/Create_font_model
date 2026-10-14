@@ -78,3 +78,14 @@ test('metal and environment selections roundtrip and reject unknown presets', ()
   raw.state.view.environmentPreset='studio';raw.state.objects[0].materialType='invalid';
   assert.throws(()=>parseProject(JSON.stringify(raw)));
 });
+
+test('mesh reduction percentage roundtrips and rejects invalid amounts', () => {
+  const state = fixture();
+  state.objects[0].settings.meshReductionPercentage = 60;
+  assert.equal(parseProject(serializeProject(state)).objects[0].settings.meshReductionPercentage, 60);
+  for (const value of [-1, 91, '50']) {
+    const raw = JSON.parse(serializeProject(state));
+    raw.state.objects[0].settings.meshReductionPercentage = value;
+    assert.throws(() => parseProject(JSON.stringify(raw)), /プロジェクト/);
+  }
+});

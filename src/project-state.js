@@ -59,6 +59,7 @@ function validateState(state) {
     for (const settings of [object.settings, object.validSettings].filter(Boolean)) {
       if (!record(settings) || !(typeof settings.depth === "number" && settings.depth > 0) || !Number.isInteger(settings.bevelSegments) || settings.bevelSegments < 1 || settings.bevelSegments > 64) fail();
       for (const key of ["bevelSize", "bevelWidth", "wallThickness", "reductionTolerance"]) if (settings[key] !== undefined && !(typeof settings[key] === "number" && settings[key] >= 0)) fail();
+      if (settings.meshReductionPercentage !== undefined && !(typeof settings.meshReductionPercentage === "number" && settings.meshReductionPercentage >= 0 && settings.meshReductionPercentage <= 90)) fail();
       for (const key of ["uvScaleX", "uvScaleY", "uvOffsetX", "uvOffsetY", "uvRotation", "offset", "pathOffset"]) if (settings[key] !== undefined && typeof settings[key] !== "number") fail();
       for (const key of ["bevelContinue", "sharpCorners", "hollow", "bevelFullWidth"]) if (settings[key] !== undefined && typeof settings[key] !== "boolean") fail();
       if (settings.uvEdits !== undefined && (!record(settings.uvEdits) || !Object.values(settings.uvEdits).every(v => vector(v, 2)))) fail();

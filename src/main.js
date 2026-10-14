@@ -1,4 +1,5 @@
 import { reduceSourcePath } from "./source-reduction.js";
+import { reduceMeshGeometry } from "./mesh-reduction.js";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { parseSvg, buildMesh, exportObj, applyUvSettings } from "./geometry.js";
@@ -14,6 +15,7 @@ import "./style.css";
 
 const defaults = {
   reductionTolerance: 0,
+  meshReductionPercentage: 0,
   pathOffset: 0,
   depth: 24,
   bevelSize: 3,
@@ -80,6 +82,11 @@ app.innerHTML = `
       ${field("reductionTolerance", "許容誤差", 0, 0, 5, 0.01)}
       <p id="reduction-info" class="control-note">—</p>
       <button id="apply-reduction" class="subtle" disabled>パスに適用</button>
+    </details>
+    <details class="control-section" id="mesh-reduction-settings" open>
+      <summary>オブジェクトのリダクション <span>MESH</span></summary>
+      ${field("meshReductionPercentage", "削減率 %", 0, 0, 90, 1)}
+      <p id="mesh-reduction-info" class="control-note">—</p>
     </details>
     <details class="control-section" id="offset-settings" open>
       <summary>輪郭のオフセット <span>OFFSET</span></summary>
@@ -276,7 +283,17 @@ function makeMeshes(entries) {
   const meshes = [];
   try {
     entries.forEach((o) => {
-      const geometry = buildMesh(o.shape, o.settings);
+      const sourceGeometry = buildMesh(o.shape, o.settings);
+      let geometry;
+      try {
+        geometry = reduceMeshGeometry(sourceGeometry, o.settings.meshReductionPercentage ?? 0);
+        if (geometry !== sourceGeometry) applyUvSettings(geometry, o.settings);
+      } catch (error) {
+        if (geometry && geometry !== sourceGeometry) geometry.dispose();
+        sourceGeometry.dispose();
+        throw error;
+      }
+      if (geometry !== sourceGeometry) sourceGeometry.dispose();
       geometry.userData.sourceSettings = structuredClone(o.settings);
       const material = new THREE.MeshStandardMaterial({
         color: o.color,
@@ -348,6 +365,10 @@ function updateGeometryInfo() {
     after = data.reducedCount ?? before;
   $("reduction-info").textContent =
     `${before.toLocaleString()} → ${after.toLocaleString()} 頂点（${before ? ((1 - after / before) * 100).toFixed(1) : 0}% 削減）`;
+  const triangles = group.children[selected].geometry.getAttribute("position").count / 3;
+  const meshBefore = data.meshOriginalTriangles ?? triangles;
+  const meshAfter = data.meshReducedTriangles ?? triangles;
+  $("mesh-reduction-info").textContent = `${meshBefore.toLocaleString()} → ${meshAfter.toLocaleString()} 面（${meshBefore ? ((1 - meshAfter / meshBefore) * 100).toFixed(1) : 0}% 削減）`;
   $("offset-info").textContent = `適用量：${Number(data.effectivePathOffset || 0).toPrecision(3)}`;
   $("geometry-status").textContent =
     `奥行方向：${Number(data.effectiveBevelDepth || 0).toPrecision(3)} / 輪郭幅：${Number(data.effectiveBevel || 0).toPrecision(3)}` +
@@ -519,6 +540,7 @@ function sync() {
   $("selected-name").textContent = o.name;
   $("object-name").value = o.name;
   o.settings.pathOffset ??= 0;
+  o.settings.meshReductionPercentage ??= 0;
   const offsetBox = new THREE.Box2().setFromPoints(o.shape.extractPoints(4).shape);
   const offsetSpan = Math.max(0.01, offsetBox.getSize(new THREE.Vector2()).length(), Math.abs(o.settings.pathOffset));
   for (const el of [$("pathOffset"), document.querySelector('[data-range="pathOffset"]')]) {
@@ -1137,7 +1159,7 @@ transformTools.sync();
 refreshMeshInfo();
 
 function captureView() {
-  return {environmentPreset, cameraPosition: camera.position.toArray(), cameraQuaternion: camera.quaternion.toArray(), zoom: camera.zoom, target: controls?.target.toArray() || [0,0,0], wireframe: $("wireframe").checked, wireframeMode: $("wireframe-mode").value, tab: activeView, exportFolder: $("export-folder").checked, uvEditMode: $("uv-edit-mode").checked, sections: [...document.querySelectorAll("aside details")].map(el => el.open), sectionLayout: 2, curveSide: $("curve-side").value, transformMode: transformControls?.getMode() || "translate", transformSpace: $("transform-local").checked};
+  return {environmentPreset, cameraPosition: camera.position.toArray(), cameraQuaternion: camera.quaternion.toArray(), zoom: camera.zoom, target: controls?.target.toArray() || [0,0,0], wireframe: $("wireframe").checked, wireframeMode: $("wireframe-mode").value, tab: activeView, exportFolder: $("export-folder").checked, uvEditMode: $("uv-edit-mode").checked, sections: [...document.querySelectorAll("aside details")].map(el => el.open), sectionLayout: 3, curveSide: $("curve-side").value, transformMode: transformControls?.getMode() || "translate", transformSpace: $("transform-local").checked};
 }
 function restoreView(view) {
   environmentPreset = environmentController.set(view.environmentPreset || "studio");
@@ -1154,7 +1176,8 @@ function restoreView(view) {
   $("export-folder").checked = view.exportFolder === true;
   let sectionIndex = 0;
   document.querySelectorAll("aside details").forEach(el => {
-    if (view.sectionLayout !== 2 && el.id === "bevel-curve-settings") return;
+    if (view.sectionLayout !== 3 && el.id === "mesh-reduction-settings") return;
+    if (![2, 3].includes(view.sectionLayout) && el.id === "bevel-curve-settings") return;
     const value = view.sections?.[sectionIndex++];
     if (typeof value === "boolean") el.open = value;
   });
