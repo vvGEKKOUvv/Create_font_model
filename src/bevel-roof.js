@@ -8,34 +8,134 @@ const EPS = 1e-8;
 // Cache the expensive topology, which is independent of extrusion/profile edits.
 const cache = new WeakMap();
 const failures = new WeakMap();
+const rejectedStrategies = new WeakMap();
 export function invalidateBevelRoof(rings, error) {
+  const rejected = cache.get(rings);
   cache.delete(rings);
-  failures.set(rings, error);
+  if (!rejected) {
+    failures.set(rings, error);
+    return;
+  }
+  let strategies = rejectedStrategies.get(rings);
+  if (!strategies) rejectedStrategies.set(rings, (strategies = new Set()));
+  strategies.add(rejected.regularization ?? 0);
+  if (strategies.size >= 4) failures.set(rings, error);
 }
-export function prepareBevelRoof(rings) {
+const strategies = new WeakMap();
+export function prepareBevelRoof(rings, family = rings) {
   if (cache.has(rings)) return cache.get(rings);
   if (failures.has(rings)) throw failures.get(rings);
-  let result;
-  try {
-    result = SkeletonBuilder.BuildFromGeoJSON([
-      rings.map((ring) => ring.map((p) => [p.x, p.y])),
-    ]);
-  } catch (error) {
-    failures.set(rings, error);
-    throw error;
+  const previous = strategies.get(family);
+  // Try the unmodified metric first. A bounded numerical perturbation separates
+  // coincident split events only when the kernel cannot resolve them. Remember
+  // the successful strategy across wall-thickness variants of the same shape.
+  const choices = [...new Set([previous ?? 0, 0, 1e-6, -1e-6, 1e-5])];
+  let rejected = rejectedStrategies.get(rings);
+  if (!rejected) rejectedStrategies.set(rings, (rejected = new Set()));
+  let failure;
+  for (const shear of choices) {
+    if (rejected.has(shear)) continue;
+    try {
+      const roof = buildRoof(rings, shear);
+      cache.set(rings, roof);
+      strategies.set(family, shear);
+      return roof;
+    } catch (error) {
+      failure = error;
+      rejected.add(shear);
+    }
   }
+  failures.set(rings, failure);
+  throw failure;
+}
+function buildRoof(rings, shear) {
+  const origin = shear ? rings[0][0] : { x: 0, y: 0 };
+  const originals = new Map();
+  const roundedOriginals = new Map();
+  const roundedKey = (x, y) => `${Math.round(x * 1e7)},${Math.round(y * 1e7)}`;
+  const coordinates = rings.map((ring) =>
+    ring.map((p) => {
+      const x = p.x - origin.x,
+        y = p.y - origin.y;
+      const a = x + shear * y,
+        b = y + shear * x;
+      originals.set(`${a},${b}`, p);
+      roundedOriginals.set(roundedKey(a, b), p);
+      return [a, b];
+    }),
+  );
+  const result = SkeletonBuilder.BuildFromGeoJSON([coordinates]);
   if (!result?.Edges?.length)
     throw new Error("輪郭の稜線を生成できませんでした。");
+  const restore = (p) => {
+    const original =
+      originals.get(`${p.X},${p.Y}`) ??
+      roundedOriginals.get(roundedKey(p.X, p.Y));
+    if (original) return { x: original.x, y: original.y, source: true };
+    const determinant = 1 - shear * shear;
+    return {
+      x: (p.X - shear * p.Y) / determinant + origin.x,
+      y: (p.Y - shear * p.X) / determinant + origin.y,
+    };
+  };
   const distanceByPoint = new Map(
     Array.from(result.Distances, ([p, t]) => [`${p.X},${p.Y}`, t]),
   );
-  const faces = result.Edges.map((edge) =>
+  const roundedTimes = new Map(
+    Array.from(result.Distances, ([p, t]) => [roundedKey(p.X, p.Y), t]),
+  );
+  let faces = result.Edges.map((edge) =>
     edge.Polygon.map((p) => ({
-      x: p.X,
-      y: p.Y,
-      time: distanceByPoint.get(`${p.X},${p.Y}`) ?? 0,
+      ...restore(p),
+      time:
+        distanceByPoint.get(`${p.X},${p.Y}`) ??
+        roundedTimes.get(roundedKey(p.X, p.Y)) ??
+        0,
     })),
   );
+  const ridgeTolerance = shear
+    ? Math.max(
+        1e-5,
+        Math.abs(shear) *
+          Math.max(
+            1,
+            ...rings
+              .flat()
+              .map((p) => Math.hypot(p.x - rings[0][0].x, p.y - rings[0][0].y)),
+          ),
+      )
+    : 0;
+  if (shear) {
+    const tolerance = Math.max(1e-5, ridgeTolerance),
+      grid = new Map();
+    faces = faces.map((face) =>
+      face
+        .map((p) => {
+          // Exact source vertices are never merged. Only internal, near-coincident
+          // events introduced by the numerical perturbation share one ridge node.
+          if (p.source || p.time <= EPS) return p;
+          const gx = Math.floor(p.x / tolerance),
+            gy = Math.floor(p.y / tolerance);
+          let canonical;
+          for (let dx = -1; dx <= 1 && !canonical; dx++)
+            for (let dy = -1; dy <= 1 && !canonical; dy++)
+              canonical = (grid.get(`${gx + dx},${gy + dy}`) || []).find(
+                (q) =>
+                  Math.hypot(q.x - p.x, q.y - p.y) <= tolerance &&
+                  Math.abs(q.time - p.time) <= tolerance,
+              );
+          if (canonical) return canonical;
+          const key = `${gx},${gy}`;
+          if (!grid.has(key)) grid.set(key, []);
+          grid.get(key).push(p);
+          return p;
+        })
+        .filter((p, i, all) => i === 0 || p !== all[i - 1]),
+    );
+    faces = faces.map((face) =>
+      face.length > 1 && face[0] === face.at(-1) ? face.slice(0, -1) : face,
+    );
+  }
   // A kernel can return finite faces after a near-simultaneous event while
   // silently dropping a boundary edge. Reject that topology before it is used
   // for the bevel; the original side wall must share every boundary edge.
@@ -75,21 +175,49 @@ export function prepareBevelRoof(rings) {
   if (
     invalidTimes ||
     [...boundary].some((key) => incidence.get(key) !== 1) ||
-    [...incidence].some(([key, count]) => count !== (boundary.has(key) ? 1 : 2))
+    // Perturbed kernels can retain zero-width terminal edges. The sampled
+    // surface must still pass the complete edge validation below.
+    (shear === 0 &&
+      [...incidence].some(
+        ([key, count]) => count !== (boundary.has(key) ? 1 : 2),
+      ))
   ) {
     const error = new Error("輪郭の稜線が側面の境界と一致しません。");
-    failures.set(rings, error);
     throw error;
   }
-  const maximumWidth = Math.max(...faces.flat().map((p) => p.time));
+  const inside = (p, ring) => {
+    let result = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const a = ring[i],
+        b = ring[j];
+      if (
+        a.y > p.y !== b.y > p.y &&
+        p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x
+      )
+        result = !result;
+    }
+    return result;
+  };
+  // Terminal events after a wavefront has vanished can lie outside its solid
+  // footprint. They do not define the reachable width of the actual bevel.
+  const maximumWidth = Math.max(
+    0,
+    ...faces
+      .flat()
+      .filter(
+        (p) =>
+          p.time > EPS &&
+          inside(p, rings[0]) &&
+          !rings.slice(1).some((hole) => inside(p, hole)),
+      )
+      .map((p) => p.time),
+  );
   if (
     !(maximumWidth > EPS) ||
     faces.flat().some((p) => ![p.x, p.y, p.time].every(Number.isFinite))
   )
     throw new Error("輪郭の稜線が不正です。");
-  const roof = { faces, maximumWidth, rings };
-  cache.set(rings, roof);
-  return roof;
+  return { faces, maximumWidth, rings, regularization: shear, ridgeTolerance };
 }
 
 function cut(poly, limit, keepAbove) {
@@ -118,6 +246,10 @@ function cut(poly, limit, keepAbove) {
 // faces at common distance levels gives matching vertices along shared
 // skeleton edges, including topology changes at narrow-stroke collisions.
 export function triangulateBevelRoof(roof, width, samples, profile) {
+  const triangleKey = JSON.stringify([width, samples, samples.map(profile)]);
+  roof.triangleCache ||= new Map();
+  if (roof.triangleCache.has(triangleKey))
+    return roof.triangleCache.get(triangleKey);
   const sampled = samples.map((t) => ({ time: width * (1 - profile(t)), t }));
   if (sampled.some((p, i) => i && p.time > sampled[i - 1].time + EPS))
     throw new Error(
@@ -187,6 +319,21 @@ export function triangulateBevelRoof(roof, width, samples, profile) {
       }
     }
   }
+  const sameRendered = (a, b) =>
+    Math.fround(a.x) === Math.fround(b.x) &&
+    Math.fround(a.y) === Math.fround(b.y) &&
+    Math.fround(a.height) === Math.fround(b.height);
+  let kept = 0;
+  for (const triangle of triangles) {
+    const [a, b, c] = triangle.points;
+    if (sameRendered(a, b) || sameRendered(b, c) || sameRendered(c, a))
+      continue;
+    triangles[kept++] = triangle;
+  }
+  triangles.length = kept;
   validateRoofTriangles(triangles, roof.rings);
+  if (roof.triangleCache.size >= 2)
+    roof.triangleCache.delete(roof.triangleCache.keys().next().value);
+  roof.triangleCache.set(triangleKey, triangles);
   return triangles;
 }

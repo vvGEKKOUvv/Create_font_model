@@ -99,6 +99,7 @@ try {
     });
   });
   await page.goto("http://127.0.0.1:5184");
+  await page.evaluate(() => { window.showDirectoryPicker = undefined; window.showSaveFilePicker = undefined; });
   await expect(page.locator("#object-count")).toHaveText("0");
   await expect(page.locator("#sample")).toHaveCount(0);
   await page.locator("#file").setInputFiles({
@@ -1134,6 +1135,103 @@ try {
       "A wider solid bevel changes the exported slope area",
     );
   }
+  // Use a fresh, small project for persistence/duplication and filesystem API tests.
+  await page.reload();
+  await page.evaluate(() => { window.showDirectoryPicker = undefined; window.showSaveFilePicker = undefined; });
+  await page.locator("#file").setInputFiles({name: "state.svg", mimeType: "image/svg+xml", buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0H40V40H0Z"/><path d="M60 0H90V30H60Z"/></svg>')});
+  await expect(page.locator("#object-count")).toHaveText("2");
+  async function editField(id, value) {
+    await page.locator(`#${id}`).fill(String(value));
+    await page.locator(`#${id}`).dispatchEvent("input");
+    await page.locator(`#${id}`).dispatchEvent("change");
+  }
+  async function projectData() {
+    const downloadPromise = page.waitForEvent("download");
+    await page.locator("#project-save").click();
+    const download = await downloadPromise;
+    assert.equal(download.suggestedFilename(), "project.pathform");
+    const path = join(work, `project-${iteration++}.pathform`);
+    await download.saveAs(path);
+    return JSON.parse(await readFile(path, "utf8"));
+  }
+  await editField("object-name", "Saved sculpture");
+  await editField("position-x", 7);
+  await editField("rotation-y", 24);
+  await editField("scale-z", 1.5);
+  await editField("uvOffsetX", 0.17);
+  await editField("color", "#aa7733");
+  await page.locator('[data-visibility="1"]').click();
+  await page.locator("#wireframe").check();
+  await page.locator("#wireframe-mode").selectOption("hidden");
+  const saved = await projectData();
+  const savedExport = await exported();
+  const originalGeometry = (await page.evaluate(() => window.__sceneSnapshot)).objects[0].geometryId;
+  await page.locator("#duplicate").click();
+  await expect(page.locator("#object-count")).toHaveText("3");
+  const duplicated = await projectData();
+  assert.equal(new Set(duplicated.state.objects.map(o => o.id)).size, 3);
+  assert.equal(new Set(duplicated.state.objects.map(o => o.name)).size, 3);
+  const copy = duplicated.state.objects[2], original = duplicated.state.objects[0];
+  for (const key of ["shape", "settings", "transform", "visible", "color"]) {
+    const normalize = value => JSON.parse(JSON.stringify(value, (k,v) => k === "uuid" ? undefined : v));
+    assert.deepEqual(normalize(copy[key]), normalize(original[key]), `Duplicate preserves ${key}`);
+  }
+  assert.notEqual((await page.evaluate(() => window.__sceneSnapshot)).objects[2].geometryId, originalGeometry);
+  await editField("depth", 16);
+  const changedCopy = await projectData();
+  assert.equal(changedCopy.state.objects[0].settings.depth, original.settings.depth, "Duplicated settings are independent");
+  await page.locator("#undo").click();
+  await page.locator("#undo").click();
+  await expect(page.locator("#object-count")).toHaveText("2");
+  await page.locator("#redo").click();
+  await expect(page.locator("#object-count")).toHaveText("3");
+  await editField("object-name", "Changed copy");
+  await page.locator("#fit").click();
+  await page.locator("#project-file").setInputFiles({name:"saved.pathform", mimeType:"application/json", buffer:Buffer.from(JSON.stringify(saved))});
+  await expect(page.locator("#object-count")).toHaveText("2");
+  await expect(page.locator("#message")).not.toHaveClass(/error/);
+  const restored = await projectData();
+  assert.deepEqual(restored.state.objects, saved.state.objects, "Project reload preserves source paths, settings, UV, names, material, visibility and transforms");
+  assert.deepEqual(restored.state.view, saved.state.view, "Project reload preserves camera and display settings");
+  assert.equal(restored.state.selected, saved.state.selected);
+  assert.deepEqual(await exported(), savedExport, "Roundtrip preserves actual exported geometry and UVs");
+  await page.locator("#undo").click();
+  await expect(page.locator("#object-count")).toHaveText("3");
+  await page.locator("#redo").click();
+  await expect(page.locator("#object-count")).toHaveText("2");
+  await page.locator("#project-file").setInputFiles({name:"invalid.pathform", mimeType:"application/json", buffer:Buffer.from('{"format":"Wrong","version":1}')});
+  await expect(page.locator("#message")).toHaveClass(/error/);
+  const afterInvalid = await projectData();
+  assert.deepEqual(afterInvalid.state.objects, saved.state.objects, "Invalid project keeps current objects intact");
+  assert.deepEqual(await exported(), savedExport);
+  // Directory saving is exercised through a real button click and writable handles.
+  await page.evaluate(() => {
+    window.__savedFiles = {}; window.__pickerCalls = 0;
+    window.showDirectoryPicker = async options => {
+      window.__pickerCalls++; window.__pickerOptions = options;
+      return {getFileHandle: async (name, options) => {
+        if (!options?.create) throw new DOMException("Missing", "NotFoundError");
+        return {createWritable: async () => ({write: async text => { window.__savedFiles[name] = text instanceof Blob ? await text.text() : String(text); }, close: async () => {}, abort: async () => {}})};
+      }};
+    };
+  });
+  await page.locator("#export-folder").check();
+  await page.locator("#export").click();
+  await expect.poll(() => page.evaluate(() => Object.keys(window.__savedFiles).length)).toBe(2);
+  assert.deepEqual(await page.evaluate(() => window.__savedFiles), savedExport);
+  assert.equal(await page.evaluate(() => window.__pickerCalls), 1);
+  assert.equal(await page.evaluate(() => window.__pickerOptions.mode), "readwrite");
+  await page.evaluate(() => { window.showDirectoryPicker = async () => { throw new DOMException("Cancelled", "AbortError"); }; });
+  const cancelledDownloads = [];
+  const cancelListener = download => cancelledDownloads.push(download);
+  page.on("download", cancelListener);
+  await page.locator("#export").click();
+  await page.waitForTimeout(100);
+  page.off("download", cancelListener);
+  assert.equal(cancelledDownloads.length, 0, "Cancelled directory picker does not download unexpectedly");
+  assert.deepEqual((await projectData()).state.objects, saved.state.objects, "Cancelling export preserves project data");
+  await page.evaluate(() => { window.showDirectoryPicker = undefined; });
+  assert.deepEqual(await exported(), savedExport, "Unsupported directory API falls back to same OBJ and MTL downloads");
   await page.setViewportSize({ width: 390, height: 844 });
   await expect
     .poll(() =>

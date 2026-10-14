@@ -2295,3 +2295,121 @@ for (const bevelWidth of [1, 3]) {
     geometry.dispose();
   });
 }
+
+for (const divisions of [64, 128]) {
+  test(`curved hollow leaves form sloping ridges instead of horizontal bevel steps (${divisions} divisions)`, () => {
+    const shape = new Shape();
+    const outline = [];
+    for (let i = 0; i <= divisions; i++) {
+      const t = i / divisions;
+      const point = [300 * t, 120 * 4 * t * (1 - t)];
+      outline.push(point);
+      if (i) shape.lineTo(...point);
+      else shape.moveTo(...point);
+    }
+    for (let i = divisions - 1; i > 0; i--) {
+      const t = i / divisions;
+      const point = [300 * t, 70 * 4 * t * (1 - t)];
+      outline.push(point);
+      shape.lineTo(...point);
+    }
+    shape.closePath();
+    const geometry = buildMesh(shape, {
+      depth: 58.08,
+      bevelSize: 7.9901,
+      bevelWidth: 10.539,
+      bevelSegments: 5,
+      bevelContinue: true,
+      hollow: true,
+      wallThickness: 21.081,
+      curvePoints: ridgeProfile,
+    });
+    assertClosedFiniteSolid(geometry);
+    const height = geometry.userData.effectiveBevelDepth;
+    assert.ok(
+      height > 7.98,
+      "the ridge retains its requested extrusion-direction bevel reach",
+    );
+    assert.ok(
+      geometry.userData.effectiveBevel > 10.53,
+      "near-meeting bevels retain their lateral width",
+    );
+    const triangles = triangleVertices(geometry);
+    let slopes = 0;
+    let tipFaces = 0;
+    for (const triangle of triangles) {
+      const z = triangle.map((p) => p[2]);
+      const min = Math.min(...z),
+        max = Math.max(...z);
+      if (max > height + 1e-5) continue;
+      const center = triangle.reduce(
+        (sum, p) => [
+          sum[0] + p[0] / 3,
+          sum[1] - p[1] / 3,
+          sum[2] + p[2] / 3,
+        ],
+        [0, 0, 0],
+      );
+      // The hole is far from these convex ends. Here the linear roof height
+      // must match distance to the original outline, including the tip ridge.
+      if (center[0] < 30 || center[0] > 270) {
+        let distance = Infinity;
+        for (let i = 0; i < outline.length; i++) {
+          const a = outline[i],
+            b = outline[(i + 1) % outline.length];
+          const dx = b[0] - a[0],
+            dy = b[1] - a[1];
+          const t = Math.max(
+            0,
+            Math.min(
+              1,
+              ((center[0] - a[0]) * dx + (center[1] - a[1]) * dy) /
+                (dx * dx + dy * dy),
+            ),
+          );
+          distance = Math.min(
+            distance,
+            Math.hypot(center[0] - a[0] - t * dx, center[1] - a[1] - t * dy),
+          );
+        }
+        const expected = Math.max(
+          0,
+          1 - distance / geometry.userData.effectiveBevel,
+        );
+        assert.ok(
+          Math.abs(center[2] / height - expected) < 0.002,
+          "the acute end follows its source-edge slopes without a stepped or dented ridge",
+        );
+        tipFaces++;
+      }
+      if (min <= 1e-5 || max >= height - 1e-5) continue;
+      assert.ok(
+        max - min > 1e-5,
+        `curved branches must meet on a sloping ridge instead of a flat intermediate shelf at ${min}`,
+      );
+      slopes++;
+    }
+    assert.ok(
+      slopes > 50,
+      "the near-meeting front still contains sloping bevel faces",
+    );
+    assert.ok(
+      tipFaces > 20,
+      "both acute ends contain measurable bevel faces",
+    );
+    const positions = triangles.flat();
+    for (const [x, y] of outline) {
+      assert.ok(
+        positions.some((p) => Math.hypot(p[0] - x, p[1] + y) < 2e-5),
+        "curves and acute endpoints survive without implicit reduction",
+      );
+    }
+    assertOpenDepthRay(
+      geometry,
+      150.123,
+      -94.567,
+      "a ridge bevel preserves the cavity at the thickest part of the leaf",
+    );
+    geometry.dispose();
+  });
+}

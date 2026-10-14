@@ -6,10 +6,13 @@ import { prepareContours } from "./path-reduction.js";
 import { createBevelEditor } from "./bevel-editor.js";
 import { createTransformTools, prepareObjectMesh } from "./transform-tools.js";
 import { createHistory } from "./history.js";
+import { serializeProject, parseProject } from "./project-state.js";
+import { saveObjFiles, saveProjectFile } from "./file-save.js";
 import "./style.css";
 
 const defaults = {
   reductionTolerance: 0,
+  pathOffset: 0,
   depth: 24,
   bevelSize: 3,
   bevelWidth: 3,
@@ -30,6 +33,7 @@ app.innerHTML = `
   <a class="brand" href="./"><span class="brand-icon">◈</span> PATH<span class="brand-slash">/</span>FORM</a>
   <span class="header-label">SVG → 3D STUDIO</span>
   <div class="history-actions"><button id="undo" class="subtle" disabled aria-label="元に戻す">↶ 元に戻す</button><button id="redo" class="subtle" disabled aria-label="やり直す">↷ やり直す</button></div>
+  <div class="project-actions"><button id="project-save" class="subtle">状態を保存</button><button id="project-open" class="subtle">状態を読み込む</button><input id="project-file" type="file" accept=".pathform,.json,application/json" hidden/></div>
   <button id="export" class="primary">↓ OBJ を書き出す</button>
 </header>
 <main>
@@ -64,6 +68,8 @@ app.innerHTML = `
       <summary>オブジェクト選択 <span id="object-count">0</span></summary>
       <div id="objects"></div>
       <label class="rename-row"><span>名前</span><input id="object-name" type="text" maxlength="120" aria-label="オブジェクト名" placeholder="選択オブジェクトの名前"/></label>
+      <button id="duplicate" class="subtle" disabled>選択オブジェクトを複製</button>
+      <label class="export-folder-option"><input id="export-folder" type="checkbox"/> OBJ の保存先を指定</label>
       <p class="export-visibility-note">非表示のオブジェクトは書き出し対象外</p>
       <div class="selection-heading"><p id="selected-name" class="muted">オブジェクトを選択</p><button id="reset" class="subtle">リセット ↺</button></div>
     </details>
@@ -71,6 +77,11 @@ app.innerHTML = `
       <summary>パスのリダクション <span>REDUCTION</span></summary>
       ${field("reductionTolerance", "許容誤差", 0, 0, 5, 0.01)}
       <p id="reduction-info" class="control-note">—</p>
+    </details>
+    <details class="control-section" id="offset-settings" open>
+      <summary>輪郭のオフセット <span>OFFSET</span></summary>
+      ${field("pathOffset", "量", 0, -100, 100, 0.01)}
+      <p id="offset-info" class="control-note"></p>
     </details>
     <details class="control-section" open>
       <summary>押し出し <span>EXTRUDE</span></summary>
@@ -328,6 +339,7 @@ function updateGeometryInfo() {
     after = data.reducedCount ?? before;
   $("reduction-info").textContent =
     `${before.toLocaleString()} → ${after.toLocaleString()} 頂点（${before ? ((1 - after / before) * 100).toFixed(1) : 0}% 削減）`;
+  $("offset-info").textContent = `適用量：${Number(data.effectivePathOffset || 0).toPrecision(3)}`;
   $("geometry-status").textContent =
     `奥行方向：${Number(data.effectiveBevelDepth || 0).toPrecision(3)} / 輪郭幅：${Number(data.effectiveBevel || 0).toPrecision(3)}` +
     (selectedObject()?.settings.hollow
@@ -437,6 +449,8 @@ function fit() {
   grid.position.y = box.min.y - 1;
 }
 function list() {
+  $("duplicate").disabled = !selectedObject();
+  $("object-name").disabled = !selectedObject();
   $("object-count").textContent = objects.length;
   $("objects").innerHTML = objects
     .map(
@@ -492,6 +506,12 @@ function sync() {
   if (!o) return;
   $("selected-name").textContent = o.name;
   $("object-name").value = o.name;
+  o.settings.pathOffset ??= 0;
+  const offsetBox = new THREE.Box2().setFromPoints(o.shape.extractPoints(4).shape);
+  const offsetSpan = Math.max(0.01, offsetBox.getSize(new THREE.Vector2()).length(), Math.abs(o.settings.pathOffset));
+  for (const el of [$("pathOffset"), document.querySelector('[data-range="pathOffset"]')]) {
+    el.min = -offsetSpan; el.max = offsetSpan; el.step = Math.max(0.000001, offsetSpan / 1000);
+  }
   Object.keys(defaults).forEach((key) => {
     const el = $(key);
     if (el.type === "checkbox") el.checked = o.settings[key];
@@ -532,6 +552,7 @@ async function load(text, name) {
       sourceName: name,
       name: `${o.name || "パス"} ${String(++objectSequence).padStart(3, "0")}`,
       visible: true,
+      invalid: false,
       color: safeColor(o.color),
       settings: initialSettings(o.shape),
     }));
@@ -707,15 +728,7 @@ $("reset").onclick = () => {
     fit();
   }
 };
-function download(text, name, type) {
-  const url = URL.createObjectURL(new Blob([text], { type }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-$("export").onclick = () => {
+$("export").onclick = async () => {
   if (!objects.length) {
     notice("先に SVG を読み込んでください。", true);
     return;
@@ -740,11 +753,9 @@ $("export").onclick = () => {
     });
     if (!items.length) throw new Error("表示中のオブジェクトがありません。");
     const { obj, mtl } = exportObj(items);
-    download(obj, "model.obj", "text/plain");
-    download(mtl, "model.mtl", "text/plain");
-    notice(
-      "model.obj と model.mtl を書き出しました。同じフォルダーに保存してください。",
-    );
+    const result = await saveObjFiles(obj, mtl, $("export-folder").checked);
+    if (result === "directory") notice("指定したフォルダーに OBJ と MTL を保存しました。");
+    else if (result === "download") notice("model.obj と model.mtl をダウンロードしました。同じフォルダーに保存してください。" + ($("export-folder").checked ? "この環境では保存先を選べないため、ブラウザのダウンロードに切り替えました。" : ""));
   } catch (e) {
     notice(e.message, true);
   }
@@ -988,16 +999,19 @@ function captureHistory() {
     objects: objects.map((object, index) => ({
       ...copyObjectState(object),
       validSettings: structuredClone(
-        group.children[index]?.geometry.userData.sourceSettings ||
-          object.settings,
+        object.invalid
+          ? group.children[index]?.geometry.userData.sourceSettings || object.settings
+          : object.settings,
       ),
     })),
     selected,
     groupPosition: group.position.toArray(),
     sourceLabel: $("dropzone").querySelector("strong").textContent,
+    fileSequence, objectSequence, view: captureView(),
+    shapeSignatures: objects.map(object => object.shape.uuid),
   };
 }
-function restoreHistory(snapshot) {
+function restoreHistory(snapshot, strict = false) {
   clearTimeout(rebuildTimer);
   rebuildTimer = null;
   pendingObjects.clear();
@@ -1012,6 +1026,7 @@ function restoreHistory(snapshot) {
         prepared.push(...makeMeshes([object]));
         object.invalid = false;
       } catch (failure) {
+        if (strict) throw failure;
         const desired = object.settings;
         object.settings = validSettings;
         prepared.push(...makeMeshes([object]));
@@ -1047,6 +1062,9 @@ function restoreHistory(snapshot) {
     $("object-name").value = "";
     $("object-name").disabled = true;
   }
+  if (snapshot.view) restoreView(snapshot.view);
+  if (Number.isInteger(snapshot.fileSequence)) fileSequence = Math.max(fileSequence, snapshot.fileSequence);
+  if (Number.isInteger(snapshot.objectSequence)) objectSequence = Math.max(objectSequence, snapshot.objectSequence);
   if (error) notice(error, true);
 }
 history = createHistory({
@@ -1054,7 +1072,7 @@ history = createHistory({
   restore: restoreHistory,
   fingerprint: (snapshot) =>
     JSON.stringify(snapshot, (key, value) =>
-      ["shape", "selected", "validSettings", "invalid"].includes(key)
+      ["shape", "selected", "validSettings", "invalid", "view", "fileSequence", "objectSequence"].includes(key)
         ? undefined
         : value,
     ),
@@ -1092,3 +1110,64 @@ window.addEventListener("keydown", (event) => {
 animate();
 transformTools.sync();
 refreshMeshInfo();
+
+function captureView() {
+  return {cameraPosition: camera.position.toArray(), cameraQuaternion: camera.quaternion.toArray(), zoom: camera.zoom, target: controls?.target.toArray() || [0,0,0], wireframe: $("wireframe").checked, wireframeMode: $("wireframe-mode").value, tab: activeView, exportFolder: $("export-folder").checked, uvEditMode: $("uv-edit-mode").checked, sections: [...document.querySelectorAll("aside details")].map(el => el.open), transformMode: transformControls?.getMode() || "translate", transformSpace: $("transform-local").checked};
+}
+function restoreView(view) {
+  camera.position.fromArray(view.cameraPosition);
+  camera.quaternion.fromArray(view.cameraQuaternion);
+  camera.zoom = view.zoom; camera.updateProjectionMatrix();
+  controls?.target.fromArray(view.target);
+  controls?.update();
+  $("wireframe").checked = view.wireframe;
+  $("wireframe-mode").value = view.wireframeMode;
+  $("wireframe").onchange();
+  $("uv-edit-mode").checked = view.uvEditMode;
+  $("export-folder").checked = view.exportFolder === true;
+  document.querySelectorAll("aside details").forEach((el, i) => { if (typeof view.sections?.[i] === "boolean") el.open = view.sections[i]; });
+  $("transform-local").checked = view.transformSpace;
+  $("transform-local").dispatchEvent(new Event("change"));
+  $(`transform-${view.transformMode}`)?.click();
+  activateView(view.tab);
+}
+$("duplicate").onclick = () => {
+  try {
+    if (!flushPending()) throw new Error("生成できない設定を修正してから複製してください。");
+    const original = selectedObject();
+    if (!original || original.invalid) return;
+    const copy = copyObjectState(original);
+    copy.id = `copy-${THREE.MathUtils.generateUUID()}`;
+    const base = `${original.name} 複製`;
+    let name = base, n = 2;
+    while (objects.some(o => o.name === name)) name = `${base} ${n++}`;
+    copy.name = name;
+    const mesh = makeMeshes([copy])[0];
+    objects.push(copy); group.add(mesh); selected = objects.length - 1;
+    uvSelectedKey = null; uvDragKey = null;
+    list(); sync(); transformTools.sync(); refreshMeshInfo(); drawUV();
+    recordHistory(true);
+    notice("オブジェクトを複製しました。");
+  } catch (error) { notice(error.message, true); }
+};
+$("project-save").onclick = async () => {
+  try {
+    if (!flushPending() || objects.some(o => o.invalid)) throw new Error("生成できない設定を修正してから保存してください。");
+    const result = await saveProjectFile(serializeProject(captureHistory()));
+    if (result) notice("ツールの状態を保存しました。");
+  } catch (error) { notice(error.message, true); }
+};
+$("project-open").onclick = () => $("project-file").click();
+$("project-file").onchange = async (event) => {
+  const file = event.target.files[0]; event.target.value = "";
+  if (!file) return;
+  try {
+    if (file.size > 20 * 1024 * 1024) throw new Error("状態ファイルは 20 MB 以下にしてください。");
+    const state = parseProject(await file.text());
+    if (!flushPending()) throw new Error("現在の設定を修正してから読み込んでください。");
+    history.commit();
+    restoreHistory(state, true);
+    recordHistory(true);
+    notice("保存した状態を読み込みました。");
+  } catch (error) { notice(error.message, true); }
+};

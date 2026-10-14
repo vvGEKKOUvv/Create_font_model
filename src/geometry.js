@@ -10,6 +10,7 @@ import {
   invalidateBevelRoof,
 } from "./bevel-roof.js";
 import { hollowContours } from "./hollow-offset.js";
+import { offsetContours } from "./path-offset.js";
 import {
   prepareOffsetBevelRoof,
   triangulateOffsetBevelRoof,
@@ -249,6 +250,7 @@ export function buildMesh(shape, settings = {}) {
   }
   for (const field of [
     "reductionTolerance",
+    "pathOffset",
     "depth",
     "bevelSize",
     "bevelWidth",
@@ -273,8 +275,10 @@ export function buildMesh(shape, settings = {}) {
     shape,
     Math.max(0, Number(settings.reductionTolerance) || 0),
   );
-  let rings = prepared.rings;
-  const warnings = [...prepared.warnings];
+  const pathOffset = Number(settings.pathOffset) || 0;
+  const shifted = offsetContours(prepared.rings, pathOffset);
+  let rings = shifted.rings;
+  const warnings = [...prepared.warnings, ...shifted.warnings];
   const sharp = settings.sharpCorners !== false;
   const requestedWall = Math.max(0.000001, Number(settings.wallThickness) || 3);
   const explicitWidth = settings.bevelWidth !== undefined;
@@ -282,9 +286,10 @@ export function buildMesh(shape, settings = {}) {
     ? Math.max(0, Number(settings.bevelWidth))
     : 0;
   const fullWidth = settings.bevelFullWidth === true || explicitWidth;
-  const variantKey = fullWidth
-    ? `full:${!!settings.hollow}:${requestedWall}:${sharp}`
-    : `${!!settings.hollow}:${requestedWall}:${sharp}:${Math.max(0, Number(settings.bevelSize) || 0)}:${Math.min(depth, 2 * Math.max(0, Number(settings.bevelSize) || 0))}`;
+  const variantWall = settings.hollow ? requestedWall : 0;
+  const variantKey = `${pathOffset}:` + (fullWidth
+    ? `full:${!!settings.hollow}:${variantWall}:${sharp}`
+    : `${!!settings.hollow}:${variantWall}:${sharp}:${Math.max(0, Number(settings.bevelSize) || 0)}:${Math.min(depth, 2 * Math.max(0, Number(settings.bevelSize) || 0))}`);
   let variant = prepared.variants.get(variantKey);
   if (!variant) {
     let effectiveWallThickness = 0;
@@ -345,7 +350,10 @@ export function buildMesh(shape, settings = {}) {
       depth / 2,
       Math.min(box.max.x - box.min.x, box.max.y - box.min.y) / 4,
     );
-    if (fullWidth) {
+    let legacyLimitReady = !fullWidth;
+    const ensureLegacyLimit = () => {
+      if (legacyLimitReady) return;
+      legacyLimitReady = true;
       // Cache a contour-dependent limit, independent of the depth slider. A
       // binary refinement approaches the ridge instead of leaving the wide
       // flat cap produced by halving the requested width after a collision.
@@ -378,6 +386,11 @@ export function buildMesh(shape, settings = {}) {
           "輪郭の交差を避けられないため、ベベルを無効にしました。",
         );
       bevel = maximumBevelWidth;
+    };
+    if (fullWidth) {
+      // The ridge/offset roof computes its own limit. Defer this quadratic
+      // legacy inset search until conventional beveling actually needs it.
+      if (settings.bevelContinue !== true) ensureLegacyLimit();
     } else {
       let safeBevel = bevel === 0;
       for (let attempt = 0; bevel > EPS && attempt < 24; attempt++) {
@@ -405,6 +418,21 @@ export function buildMesh(shape, settings = {}) {
       maximumBevelWidth,
       warnings: localWarnings,
     };
+    if (fullWidth)
+      Object.defineProperties(variant, {
+        maximumBevelWidth: {
+          get() {
+            ensureLegacyLimit();
+            return maximumBevelWidth;
+          },
+        },
+        bevel: {
+          get() {
+            ensureLegacyLimit();
+            return bevel;
+          },
+        },
+      });
     if (prepared.variants.size >= 24)
       prepared.variants.delete(prepared.variants.keys().next().value);
     prepared.variants.set(variantKey, variant);
@@ -419,7 +447,7 @@ export function buildMesh(shape, settings = {}) {
       (explicitWidth && requestedBevelWidth > variant.maximumBevelWidth + EPS))
   ) {
     try {
-      roof = prepareBevelRoof(rings);
+      roof = prepareBevelRoof(rings, prepared);
     } catch (error) {
       roofFailure = error;
     }
@@ -429,8 +457,8 @@ export function buildMesh(shape, settings = {}) {
   if (
     Number(settings.bevelSize) > 0 &&
     !roof &&
-    ((explicitWidth && requestedBevelWidth > variant.maximumBevelWidth + EPS) ||
-      settings.bevelContinue === true)
+    (settings.bevelContinue === true ||
+      (explicitWidth && requestedBevelWidth > variant.maximumBevelWidth + EPS))
   ) {
     const offsetRoof = prepareOffsetBevelRoof(
       rings,
@@ -744,17 +772,21 @@ export function buildMesh(shape, settings = {}) {
     const tri = i - (i % 3),
       next = tri + ((i + 1) % 3),
       prev = tri + ((i + 2) % 3);
-    const a = new THREE.Vector3(
-      positions[next * 3] - positions[i * 3],
-      positions[next * 3 + 1] - positions[i * 3 + 1],
-      positions[next * 3 + 2] - positions[i * 3 + 2],
+    const j = i * 3,
+      n = next * 3,
+      p = prev * 3;
+    const ax = positions[n] - positions[j],
+      ay = positions[n + 1] - positions[j + 1],
+      az = positions[n + 2] - positions[j + 2];
+    const bx = positions[p] - positions[j],
+      by = positions[p + 1] - positions[j + 1],
+      bz = positions[p + 2] - positions[j + 2];
+    const denominator = Math.sqrt(
+      (ax * ax + ay * ay + az * az) * (bx * bx + by * by + bz * bz),
     );
-    const b = new THREE.Vector3(
-      positions[prev * 3] - positions[i * 3],
-      positions[prev * 3 + 1] - positions[i * 3 + 1],
-      positions[prev * 3 + 2] - positions[i * 3 + 2],
-    );
-    cornerWeights[i] = a.lengthSq() && b.lengthSq() ? a.angleTo(b) : 0;
+    cornerWeights[i] = denominator
+      ? Math.acos(Math.max(-1, Math.min(1, (ax * bx + ay * by + az * bz) / denominator)))
+      : 0;
   }
   for (const indices of groups.values()) {
     const smoothThreshold =
@@ -803,6 +835,7 @@ export function buildMesh(shape, settings = {}) {
     effectiveBevelDepth: bevelHeight,
     centralWallDepth: depth - 2 * bevelHeight,
     effectiveWallThickness,
+    effectivePathOffset: shifted.effectivePathOffset,
     originalCount: prepared.originalCount,
     reducedCount: prepared.reducedCount,
     uvKeys,
