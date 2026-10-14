@@ -841,6 +841,12 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
     for (const back of [false, true]) {
       for (const face of roofTriangles) {
         roofDirection = faceDirections[face.faceIndex] ?? null;
+        if (face.cornerRidge) {
+          const { origin, direction } = face.cornerRidge;
+          const center = face.points.reduce((p, q) => ({ x: p.x + q.x / 3, y: p.y + q.y / 3 }), { x: 0, y: 0 });
+          const side = direction.x * (center.y - origin.y) - direction.y * (center.x - origin.x) >= 0 ? 1 : -1;
+          roofDirection = [side * direction.x, side * direction.y, `ridge:${face.cornerRidge.ridgeId ?? `${origin.x}:${origin.y}`}`];
+        }
         surfaceGroup = face.points.every((p) => Math.abs(p.height) < EPS)
           ? 2
           : 3;
@@ -1011,8 +1017,14 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
         for (const j of pending) {
           const k = j * 3;
           const di = roofDirections[cluster[cursor]], dj = roofDirections[j];
+          // An unlabelled incident face must not bridge the two sides of a
+          // constrained corner ridge during transitive normal clustering.
+          const crossesCornerRidge = dj && typeof dj[2] === "string" && cluster.some(index => {
+            const direction = roofDirections[index];
+            return direction && direction[2] === dj[2] && direction[0] * dj[0] + direction[1] * dj[1] < 0;
+          });
           const sameSourceSurface = !di || !dj || (di[2] === dj[2] && di[0] * dj[0] + di[1] * dj[1] >= Math.cos(35 * Math.PI / 180));
-          if (sameSourceSurface &&
+          if (!crossesCornerRidge && sameSourceSurface &&
             originalNormals[i] * originalNormals[k] +
               originalNormals[i + 1] * originalNormals[k + 1] +
               originalNormals[i + 2] * originalNormals[k + 2] >=

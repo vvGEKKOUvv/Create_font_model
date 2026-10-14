@@ -1,5 +1,6 @@
 import ClipperLib from "clipper-lib";
 import cdt2d from "cdt2d";
+import { constrainHollowCornerRidges } from "./hollow-corner-ridges.js";
 import { validateRoofTriangles } from "./roof-topology.js";
 
 const cache = new WeakMap();
@@ -683,9 +684,10 @@ export function triangulateOffsetBevelRoof(roof, width, samples, profile) {
     triangles[kept++] = triangle;
   }
   triangles.length = kept;
-  validateRoofTriangles(triangles, roof.rings);
+  const constrained = constrainHollowCornerRidges(triangles, roof.rings, width, samples, profile);
+  validateRoofTriangles(constrained, roof.rings);
   if (roof.triangleCache.size >= 8)
     roof.triangleCache.delete(roof.triangleCache.keys().next().value);
-  roof.triangleCache.set(triangleKey, triangles);
-  return triangles;
+  roof.triangleCache.set(triangleKey, constrained);
+  return constrained;
 }
