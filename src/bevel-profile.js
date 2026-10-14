@@ -54,17 +54,9 @@ export function moveProfileHandle(input, index, name, pos) {
   return normalizeProfile(points);
 }
 export function defaultProfile() {
-  return [
-    { x: 0, y: 0, mode: "linear" },
-    {
-      x: 0.5,
-      y: 0.4,
-      mode: "bezier",
-      in: { x: 0.3, y: 0.15 },
-      out: { x: 0.7, y: 0.65 },
-    },
-    { x: 1, y: 1, mode: "linear" },
-  ];
+  return normalizeProfile([0, 0.5, 1].map((x) => ({
+    x, y: x, mode: "bezier", handleMode: "aligned",
+  })));
 }
 export function normalizeProfile(input) {
   if (!Array.isArray(input) || input.length < 2 || input.length > 16)
@@ -182,6 +174,12 @@ const cubic = (a, b, c, d, t) => {
   const s = 1 - t;
   return s * s * s * a + 3 * s * s * t * b + 3 * s * t * t * c + t * t * t * d;
 };
+export function profileSpanIsStraight(a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const onChord = (p) => Math.abs(dx * (p.y - a.y) - dy * (p.x - a.x)) <= 1e-12;
+  return (a.mode !== "bezier" || onChord(a.out)) &&
+    (b.mode !== "bezier" || onChord(b.in));
+}
 export function evaluateProfile(points, x) {
   x = clamp(x, 0, 1);
   if (x <= points[0].x) return points[0].y;
@@ -189,7 +187,7 @@ export function evaluateProfile(points, x) {
   const index = points.findIndex((p) => p.x >= x),
     a = points[index - 1],
     b = points[index];
-  if (a.mode !== "bezier" && b.mode !== "bezier")
+  if (profileSpanIsStraight(a, b))
     return mix(a.y, b.y, (x - a.x) / (b.x - a.x));
   const c =
     a.mode === "bezier"

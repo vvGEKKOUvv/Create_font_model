@@ -4,7 +4,10 @@ import { validateRoofTriangles } from "./roof-topology.js";
 
 const cache = new WeakMap();
 export function prepareOffsetBevelRoof(rings, widthHint) {
-  if (cache.has(rings)) return cache.get(rings);
+  const hintKey = Number.isFinite(widthHint) && widthHint > 0 ? widthHint : 0;
+  let roofs = cache.get(rings);
+  if (!roofs) { roofs = new Map(); cache.set(rings, roofs); }
+  if (roofs.has(hintKey)) return roofs.get(hintKey);
   const origin = rings[0][0];
   const extent = Math.max(
     1,
@@ -112,7 +115,8 @@ export function prepareOffsetBevelRoof(rings, widthHint) {
     faces: [null, null],
     triangleCache: new Map(),
   };
-  cache.set(rings, roof);
+  if (roofs.size >= 4) roofs.delete(roofs.keys().next().value);
+  roofs.set(hintKey, roof);
   return roof;
 }
 function parallelOffset(path, distance, ringIndex) {

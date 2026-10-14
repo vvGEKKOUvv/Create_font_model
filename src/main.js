@@ -330,11 +330,8 @@ function initialSettings(shape) {
     bevelWidth: Math.min(defaults.bevelWidth, span * 0.04),
     wallThickness: Math.min(defaults.wallThickness, span * 0.15),
     bevelFullWidth: true,
-    curvePoints: [
-      { x: 0, y: 0, mode: "linear" },
-      { x: 0.5, y: 0.5, mode: "linear" },
-      { x: 1, y: 1, mode: "linear" },
-    ],
+    curvePoints: defaultProfile(),
+    innerCurvePoints: defaultProfile(),
   };
 }
 function updateGeometryInfo() {
@@ -639,7 +636,7 @@ function syncBevelLimit() {
     : "";
   const widthMaximum = Math.max(
     o.settings.bevelWidth,
-    group.children[selected]?.geometry.userData.maximumBevelWidth || 100,
+    group.children[selected]?.geometry.userData.maximumBevelControlWidth || group.children[selected]?.geometry.userData.maximumBevelWidth || 100,
   );
   for (const el of [
     $("bevelWidth"),
@@ -677,6 +674,7 @@ Object.keys(defaults).forEach((key) => {
       if (range) range.value = o.settings[key];
     }
     if (key === "depth" || key === "bevelContinue") syncBevelLimit();
+    if (key === "hollow") curveDraw();
     const clearedUV = !key.startsWith("uv") && clearShapeUV(o);
     if (key.startsWith("uv")) {
       updateUV(o);
@@ -1120,7 +1118,7 @@ transformTools.sync();
 refreshMeshInfo();
 
 function captureView() {
-  return {cameraPosition: camera.position.toArray(), cameraQuaternion: camera.quaternion.toArray(), zoom: camera.zoom, target: controls?.target.toArray() || [0,0,0], wireframe: $("wireframe").checked, wireframeMode: $("wireframe-mode").value, tab: activeView, exportFolder: $("export-folder").checked, uvEditMode: $("uv-edit-mode").checked, sections: [...document.querySelectorAll("aside details")].map(el => el.open), sectionLayout: 2, transformMode: transformControls?.getMode() || "translate", transformSpace: $("transform-local").checked};
+  return {cameraPosition: camera.position.toArray(), cameraQuaternion: camera.quaternion.toArray(), zoom: camera.zoom, target: controls?.target.toArray() || [0,0,0], wireframe: $("wireframe").checked, wireframeMode: $("wireframe-mode").value, tab: activeView, exportFolder: $("export-folder").checked, uvEditMode: $("uv-edit-mode").checked, sections: [...document.querySelectorAll("aside details")].map(el => el.open), sectionLayout: 2, curveSide: $("curve-side").value, transformMode: transformControls?.getMode() || "translate", transformSpace: $("transform-local").checked};
 }
 function restoreView(view) {
   camera.position.fromArray(view.cameraPosition);
@@ -1142,6 +1140,8 @@ function restoreView(view) {
   $("transform-local").checked = view.transformSpace;
   $("transform-local").dispatchEvent(new Event("change"));
   $(`transform-${view.transformMode}`)?.click();
+  $("curve-side").value = view.curveSide === "inner" && !$("curve-side").querySelector('[value="inner"]').disabled ? "inner" : "outer";
+  $("curve-side").dispatchEvent(new Event("change"));
   activateView(view.tab);
 }
 $("duplicate").onclick = () => {

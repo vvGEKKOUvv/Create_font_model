@@ -6,8 +6,9 @@ import {
 } from "./bevel-profile.js";
 export function createBevelEditor(host, { getObject, onChange }) {
   host.classList.add("bevel-editor");
-  host.innerHTML = `<div class="curve-tools"><button id="curve-add">＋ 頂点を追加</button><button id="curve-delete">頂点を削除</button><button id="curve-expand">拡大 ↗</button><label>選択頂点 <select id="curve-point-mode"><option value="linear">リニア</option><option value="bezier">ベジェ</option></select></label><label>ハンドル <select id="curve-handle-mode"><option value="free">左右独立</option><option value="aligned">一直線</option></select></label></div><svg viewBox="0 0 480 280" tabindex="0" role="group" aria-label="ベベル曲線エディター"></svg><div class="curve-labels"><span>側面 → 表面（高さ）</span><span>ベベル幅 ↑</span></div><p class="curve-help">クリックで頂点追加 · 頂点／ハンドルをドラッグ<br>矢印キーで移動 · Delで削除（両端位置は固定）</p>`;
+  host.innerHTML = `<div class="curve-tools"><label>調整対象 <select id="curve-side"><option value="outer">外側</option><option value="inner">内側</option></select></label><button id="curve-add">＋ 頂点を追加</button><button id="curve-delete">頂点を削除</button><button id="curve-expand">拡大 ↗</button><label>選択頂点 <select id="curve-point-mode"><option value="linear">リニア</option><option value="bezier">ベジェ</option></select></label><label>ハンドル <select id="curve-handle-mode"><option value="free">左右独立</option><option value="aligned">接線</option></select></label></div><svg viewBox="0 0 480 280" tabindex="0" role="group" aria-label="ベベル曲線エディター"></svg><div class="curve-labels"><span>側面 → 表面（高さ）</span><span>ベベル幅 ↑</span></div><p class="curve-help">クリックで頂点追加 · 頂点／ハンドルをドラッグ<br>矢印キーで移動 · Delで削除（両端位置は固定）</p>`;
   const svg = host.querySelector("svg"),
+    side = host.querySelector("#curve-side"),
     mode = host.querySelector("#curve-point-mode"),
     handleMode = host.querySelector("#curve-handle-mode"),
     add = host.querySelector("#curve-add"),
@@ -17,8 +18,12 @@ export function createBevelEditor(host, { getObject, onChange }) {
     objectId = null,
     drag = null;
   const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
-  const points = () =>
-    normalizeProfile(getObject()?.settings.curvePoints || defaultProfile());
+  const hasInner = (o) => Boolean(o && (o.settings.hollow || o.shape?.holes?.length));
+  const profileKey = () => side.value === "inner" ? "innerCurvePoints" : "curvePoints";
+  const points = () => {
+    const settings = getObject()?.settings;
+    return normalizeProfile(settings?.[profileKey()] || settings?.curvePoints || defaultProfile());
+  };
   const px = (x) => 30 + x * 420,
     py = (y) => 245 - y * 215;
   function coords(e) {
@@ -30,7 +35,7 @@ export function createBevelEditor(host, { getObject, onChange }) {
   function save(p) {
     const o = getObject();
     if (!o) return;
-    o.settings.curvePoints = normalizeProfile(p);
+    o.settings[profileKey()] = normalizeProfile(p);
     onChange();
     sync();
   }
@@ -40,7 +45,11 @@ export function createBevelEditor(host, { getObject, onChange }) {
       objectId = o?.id;
       selected = 1;
       drag = null;
+      side.value = "outer";
     }
+    side.disabled = !o;
+    side.querySelector('[value="inner"]').disabled = !hasInner(o);
+    if (!hasInner(o)) side.value = "outer";
     const p = points();
     selected = clamp(selected, 0, p.length - 1);
     let d = "";
@@ -121,6 +130,12 @@ export function createBevelEditor(host, { getObject, onChange }) {
     selected = Math.min(selected, p.length - 2);
     save(p);
   }
+  side.onchange = () => {
+    if (!hasInner(getObject()) && side.value === "inner") side.value = "outer";
+    selected = 1;
+    drag = null;
+    sync();
+  };
   add.onclick = () => {
     insert();
     svg.focus();

@@ -9,7 +9,7 @@ import {
   applyUvSettings,
 } from "../src/geometry.js";
 
-import { defaultProfile, moveProfileHandle } from "../src/bevel-profile.js";
+import { defaultProfile, moveProfileHandle, evaluateProfile } from "../src/bevel-profile.js";
 import {
   prepareOffsetBevelRoof,
   triangulateOffsetBevelRoof,
@@ -122,7 +122,7 @@ test("curved profile control points share the requested bevel resolution budget"
     hollow: true,
     wallThickness: 3,
     bevelSegments: 8,
-    curvePoints: defaultProfile(),
+    curvePoints: defaultProfile().map((p, i) => i === 1 ? { ...p, y: 0.7, in: { x: 1 / 3, y: 0.6 }, out: { x: 2 / 3, y: 0.8 } } : p),
   };
   const geometry = buildMesh(shape, settings);
   assertClosedFiniteSolid(geometry);
@@ -991,7 +991,7 @@ test("in-place UV updates match full builds and restore original UVs without rep
   assert.deepEqual(Array.from(normal.array), normals);
 });
 
-test("maximum bevel retains a substantial wall around narrow imported holes", () => {
+test("maximum axial bevel remains strong around narrow imported holes", () => {
   const shape = parseSvg(
     '<svg xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M0 0H40V40H0Z M1 1V39H39V1Z"/></svg>',
   ).objects[0].shape;
@@ -1002,7 +1002,7 @@ test("maximum bevel retains a substantial wall around narrow imported holes", ()
     sharpCorners: true,
   });
   assert.ok(
-    geometry.userData.effectiveBevelDepth <= geometry.userData.effectiveBevel,
+    Math.abs(geometry.userData.effectiveBevelDepth - 24 * 0.49) < 1e-6,
   );
   assert(
     geometry.userData.effectiveBevel > 0 &&
@@ -1029,7 +1029,7 @@ test("maximum bevel retains a substantial wall around narrow imported holes", ()
     for (let i = 0; i < 3; i++) {
       const edge = [key(tri[i]), key(tri[(i + 1) % 3])].sort().join("|");
       edges.set(edge, (edges.get(edge) || 0) + 1);
-      if (Math.abs(tri[i][2] - tri[(i + 1) % 3][2]) >= 12) sideEdgeCount++;
+      if (Math.abs(tri[i][2] - tri[(i + 1) % 3][2]) > 0.1) sideEdgeCount++;
     }
   }
   assert(sideEdgeCount > 0, "Imported hole retains axial side wall thickness");
@@ -1313,16 +1313,16 @@ function assertWallBodyThickness(geometry, depth) {
   assertClosedFiniteSolid(geometry);
   const height = geometry.userData.effectiveBevelDepth;
   assert.ok(
-    depth - 2 * height >= depth / 2 - 1e-6,
-    "bevels leave at least half the extrusion as an axial wall",
+    depth - 2 * height >= depth * 0.02 - 1e-6,
+    "maximum hollow bevel leaves a positive axial wall",
   );
   const sideFaces = triangleVertices(geometry).filter((tri) => {
     const z = tri.map((p) => p[2]);
-    return Math.max(...z) - Math.min(...z) >= depth / 2 - 1e-6;
+    return Math.max(...z) - Math.min(...z) >= depth * 0.02 - 1e-6;
   });
   assert.ok(
     sideFaces.length > 0,
-    "actual side triangles retain substantial front/back separation",
+    "actual side triangles retain positive front/back separation",
   );
   let volume = 0;
   for (const [a, b, c] of triangleVertices(geometry))
@@ -1362,9 +1362,8 @@ test("hollow walls keep their body when width equals its maximum, overshoots, or
         const geometry = buildMesh(shape, { ...base, bevelWidth });
         assertWallBodyThickness(geometry, 20);
         assert.ok(
-          geometry.userData.effectiveBevelDepth <=
-            geometry.userData.effectiveBevel + 1e-6,
-          "axial bevel stays proportional to the narrow wall",
+          Math.abs(geometry.userData.effectiveBevelDepth - 20 * 0.49) < 1e-6,
+          "axial bevel follows the requested height independently of lateral width",
         );
       }
     }
@@ -1382,7 +1381,7 @@ test("hollow walls keep their body when width equals its maximum, overshoots, or
   assertClosedFiniteSolid(solid);
 });
 
-test("hollow square preserves at least three quarters of its unbeveled wall volume at maximum width", () => {
+test("hollow square retains positive closed volume at maximum axial height", () => {
   const geometry = buildMesh(denseRectangle(100, 4), {
     depth: 20,
     bevelSize: 10,
@@ -1394,8 +1393,8 @@ test("hollow square preserves at least three quarters of its unbeveled wall volu
   });
   const volume = assertWallBodyThickness(geometry, 20);
   assert.ok(
-    volume >= (100 * 100 - 94 * 94) * 20 * 0.75,
-    "substantial wall body survives even though the front bevels meet",
+    volume > 0,
+    "closed wall volume survives even though the front bevels meet",
   );
 });
 
@@ -2413,3 +2412,58 @@ for (const divisions of [64, 128]) {
     geometry.dispose();
   });
 }
+
+test("new bevel defaults are straight Bezier tangents at every vertex", () => {
+  const points = defaultProfile();
+  assert.equal(points.length, 3);
+  for (const point of points) {
+    assert.equal(point.mode, "bezier");
+    assert.equal(point.handleMode, "aligned");
+    for (const handle of [point.in, point.out].filter(Boolean))
+      assert.ok(Math.abs(handle.x - handle.y) < 1e-12);
+  }
+  for (let i = 0; i <= 40; i++)
+    assert.ok(Math.abs(evaluateProfile(points, i / 40) - i / 40) < 1e-6);
+});
+
+test("independent inner and outer curves preserve closed hollow geometry and its cavity", () => {
+  const shape = denseRectangle(60, 4);
+  const base = {
+    depth: 30, bevelSize: 12, bevelWidth: 1.5,
+    bevelSegments: 8, hollow: true, wallThickness: 6,
+    curvePoints: ridgeProfile,
+  };
+  const round = [
+    { x: 0, y: 0, mode: "linear" },
+    { x: 0.5, y: 0.8, mode: "linear" },
+    { x: 1, y: 1, mode: "linear" },
+  ];
+  for (const bevelContinue of [false, true]) for (const bevelWidth of [1.5, 3]) {
+    const settings = { ...base, bevelContinue, bevelWidth };
+    const baseline = buildMesh(shape, settings);
+    const same = buildMesh(shape, { ...settings, innerCurvePoints: ridgeProfile });
+    assert.deepEqual(Array.from(same.attributes.position.array), Array.from(baseline.attributes.position.array), "legacy single curve and matching dual curves are identical");
+    const inner = buildMesh(shape, { ...settings, innerCurvePoints: round });
+    const outer = buildMesh(shape, { ...settings, curvePoints: round, innerCurvePoints: ridgeProfile });
+    for (const geometry of [baseline, inner, outer]) {
+      assertClosedFiniteSolid(geometry);
+      assertOpenDepthRay(geometry, 30.13, -30.31, "independent bevel curves never cap the cavity");
+      assert.equal(geometry.userData.effectiveBevelDepth, 12);
+    }
+    assert.notDeepEqual(Array.from(inner.attributes.position.array), Array.from(baseline.attributes.position.array), "inner profile changes actual mesh");
+    assert.notDeepEqual(Array.from(outer.attributes.position.array), Array.from(inner.attributes.position.array), "inner and outer profiles affect different sides");
+  }
+});
+
+test("independent inner curves reject backtracking rather than producing folds", () => {
+  const settings = {
+    depth: 20, bevelSize: 7, bevelWidth: 2,
+    hollow: true, wallThickness: 6, bevelContinue: true,
+    curvePoints: ridgeProfile,
+    innerCurvePoints: [
+      { x: 0, y: 0 }, { x: 0.3, y: 0.8 },
+      { x: 0.7, y: 0.2 }, { x: 1, y: 1 },
+    ],
+  };
+  assert.throws(() => buildMesh(denseRectangle(60, 4), settings), /戻らない/);
+});

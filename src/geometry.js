@@ -3,7 +3,9 @@ import { SVGLoader } from "three/addons/loaders/SVGLoader.js";
 
 import { prepareContours } from "./path-reduction.js";
 
-import { normalizeProfile, evaluateProfile } from "./bevel-profile.js";
+import { independentRoofProfiles } from "./dual-bevel-profile.js";
+
+import { normalizeProfile, evaluateProfile, profileSpanIsStraight } from "./bevel-profile.js";
 import {
   prepareBevelRoof,
   triangulateBevelRoof,
@@ -439,11 +441,31 @@ export function buildMesh(shape, settings = {}) {
   }
   rings = variant.rings;
   const { box, effectiveWallThickness } = variant;
+  const separateInnerProfile = rings.length > 1 &&
+    Array.isArray(settings.innerCurvePoints) &&
+    JSON.stringify(normalizeProfile(settings.innerCurvePoints)) !==
+      JSON.stringify(Array.isArray(settings.curvePoints) && settings.curvePoints.length
+        ? normalizeProfile(settings.curvePoints) : []);
+  const sourceOrientation = Math.sign(area(rings[0]));
+  const narrowDenseConvex = explicitWidth && rings.length === 1 &&
+    rings[0].length > 512 && requestedBevelWidth <=
+      Math.min(box.max.x - box.min.x, box.max.y - box.min.y) * 0.1 &&
+    rings[0].every((p, i, ring) => {
+      const a = ring[(i + ring.length - 1) % ring.length],
+        b = ring[(i + 1) % ring.length];
+      const ux = p.x - a.x, uy = p.y - a.y,
+        vx = b.x - p.x, vy = b.y - p.y;
+      const cross = ux * vy - uy * vx;
+      return cross * sourceOrientation >= 0 &&
+        Math.abs(Math.atan2(cross, ux * vx + uy * vy)) < Math.PI / 18;
+    });
   let roof = null;
   let roofFailure = null;
   if (
     Number(settings.bevelSize) > 0 &&
+    !narrowDenseConvex &&
     (settings.bevelContinue === true ||
+      separateInnerProfile ||
       (explicitWidth && requestedBevelWidth > variant.maximumBevelWidth + EPS))
   ) {
     try {
@@ -458,11 +480,14 @@ export function buildMesh(shape, settings = {}) {
     Number(settings.bevelSize) > 0 &&
     !roof &&
     (settings.bevelContinue === true ||
+      separateInnerProfile ||
       (explicitWidth && requestedBevelWidth > variant.maximumBevelWidth + EPS))
   ) {
     const offsetRoof = prepareOffsetBevelRoof(
       rings,
-      effectiveWallThickness > 0 ? effectiveWallThickness / 2 : undefined,
+      narrowDenseConvex
+        ? Math.min(box.max.x - box.min.x, box.max.y - box.min.y) * 0.1
+        : effectiveWallThickness > 0 ? effectiveWallThickness / 2 : undefined,
     );
     if (
       settings.bevelContinue === true ||
@@ -501,16 +526,11 @@ export function buildMesh(shape, settings = {}) {
     bevel > 0
       ? Math.min(Math.max(0, Number(settings.bevelSize) || 0), depth / 2)
       : 0;
-  // Opposing inner/outer bevels must retain a substantial straight wall.
-  // Constrain their actual axial reach even when the requested lateral width
-  // already fits: shrinking only an oversized width misses small-width edits
-  // and the conventional/fallback bevel path entirely. Solid ridges retain
-  // their independently controlled axial reach.
-  if (rings.length > 1 && bevelHeight > Math.min(bevel, depth / 4) + EPS) {
-    bevelHeight = Math.min(bevel, depth / 4);
-    warnings.push(
-      "中空の厚みを保つため、奥行方向のベベルを輪郭幅と押し出し厚に合わせて制限しました。",
-    );
+  // Axial reach is independent of lateral width. Retain a small central wall
+  // for hollow objects even at maximum reach, without flattening their bevel.
+  if (rings.length > 1 && bevelHeight > depth * 0.49) {
+    bevelHeight = depth * 0.49;
+    warnings.push("中空の接続を保つため、中央の側面を押し出し厚の 2% 残しました。");
   }
   warnings.push(
     ...variant.warnings.filter(
@@ -540,17 +560,23 @@ export function buildMesh(shape, settings = {}) {
       warnings.push(`${error.message} 標準カーブを使用しました。`);
     }
   }
+  let innerPoints = points;
+  if (rings.length > 1 && Array.isArray(settings.innerCurvePoints))
+    innerPoints = normalizeProfile(settings.innerCurvePoints);
+  const innerProfile = (t) => innerPoints.length >= 2
+    ? evaluateProfile(innerPoints, t)
+    : (1 - curve) * t + curve * (1 - Math.cos((t * Math.PI) / 2));
   const usePoints = points.length >= 2;
   const profile = (t) =>
     usePoints
       ? evaluateProfile(points, t)
       : (1 - curve) * t + curve * (1 - Math.cos((t * Math.PI) / 2));
   const bezierSamples = [];
-  if (usePoints)
-    for (let i = 0; i < points.length - 1; i++) {
-      const a = points[i],
-        b = points[i + 1];
-      if (a.mode !== "bezier" && b.mode !== "bezier") continue;
+  for (const sampledPoints of [points, innerPoints])
+    for (let i = 0; i < sampledPoints.length - 1; i++) {
+      const a = sampledPoints[i],
+        b = sampledPoints[i + 1];
+      if (profileSpanIsStraight(a, b)) continue;
       // Curved segments need intermediate rings even with a low division setting.
       const count = Math.max(2, Math.ceil(Math.max(8, segments) * (b.x - a.x)));
       for (let j = 1; j < count; j++)
@@ -562,9 +588,28 @@ export function buildMesh(shape, settings = {}) {
     ...new Set([
       ...Array.from({ length: segments + 1 }, (_, i) => i / segments),
       ...(usePoints ? points.map((p) => p.x) : []),
+      ...innerPoints.map((p) => p.x),
       ...bezierSamples,
     ]),
   ].sort((a, b) => a - b);
+  // A control on the inner curve lives at its own lateral distance. Include
+  // that distance in the outer roof parameterization before height remapping.
+  if (separateInnerProfile) {
+    const mapped = samples.map((t) => {
+      const target = innerProfile(t);
+      let low = 0, high = 1;
+      for (let i = 0; i < 32; i++) {
+        const mid = (low + high) / 2;
+        if (profile(mid) < target) low = mid;
+        else high = mid;
+      }
+      const value = (low + high) / 2;
+      return value < EPS ? 0 : value > 1 - EPS ? 1 : value;
+    });
+    for (const t of mapped)
+      if (!samples.some((p) => Math.abs(p - t) < 1e-7)) samples.push(t);
+    samples.sort((a, b) => a - b);
+  }
   const levels = bevel
     ? samples.map((t) => ({
         z: bevelHeight * t,
@@ -631,6 +676,8 @@ export function buildMesh(shape, settings = {}) {
     }
   }
   if (roofTriangles) {
+    if (separateInnerProfile)
+      roofTriangles = independentRoofProfiles(roofTriangles, rings, profile, innerProfile);
     for (const back of [false, true]) {
       for (const face of roofTriangles) {
         surfaceGroup = face.points.every((p) => Math.abs(p.height) < EPS)
@@ -757,7 +804,7 @@ export function buildMesh(shape, settings = {}) {
   const originalNormals = Float32Array.from(normals.array);
   const groups = new Map();
   for (let i = 0; i < surfaceGroups.length; i++) {
-    if (surfaceGroups[i] < 2) continue;
+    if (surfaceGroups[i] < 2 || (roofTriangles && surfaceGroups[i] === 2)) continue;
     const j = i * 3;
     const key = `${surfaceGroups[i]}:${Math.round(positions[j] * 1e6)},${Math.round(positions[j + 1] * 1e6)},${Math.round(positions[j + 2] * 1e6)}`;
     if (!groups.has(key)) groups.set(key, []);
@@ -831,6 +878,9 @@ export function buildMesh(shape, settings = {}) {
     warnings,
     effectiveBevel: bevel,
     maximumBevelWidth: roof ? roof.maximumWidth : variant.maximumBevelWidth,
+    maximumBevelControlWidth: narrowDenseConvex
+      ? Math.max(roof.maximumWidth, Math.min(box.max.x - box.min.x, box.max.y - box.min.y) / 2)
+      : (roof ? roof.maximumWidth : variant.maximumBevelWidth),
     continuedBevel: !!roofTriangles,
     effectiveBevelDepth: bevelHeight,
     centralWallDepth: depth - 2 * bevelHeight,

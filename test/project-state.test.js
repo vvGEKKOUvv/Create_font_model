@@ -50,3 +50,21 @@ test('empty project and imported ellipse curves roundtrip', () => {
   const ellipse = fixture(); ellipse.objects[0].shape = new Shape(); ellipse.objects[0].shape.absellipse(0,0,10,20,0,Math.PI*2,false,0);
   assert.equal(serializeProject(parseProject(serializeProject(ellipse))), serializeProject(ellipse));
 });
+
+test('independent bevel curves and active side survive project roundtrip', () => {
+  const state = fixture();
+  state.objects[0].settings.innerCurvePoints = [
+    {x:0,y:0,mode:'linear'}, {x:0.5,y:0.3,mode:'linear'}, {x:1,y:1,mode:'linear'},
+  ];
+  state.view.curveSide = 'inner';
+  const loaded = parseProject(serializeProject(state));
+  assert.deepEqual(loaded.objects[0].settings.innerCurvePoints,state.objects[0].settings.innerCurvePoints);
+  assert.equal(loaded.view.curveSide,'inner');
+  const a = buildMesh(state.objects[0].shape,state.objects[0].settings);
+  const b = buildMesh(loaded.objects[0].shape,loaded.objects[0].settings);
+  assert.deepEqual(Array.from(a.attributes.position.array),Array.from(b.attributes.position.array));
+  const invalid = JSON.parse(serializeProject(state));
+  invalid.state.objects[0].settings.innerCurvePoints = [{x:0,y:0},{x:1,y:2}];
+  assert.throws(()=>parseProject(JSON.stringify(invalid)));
+  a.dispose(); b.dispose();
+});

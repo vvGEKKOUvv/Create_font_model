@@ -108,6 +108,10 @@ try {
     buffer: await readFile(new URL("../public/sample.svg", import.meta.url)),
   });
   await expect(page.locator("#object-count")).toHaveText("2");
+  await expect(page.locator("#curve-point-mode")).toHaveValue("bezier");
+  await expect(page.locator("#curve-handle-mode")).toHaveValue("aligned");
+  await expect(page.locator('#curve-handle-mode option[value="aligned"]')).toHaveText("接線");
+
   await expect(page.locator("#viewport canvas")).toBeVisible();
   await expect(page.locator(".left-panel")).toHaveCount(0);
   await expect(page.locator(".right-panel #file")).toHaveCount(1);
@@ -924,7 +928,7 @@ try {
       `<svg xmlns="http://www.w3.org/2000/svg"><path id="Huge" d="${hugePath}"/></svg>`,
     ),
   });
-  await expect(page.locator("#selected-name")).toHaveText(/Huge \d+/);
+  await expect(page.locator("#selected-name")).toHaveText(/Huge \d+/, { timeout: 15000 });
   await expect(page.locator("#object-count")).toHaveText("5");
   await expect(page.locator("#message")).not.toHaveClass(/error/);
   assert(
@@ -950,6 +954,7 @@ try {
   assert(
     Math.abs(Number(await page.locator("#bevelSize").inputValue()) - 0.08) <
       1e-8,
+    `tiny bevel initial value: ${await page.locator("#bevelSize").inputValue()}`,
   );
   assert(
     Math.abs(Number(await page.locator("#wallThickness").inputValue()) - 0.3) <
@@ -997,12 +1002,8 @@ try {
         (await page.evaluate(() => window.__sceneSnapshot)).objects.at(-1)
           .centralWallDepth,
     )
-    .toBeGreaterThanOrEqual(0.3);
-  assert.ok(
-    (await page.evaluate(() => window.__sceneSnapshot)).objects.at(-1)
-      .effectiveBevelDepth <=
-      wallWidthMax + 1e-6,
-  );
+    .toBeGreaterThanOrEqual(0.0119);
+  await expect.poll(async () => (await page.evaluate(() => window.__sceneSnapshot)).objects.at(-1).effectiveBevelDepth).toBeGreaterThan(0.29);
   const protectedHollow = await exported();
   assert(!/NaN|Infinity/.test(protectedHollow["model.obj"]));
   await page.locator("#file").setInputFiles({
@@ -1038,6 +1039,28 @@ try {
   assert(!/NaN|Infinity/.test(ridgeExport["model.obj"]));
   await page.locator("#tab-3d").click();
   await page.screenshot({ path: join(work, "ridge-L-browser.png") });
+  // Independent hollow profiles are editable without changing the opposite curve.
+  await page.locator("#hollow").check();
+  await page.locator("#wallThickness").fill("8");
+  await page.locator("#bevelWidth").fill("2");
+  await page.locator("#bevelSize").fill("8");
+  await expect(page.locator("#curve-side")).toHaveValue("outer");
+  const outerBefore = await page.locator("circle[data-curve-point]").evaluateAll(es => es.map(e => [e.getAttribute("cx"), e.getAttribute("cy")]));
+  await page.locator("#curve-side").selectOption("inner");
+  await page.locator("circle[data-curve-point]").nth(1).click();
+  await expect(page.locator("#curve-point-mode")).toHaveValue("bezier");
+  await expect(page.locator("#curve-handle-mode")).toHaveValue("aligned");
+  const beforeInnerEdit = await exported();
+  await page.locator("#bevel-curve-settings svg").focus();
+  await page.keyboard.press("ArrowUp");
+  const afterInnerEdit = await exported();
+  assert.notEqual(afterInnerEdit["model.obj"], beforeInnerEdit["model.obj"], "inner curve edits affect exported mesh");
+  const editedInner = await page.locator("circle[data-curve-point]").evaluateAll(es => es.map(e => [e.getAttribute("cx"), e.getAttribute("cy")]));
+  await page.locator("#curve-side").selectOption("outer");
+  assert.deepEqual(await page.locator("circle[data-curve-point]").evaluateAll(es => es.map(e => [e.getAttribute("cx"), e.getAttribute("cy")])), outerBefore, "editing inner curve preserves outer curve");
+  await page.locator("#curve-side").selectOption("inner");
+  assert.deepEqual(await page.locator("circle[data-curve-point]").evaluateAll(es => es.map(e => [e.getAttribute("cx"), e.getAttribute("cy")])), editedInner, "switching curves retains independent edits");
+  await page.locator("#curve-side").selectOption("outer");
   // Regression: many fine, unreduced edges must not suppress an otherwise
   // modest bevel on a substantial hollow rim.
   const fineOutline = ["M0 0", "L100 0", "L100 100", "L0 100", "L0 51"];

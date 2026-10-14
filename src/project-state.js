@@ -61,10 +61,12 @@ function validateState(state) {
       for (const key of ["uvScaleX", "uvScaleY", "uvOffsetX", "uvOffsetY", "uvRotation", "offset", "pathOffset"]) if (settings[key] !== undefined && typeof settings[key] !== "number") fail();
       for (const key of ["bevelContinue", "sharpCorners", "hollow", "bevelFullWidth"]) if (settings[key] !== undefined && typeof settings[key] !== "boolean") fail();
       if (settings.uvEdits !== undefined && (!record(settings.uvEdits) || !Object.values(settings.uvEdits).every(v => vector(v, 2)))) fail();
-      if (settings.curvePoints !== undefined) {
-        try { normalizeProfile(settings.curvePoints); } catch { fail(); }
+      for (const name of ["curvePoints", "innerCurvePoints"]) {
+        const points = settings[name];
+        if (points === undefined) continue;
+        try { normalizeProfile(points); } catch { fail(); }
+        if (!Array.isArray(points) || points.length < 2 || points.length > 16 || !points.every(p => record(p) && typeof p.x === "number" && typeof p.y === "number" && p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1)) fail();
       }
-      if (settings.curvePoints !== undefined && (!Array.isArray(settings.curvePoints) || settings.curvePoints.length < 2 || settings.curvePoints.length > 16 || !settings.curvePoints.every(p => record(p) && typeof p.x === "number" && typeof p.y === "number" && p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1))) fail();
     }
     validatePath(object.shape, true);
   }
@@ -75,6 +77,7 @@ function validateState(state) {
     if (!(typeof state.view.zoom === "number" && state.view.zoom > 0)) fail();
     for (const key of ["wireframe", "uvEditMode", "transformSpace"]) if (typeof state.view[key] !== "boolean") fail();
     for (const [key, choices] of [["wireframeMode", ["lines", "hidden", "overlay"]], ["tab", ["3d", "uv"]], ["transformMode", ["translate", "rotate", "scale"]]]) if (!choices.includes(state.view[key])) fail();
+    if (state.view.curveSide !== undefined && !["outer", "inner"].includes(state.view.curveSide)) fail();
     if (!Array.isArray(state.view.sections) || state.view.sections.length > 100 || !state.view.sections.every(v => typeof v === "boolean")) fail();
   }
 }
