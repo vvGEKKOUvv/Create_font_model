@@ -737,9 +737,17 @@ try {
     "Each object retains its own added profile vertices",
   );
   await points.nth(2).click();
-  await page.locator("#curve-delete").click();
+  await curve.focus();
+  await page.keyboard.press("Delete");
   await expect(points).toHaveCount(3);
-  await page.locator("#curve-add").click();
+  const addBox = await curve.boundingBox();
+  const midpoint = await points.evaluateAll(nodes => {
+    const values = nodes.map(n => [Number(n.getAttribute("cx")),Number(n.getAttribute("cy"))]);
+    let best = 0;
+    for (let i=1;i<values.length-1;i++) if (values[i+1][0]-values[i][0]>values[best+1][0]-values[best][0]) best=i;
+    return [(values[best][0]+values[best+1][0])/2,(values[best][1]+values[best+1][1])/2];
+  });
+  await curve.click({position:{x:addBox.width*midpoint[0]/480,y:addBox.height*midpoint[1]/280}});
   await expect(points).toHaveCount(4);
   await curve.focus();
   await page.keyboard.press("Delete");
@@ -1336,23 +1344,19 @@ try {
   await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].triangleCount,meshIndex)).toBe(reducedTriangles);
   await editField("meshReductionPercentage",0);
   await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].triangleCount,meshIndex)).toBe(triangleCount);
-  await page.locator("#file").setInputFiles({name:"curvature.svg",mimeType:"image/svg+xml",buffer:Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><ellipse id="Curvature" cx="50" cy="20" rx="50" ry="20"/></svg>')});
-  await expect(page.locator("#selected-name")).toHaveText(/Curvature/);
-  await editField("bevelSize",0);
   await page.locator("#hollow").check();
-  await editField("wallThickness",12);
-  const safeIndex = (await projectData()).state.selected;
-  await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].effectiveWallThickness,safeIndex)).toBe(12);
-  await page.locator("#hollowCurveSafe").check();
-  await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].effectiveWallThickness,safeIndex)).toBeLessThan(8);
-  const curveState = await projectData();
-  assert.equal(curveState.state.objects[safeIndex].settings.wallThickness,12,"requested wall stays editable");
-  assert.equal(curveState.state.objects[safeIndex].settings.hollowCurveSafe,true);
-  await page.locator("#hollowCurveSafe").uncheck();
-  await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].effectiveWallThickness,safeIndex)).toBe(12);
-  await page.locator("#project-file").setInputFiles({name:"curve-safe.pathform",mimeType:"application/json",buffer:Buffer.from(JSON.stringify(curveState))});
-  await expect(page.locator("#hollowCurveSafe")).toBeChecked();
-  await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].effectiveWallThickness,safeIndex)).toBeLessThan(8);
+  await editField("wallThickness",8);
+  await editField("bevelSize",16);
+  await editField("bevelWidth",100);
+  await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].effectiveBevel,meshIndex)).toBeLessThanOrEqual(4);
+  await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].effectiveBevelDepth,meshIndex)).toBe(16);
+  await expect(page.locator("#hollowCurveSafe")).toHaveCount(0);
+  await expect(page.locator("#curve-add")).toHaveCount(0);
+  await expect(page.locator("#curve-delete")).toHaveCount(0);
+  const editorBox = await page.locator(".curve-display").boundingBox();
+  const expandBox = await page.locator("#curve-expand").boundingBox();
+  assert.ok(expandBox.x+expandBox.width > editorBox.x+editorBox.width-25,"Expand sits at the right edge");
+  assert.ok(expandBox.y < editorBox.y+60,"Expand sits in the top row");
   await page.setViewportSize({ width: 390, height: 844 });
   await expect
     .poll(() =>

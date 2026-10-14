@@ -84,8 +84,16 @@ function validateState(state) {
     if (!Array.isArray(state.view.sections) || state.view.sections.length > 100 || !state.view.sections.every(v => typeof v === "boolean")) fail();
   }
 }
+function removeRetiredSettings(object) {
+  const clean = { ...object };
+  for (const key of ["settings", "validSettings"]) if (object[key]) {
+    clean[key] = { ...object[key] };
+    delete clean[key].hollowCurveSafe;
+  }
+  return clean;
+}
 export function serializeProject(state) {
-  const data = { ...state, objects: state.objects.map(object => ({ ...object, shape: object.shape.toJSON() })) };
+  const data = { ...state, objects: state.objects.map(object => ({ ...removeRetiredSettings(object), shape: object.shape.toJSON() })) };
   validateJson(data);
   validateState(data);
   const text = JSON.stringify({ format: FORMAT, version: 1, state: data });
@@ -99,5 +107,5 @@ export function parseProject(text) {
   validateJson(data);
   if (!record(data) || data.format !== FORMAT || data.version !== 1) fail();
   validateState(data.state);
-  return { ...data.state, objects: data.state.objects.map(object => ({ ...object, shape: new Shape().fromJSON(object.shape) })) };
+  return { ...data.state, objects: data.state.objects.map(object => ({ ...removeRetiredSettings(object), shape: new Shape().fromJSON(object.shape) })) };
 }

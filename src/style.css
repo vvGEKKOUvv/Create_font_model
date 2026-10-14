@@ -726,6 +726,24 @@ h3 span {
   padding: 10px;
   font-size: 11px;
 }
+.bevel-editor .curve-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.bevel-editor .curve-header label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: #b9c2cd;
+}
+.bevel-editor #curve-expand {
+  flex-shrink: 0;
+  margin-left: auto;
+}
 .bevel-editor .curve-tools {
   margin: 0 0 12px;
   gap: 8px;
@@ -744,7 +762,7 @@ h3 span {
   display: flex;
   align-items: center;
   gap: 10px;
-  width: 100%;
+  width: auto;
   color: #b9c2cd;
 }
 .curve-display.bevel-editor svg {

@@ -90,9 +90,10 @@ test('mesh reduction percentage roundtrips and rejects invalid amounts', () => {
   }
 });
 
-test('hollow curvature protection roundtrips and rejects nonboolean settings', () => {
+test('retired hollow curvature setting is ignored when loading old projects', () => {
   const state=fixture();state.objects[0].settings.hollowCurveSafe=true;
-  assert.equal(parseProject(serializeProject(state)).objects[0].settings.hollowCurveSafe,true);
-  const raw=JSON.parse(serializeProject(state));raw.state.objects[0].settings.hollowCurveSafe='true';
-  assert.throws(()=>parseProject(JSON.stringify(raw)),/プロジェクト/);
+  assert.ok(!serializeProject(state).includes('hollowCurveSafe'));
+  assert.equal(state.objects[0].settings.hollowCurveSafe,true,'saving does not mutate old settings');
+  const raw=JSON.parse(serializeProject(state));raw.state.objects[0].settings.hollowCurveSafe=true;
+  assert.equal(parseProject(JSON.stringify(raw)).objects[0].settings.hollowCurveSafe,undefined);
 });

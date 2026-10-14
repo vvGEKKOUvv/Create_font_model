@@ -12,7 +12,6 @@ import {
   invalidateBevelRoof,
 } from "./bevel-roof.js";
 import { hollowContours, hollowFilledRegion } from "./hollow-offset.js";
-import { safeHollowThickness } from "./hollow-smoothing.js";
 import { offsetContours } from "./path-offset.js";
 import {
   prepareOffsetBevelRoof,
@@ -20,6 +19,40 @@ import {
 } from "./offset-bevel-roof.js";
 
 const EPS = 1e-7;
+// The nearest pair of separate boundaries bounds both opposing bevels.
+// Cache this with the contour variant, so slider edits do not repeat the search.
+function opposingMidpointWidth(rings) {
+  let distanceSquared = Infinity;
+  const pointSegment = (p, a, b) => {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const length = dx * dx + dy * dy;
+    const t = length ? Math.max(0, Math.min(1,
+      ((p.x - a.x) * dx + (p.y - a.y) * dy) / length)) : 0;
+    return (p.x - a.x - t * dx) ** 2 + (p.y - a.y - t * dy) ** 2;
+  };
+  for (let r = 0; r < rings.length; r++) {
+    for (let h = r + 1; h < rings.length; h++) {
+      const first = rings[r], second = rings[h];
+      for (let i = 0; i < first.length; i++) {
+        const a = first[i], b = first[(i + 1) % first.length];
+        for (let j = 0; j < second.length; j++) {
+          const c = second[j], d = second[(j + 1) % second.length];
+          const gapX = Math.max(0, Math.min(a.x, b.x) - Math.max(c.x, d.x),
+            Math.min(c.x, d.x) - Math.max(a.x, b.x));
+          const gapY = Math.max(0, Math.min(a.y, b.y) - Math.max(c.y, d.y),
+            Math.min(c.y, d.y) - Math.max(a.y, b.y));
+          if (gapX * gapX + gapY * gapY >= distanceSquared) continue;
+          distanceSquared = Math.min(distanceSquared,
+            pointSegment(a, c, d), pointSegment(b, c, d),
+            pointSegment(c, a, b), pointSegment(d, a, b));
+        }
+      }
+    }
+  }
+  // Leave a 0.1% planar seam: exact meeting can collapse distinct Float32
+  // cap vertices and reverse tiny faces on very small imported contours.
+  return Math.sqrt(distanceSquared) / 2 * (1 - 1e-3);
+}
 export function parseSvg(text) {
   if (typeof text !== "string" || !/<svg[\s>]/i.test(text))
     throw new Error("SVG ファイルを読み込んでください。");
@@ -285,11 +318,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
   const warnings = [...prepared.warnings, ...shifted.warnings];
   const sharp = settings.sharpCorners !== false;
   const requestedWall = Math.max(0.000001, Number(settings.wallThickness) || 3);
-  const safeWall = settings.hollow && settings.hollowCurveSafe === true
-    ? safeHollowThickness(rings, requestedWall) : requestedWall;
-  if (safeWall < requestedWall) warnings.push(
-    `滑らかな内周を保つため、壁厚を ${safeWall.toPrecision(3)} に制限しました。`,
-  );
+  const safeWall = requestedWall;
   const explicitWidth = settings.bevelWidth !== undefined;
   const requestedBevelWidth = explicitWidth
     ? Math.max(0, Number(settings.bevelWidth))
@@ -484,6 +513,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
       box,
       bevel,
       effectiveWallThickness,
+      midpointWidth: opposingMidpointWidth(rings),
       maximumBevelWidth,
       warnings: localWarnings,
     };
@@ -573,7 +603,9 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
     );
   if (safeHollowFallback)
     warnings.push("中抜きの穴と面の接続を保つため、通常ベベルで再生成し、輪郭幅を安全な最大幅に制限しました。");
-  const bevel = roof
+  const maximumWidth = Math.min(roof ? roof.maximumWidth : Math.max(variant.maximumBevelWidth, variant.bevel),
+    variant.midpointWidth, effectiveWallThickness > 0 ? effectiveWallThickness / 2 : Infinity);
+  let bevel = roof
     ? explicitWidth
       ? Math.min(requestedBevelWidth, roof.maximumWidth)
       : roof.maximumWidth *
@@ -592,6 +624,10 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
             1,
           )
         : variant.bevel;
+  if (bevel > maximumWidth) {
+    bevel = maximumWidth;
+    warnings.push("対向する輪郭の中間点を越えないよう、ベベルの輪郭幅を制限しました。");
+  }
   // Inset safety restricts the lateral width, independently of axial reach.
   let bevelHeight =
     bevel > 0
@@ -966,10 +1002,10 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
   geometry.userData = {
     warnings,
     effectiveBevel: bevel,
-    maximumBevelWidth: roof ? roof.maximumWidth : variant.maximumBevelWidth,
+    maximumBevelWidth: maximumWidth,
     maximumBevelControlWidth: narrowDenseConvex
       ? Math.max(roof.maximumWidth, Math.min(box.max.x - box.min.x, box.max.y - box.min.y) / 2)
-      : (roof ? roof.maximumWidth : variant.maximumBevelWidth),
+      : maximumWidth,
     continuedBevel: !!roofTriangles,
     effectiveBevelDepth: bevelHeight,
     centralWallDepth: depth - 2 * bevelHeight,

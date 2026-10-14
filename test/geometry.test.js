@@ -2338,8 +2338,9 @@ for (const divisions of [64, 128]) {
       "the ridge retains its requested extrusion-direction bevel reach",
     );
     assert.ok(
-      geometry.userData.effectiveBevel > 10.53,
-      "near-meeting bevels retain their lateral width",
+      geometry.userData.effectiveBevel > 10.5 &&
+        geometry.userData.effectiveBevel <= geometry.userData.effectiveWallThickness / 2,
+      "near-meeting bevels retain width without exceeding the protected midpoint",
     );
     const triangles = triangleVertices(geometry);
     let slopes = 0;
@@ -2498,7 +2499,9 @@ test("hollow roof failures preserve cavities with safe bevels across imported pa
     const before = JSON.stringify(settings);
     const geometry = buildMesh(shape, settings);
     assert.equal(JSON.stringify(settings), before, "fallback does not rewrite user settings");
-    assert.ok(geometry.userData.warnings.some(w => w.includes("通常ベベルで再生成")));
+    assert.ok(geometry.userData.warnings.some(w =>
+      w.includes("通常ベベルで再生成") || w.includes("中間点")));
+    assert.ok(geometry.userData.effectiveBevel <= geometry.userData.effectiveWallThickness / 2);
     assert.ok(geometry.userData.effectiveWallThickness > 0);
     assert.ok(geometry.userData.effectiveBevel > 0);
     assert.equal(geometry.userData.effectiveBevelDepth, 28 * scale);
@@ -2521,4 +2524,22 @@ test("hollow roof failures preserve cavities with safe bevels across imported pa
     independent.dispose();
     geometry.dispose();
   }
+});
+
+
+test("hollow midpoint cap survives depth edits and ignores removed curve-preservation setting", () => {
+  const shape = rectangleWithHole();
+  const base = { depth: 30, bevelSize: 10, bevelWidth: 100,
+    bevelContinue: true, curvePoints: ridgeProfile };
+  const original = buildMesh(shape, base);
+  const obsolete = buildMesh(shape, { ...base, hollowCurveSafe: true });
+  assert.deepEqual(Array.from(original.attributes.position.array),
+    Array.from(obsolete.attributes.position.array));
+  assert.ok(original.userData.effectiveBevel <= 3.5);
+  assert.ok(original.userData.maximumBevelControlWidth <= 3.5);
+  assert.ok(original.userData.warnings.some(message => message.includes("中間点")));
+  const deeper = buildMesh(shape, { ...base, depth: 60, bevelSize: 25 });
+  assert.equal(deeper.userData.effectiveBevel, original.userData.effectiveBevel);
+  assert.equal(deeper.userData.effectiveBevelDepth, 25);
+  assertClosedFiniteSolid(deeper);
 });
