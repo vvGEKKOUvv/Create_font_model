@@ -296,8 +296,22 @@ export function triangulateBevelRoof(roof, width, samples, profile) {
         );
       roof.faceCells[faceIndex] = cells;
     }
-    for (const indices of cells) {
-      const base = indices.map((i) => face[i]);
+    // Clip a convex source-edge face before triangulating it. Cutting its
+    // already triangulated diagonals creates extra vertices on every band,
+    // although those diagonals have no geometric meaning. Concave cells retain
+    // the constrained triangulation because clipping may disconnect them.
+    let turn = 0;
+    const convex = face.every((p, i) => {
+      const q = face[(i + 1) % face.length], r = face[(i + 2) % face.length];
+      const cross = (q.x - p.x) * (r.y - q.y) - (q.y - p.y) * (r.x - q.x);
+      if (Math.abs(cross) <= EPS) return true;
+      const sign = Math.sign(cross);
+      if (turn && turn !== sign) return false;
+      turn = sign;
+      return true;
+    });
+    const polygons = convex ? [face] : cells.map((indices) => indices.map((i) => face[i]));
+    for (const base of polygons) {
       for (let band = 0; band < limits.length - 1; band++) {
         const poly = cut(
           cut(base, limits[band], true),

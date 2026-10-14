@@ -2064,16 +2064,14 @@ for (const importedHole of [false, true]) {
         if (z.some((v) => v > height + 1e-5)) continue;
         const min = Math.min(...z),
           max = Math.max(...z);
-        if (min <= 1e-5 || max >= height - 1e-5) continue;
-        assert.ok(
-          max - min > 1e-5,
-          `a disappearing sharp branch must form a ridge instead of an intermediate horizontal shelf at ${min}`,
-        );
-        slopingFrontFaces++;
+        if (min > 1e-5 && max < height - 1e-5)
+          assert.ok(max - min > 1e-5,
+            `a disappearing sharp branch must form a ridge instead of an intermediate horizontal shelf at ${min}`);
+        if (max - min > 1e-5) slopingFrontFaces++;
       }
       assert.ok(
         slopingFrontFaces > 10,
-        "the bevel contains actual intermediate sloping faces",
+        "the bevel contains actual sloping faces, including unsplit planar spans",
       );
       const positions = triangleVertices(geometry).flat();
       for (let i = 0; i < 20; i++) {
@@ -2390,12 +2388,10 @@ for (const divisions of [64, 128]) {
         );
         tipFaces++;
       }
-      if (min <= 1e-5 || max >= height - 1e-5) continue;
-      assert.ok(
-        max - min > 1e-5,
-        `curved branches must meet on a sloping ridge instead of a flat intermediate shelf at ${min}`,
-      );
-      slopes++;
+      if (min > 1e-5 && max < height - 1e-5)
+        assert.ok(max - min > 1e-5,
+          `curved branches must meet on a sloping ridge instead of a flat intermediate shelf at ${min}`);
+      if (max - min > 1e-5) slopes++;
     }
     assert.ok(
       slopes > 50,

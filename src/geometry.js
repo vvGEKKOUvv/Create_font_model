@@ -729,6 +729,20 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
       if (!samples.some((p) => Math.abs(p - t) < 1e-7)) samples.push(t);
     samples.sort((a, b) => a - b);
   }
+  // A straight bevel profile is a plane: extra axial cuts do not describe
+  // any shape. Keep bends in either profile, but remove collinear roof levels.
+  const straightProfile = (control) => control.length >= 2
+    ? control.slice(0, -1).every((p, i) => profileSpanIsStraight(p, control[i + 1]))
+    : curve === 0;
+  if (roof && !roof.offsetRoof && straightProfile(points) && straightProfile(innerPoints)) {
+    for (let i = samples.length - 2; i > 0; i--) {
+      const a = samples[i - 1], b = samples[i], c = samples[i + 1];
+      const collinear = (evaluate) => Math.abs(
+        (evaluate(b) - evaluate(a)) * (c - a) -
+        (evaluate(c) - evaluate(a)) * (b - a)) < 1e-10;
+      if (collinear(profile) && collinear(innerProfile)) samples.splice(i, 1);
+    }
+  }
   if (safeHollowFallback && separateInnerProfile) {
     for (const evaluate of [profile, innerProfile]) {
       let previous = evaluate(0);
@@ -759,7 +773,9 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
   const positions = [],
     uvs = [],
     baseUVs = [],
-    surfaceGroups = [];
+    surfaceGroups = [],
+    roofDirections = [];
+  let roofDirection = null;
   let surfaceGroup = 0;
   const scale = Math.max(0.0001, Number(settings.uvScale) || 1);
   const scaleX = Number.isFinite(Number(settings.uvScaleX))
@@ -775,6 +791,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
   const add = (p, uv) => {
     positions.push(p.x, -p.y, p.z);
     surfaceGroups.push(surfaceGroup);
+    roofDirections.push(roofDirection);
     const key = `${uv.x.toFixed(6)},${uv.y.toFixed(6)}`;
     uvKeys.push(key);
     baseUVs.push(uv.x, uv.y);
@@ -815,8 +832,29 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
   if (roofTriangles) {
     if (separateInnerProfile)
       roofTriangles = independentRoofProfiles(roofTriangles, rings, profile, innerProfile);
+    // Faces grow from oriented source edges. Nearby curve samples may share
+    // shading, but opposite edges or a sharp source corner must keep the
+    // medial ridge as a crease, even when the bevel is shallow.
+    const key = (p) => `${Math.round(p.x * 1e7)},${Math.round(p.y * 1e7)}`;
+    const edgeDirections = new Map();
+    for (const [ringIndex, ring] of rings.entries()) for (let i = 0; i < ring.length; i++) {
+      const a = ring[i], b = ring[(i + 1) % ring.length];
+      const length = Math.hypot(b.x - a.x, b.y - a.y);
+      edgeDirections.set([key(a), key(b)].sort().join("|"),
+        [(b.x - a.x) / length, (b.y - a.y) / length, ringIndex]);
+    }
+    const faceDirections = roof.offsetRoof ? [] : roof.faces.map(face => {
+      for (let i = 0; i < face.length; i++) {
+        const a = face[i], b = face[(i + 1) % face.length];
+        if (Math.abs(a.time) > EPS || Math.abs(b.time) > EPS) continue;
+        const direction = edgeDirections.get([key(a), key(b)].sort().join("|"));
+        if (direction) return direction;
+      }
+      return null;
+    });
     for (const back of [false, true]) {
       for (const face of roofTriangles) {
+        roofDirection = faceDirections[face.faceIndex] ?? null;
         surfaceGroup = face.points.every((p) => Math.abs(p.height) < EPS)
           ? 2
           : 3;
@@ -842,6 +880,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
         triangle(...points, ...uv);
       }
     }
+    roofDirection = null;
     if (depth - 2 * bevelHeight > EPS) {
       for (let r = 0; r < rings.length; r++) {
         surfaceGroup = r + roof.faces.length + 2;
@@ -985,7 +1024,9 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
         const i = cluster[cursor] * 3;
         for (const j of pending) {
           const k = j * 3;
-          if (
+          const di = roofDirections[cluster[cursor]], dj = roofDirections[j];
+          const sameSourceSurface = !di || !dj || (di[2] === dj[2] && di[0] * dj[0] + di[1] * dj[1] >= Math.cos(35 * Math.PI / 180));
+          if (sameSourceSurface &&
             originalNormals[i] * originalNormals[k] +
               originalNormals[i + 1] * originalNormals[k + 1] +
               originalNormals[i + 2] * originalNormals[k + 2] >=

@@ -80,8 +80,11 @@ test("native-hole hollow bevels retain both walls, cavities and independently ed
     assert.ok(triangles(geometry).some(tri => {
       const z=tri.map(p=>p[2]);
       const area=Math.abs((tri[1][0]-tri[0][0])*(tri[2][1]-tri[0][1])-(tri[1][1]-tri[0][1])*(tri[2][0]-tri[0][0]));
-      return area>scale*scale*1e-8 && Math.min(...z)>scale*1e-6 && Math.max(...z)<8*scale-scale*1e-6 && Math.max(...z)-Math.min(...z)>scale*1e-6;
-    }),"actual mesh contains intermediate sloping bevel faces");
+      return area>scale*scale*1e-8 && Math.min(...z)>=-scale*1e-6 && Math.max(...z)<=8*scale+scale*1e-6 && Math.max(...z)-Math.min(...z)>scale*1e-6;
+    }),"actual mesh retains sloping bevel faces, including planes spanning the full bevel height");
+    const matching=buildMesh(annulus(scale),{...settings,innerCurvePoints:outer});
+    assert.notDeepEqual(geometry.attributes.position.array,matching.attributes.position.array,"the independent inner curve still changes the mesh");
+    matching.dispose();
     const position=geometry.attributes.position;
     const sourcePositions=Array.from(position.array);
     const key=geometry.userData.uvKeys[0];

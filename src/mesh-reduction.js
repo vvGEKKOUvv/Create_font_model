@@ -46,7 +46,14 @@ export function reduceMeshGeometry(geometry, percentage = 0) {
     const [a, b] = key.split(':').map(Number);
     if (incident.length !== 2) { vertices[a].locked = vertices[b].locked = true; continue; }
     const n = faces[incident[0]].n, m = faces[incident[1]].n;
-    const sharp = dot(n, m) < Math.sqrt(dot(n, n) * dot(m, m)) * Math.cos(Math.PI / 6);
+    const normalSeam = normal && [a, b].some(id => {
+      const corners = incident.map(fi => faces[fi].corners[faces[fi].ids.indexOf(id)]);
+      const first = corners[0], second = corners[1];
+      return Math.hypot(normal.getX(first) - normal.getX(second),
+        normal.getY(first) - normal.getY(second),
+        normal.getZ(first) - normal.getZ(second)) > 1e-4;
+    });
+    const sharp = normalSeam || dot(n, m) < Math.sqrt(dot(n, n) * dot(m, m)) * Math.cos(Math.PI / 6);
     const seam = [a, b].some(id => {
       const corners = incident.map(fi => faces[fi].corners[faces[fi].ids.indexOf(id)]);
       return uv && (base[corners[0] * 2] !== base[corners[1] * 2] || base[corners[0] * 2 + 1] !== base[corners[1] * 2 + 1]);
