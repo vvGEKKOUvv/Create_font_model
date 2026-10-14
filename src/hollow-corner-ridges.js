@@ -1,11 +1,59 @@
 import cdt2d from 'cdt2d';
 import { prepareBevelRoof } from './bevel-roof.js';
-import { validateRoofTriangles } from './roof-topology.js';
 const chainCache = new WeakMap();
+const triangleBounds = new WeakMap();
+const pointKeys = new WeakMap();
+function xyKey(p) {
+  let keys=pointKeys.get(p);
+  if(!keys){keys={xy:`${Math.fround(p.x)},${Math.fround(p.y)}`};pointKeys.set(p,keys);}
+  return keys.xy;
+}
+function renderedKey(p) {
+  const xy=xyKey(p),keys=pointKeys.get(p);
+  if(!keys.rendered)keys.rendered=`${xy},${Math.round(p.height * 1e7)}`;
+  return keys.rendered;
+}
+function bounds(triangle) {
+  let box = triangleBounds.get(triangle);
+  if (!box) {
+    const [a,b,c] = triangle.points;
+    box = { minX:Math.min(a.x,b.x,c.x), maxX:Math.max(a.x,b.x,c.x), minY:Math.min(a.y,b.y,c.y), maxY:Math.max(a.y,b.y,c.y) };
+    triangleBounds.set(triangle,box);
+  }
+  return box;
+}
+// Replacing a closed triangulated patch is safe exactly when its boundary
+// remains identical and every newly introduced interior edge has two faces.
+// The unchanged surface is already validated by the offset roof caller.
+function validReplacement(previous, next) {
+  const count = faces => {
+    const edges = new Map();
+    for (const face of faces) {
+      const ids=face.points.map(renderedKey);
+      for(let i=0;i<3;i++) {
+        const a=ids[i],b=ids[(i+1)%3];
+        if(a===b)continue;
+        const key=a<b?`${a}|${b}`:`${b}|${a}`;
+        edges.set(key,(edges.get(key)||0)+1);
+      }
+    }
+    return edges;
+  };
+  const oldEdges=count(previous),newEdges=count(next);
+  for(const [edge,n]of oldEdges) {
+    const replacement=newEdges.get(edge)||0;
+    if(n===1?replacement!==1:replacement!==0&&replacement!==2)return false;
+  }
+  for(const [edge,n]of newEdges)
+    if(n!==(oldEdges.get(edge)===1?1:2))return false;
+  return true;
+}
 function sourceGraph(rings) {
   const cacheKey=rings[0];
   if (chainCache.has(cacheKey)) return chainCache.get(cacheKey);
-  if(cacheKey.length>512)return null;
+  // Imported contours are already bounded by the geometry vertex limit.
+  // A separate 512-vertex cutoff discarded the complete ridge of valid SVGs.
+  if(cacheKey.length>3000)return null;
   let graph = null;
   try {
     const roof = prepareBevelRoof([rings[0]]);
@@ -66,6 +114,16 @@ export function constrainHollowCornerRidges(triangles, rings, width, samples, pr
   let result = triangles;
   const span = Math.max(...rings.flat().map(p => Math.hypot(p.x - rings[0][0].x, p.y - rings[0][0].y)), 1);
   const epsilon = span * 1e-7;
+  const existing = new Map(), indexedPoints = new Set();
+  const indexPoint = p => {
+    const id=`${p.x},${p.y}`;
+    if(indexedPoints.has(id))return;
+    indexedPoints.add(id);
+    const key=`${Math.floor(p.x/epsilon)},${Math.floor(p.y/epsilon)}`;
+    if(!existing.has(key))existing.set(key,[]);
+    existing.get(key).push(p);
+  };
+  for(const face of triangles)for(const p of face.points)indexPoint(p);
   const levels = samples.map(t => ({ t, d: width * (1 - profile(t)) }));
   const height = d => {
     if (d >= levels[0].d) return levels[0].t;
@@ -122,8 +180,6 @@ export function constrainHollowCornerRidges(triangles, rings, width, samples, pr
     if (length <= epsilon * 10) continue;
     const endpoint = { x: c.x + length * u.x, y: c.y + length * u.y, height: ridgeHeight(length) };
     const cache = new Map();
-    const existing = new Map();
-    for(const face of result)for(const p of face.points){const x=Math.floor(p.x/epsilon),y=Math.floor(p.y/epsilon),key=`${x},${y}`;if(!existing.has(key))existing.set(key,[]);existing.get(key).push(p);}
 
     const canonical = (p, t) => {
       const key = `${Math.round(t / epsilon)}`;
@@ -137,7 +193,11 @@ export function constrainHollowCornerRidges(triangles, rings, width, samples, pr
       return cache.get(key);
     };
     const output = [];
+    const minX=Math.min(c.x,endpoint.x)-epsilon,maxX=Math.max(c.x,endpoint.x)+epsilon,
+      minY=Math.min(c.y,endpoint.y)-epsilon,maxY=Math.max(c.y,endpoint.y)+epsilon;
     for (const triangle of result) {
+      const box=bounds(triangle);
+      if(box.maxX<minX||box.minX>maxX||box.maxY<minY||box.minY>maxY){output.push(triangle);continue;}
       const points = triangle.points;
       const boundary = [], hits = [];
       for (let j = 0; j < 3; j++) {
@@ -161,7 +221,7 @@ export function constrainHollowCornerRidges(triangles, rings, width, samples, pr
       const flat = [...boundary];
       if (inside(endpoint) && !hits.some(p => Math.hypot(p.x - endpoint.x, p.y - endpoint.y) < epsilon)) { flat.push(canonical(endpoint, length)); hits.push(flat.at(-1)); }
       const unique = [...new Set(hits)];
-      if (unique.length < 2 && boundary.length === 3) { output.push({ ...triangle, points: boundary }); continue; }
+      if (unique.length < 2 && boundary.length === 3) { output.push(boundary.every((p,i)=>p===points[i])?triangle:{ ...triangle, points: boundary }); continue; }
       const edges = boundary.map((p, i) => [i, (i + 1) % boundary.length]);
       unique.sort((a,b) => (a.x-b.x)*u.x+(a.y-b.y)*u.y);
       if(unique.length >= 2) edges.push([flat.indexOf(unique[0]), flat.indexOf(unique.at(-1))]);
@@ -174,10 +234,26 @@ export function constrainHollowCornerRidges(triangles, rings, width, samples, pr
         output.push({ ...triangle, points: face, constraints: [...(triangle.constraints || []), ...(unique.length>=2?[[unique[0], unique.at(-1)]]:[])], cornerRidge: segment.auxiliary ? triangle.cornerRidge : { origin: c, direction: u, ridgeId, sourceCorner } });
       }
     }
-    const shared=new Map([...cache.values()].map(p=>[`${Math.fround(p.x)},${Math.fround(p.y)}`,p]));
-    const unified=output.map(triangle=>({...triangle,points:triangle.points.map(p=>shared.get(`${Math.fround(p.x)},${Math.fround(p.y)}`)||p)}));
-    const visible=unified.filter(triangle=>new Set(triangle.points.map(p=>`${Math.fround(p.x)},${Math.fround(p.y)},${Math.round(p.height*1e7)}`)).size===3);
-    try { validateRoofTriangles(visible, rings); result = visible; } catch { continue; }
+    const shared=new Map([...cache.values()].map(p=>[xyKey(p),p]));
+    // A rendered coordinate key can also match the neighboring Float32 cell.
+    // Include that whole rounding neighborhood before skipping shared nodes.
+    const padding=epsilon+Math.max(1,Math.abs(minX),Math.abs(maxX),Math.abs(minY),Math.abs(maxY))*2**-22;
+    const unified=output.map(triangle=>{
+      const box=bounds(triangle);
+      if(box.maxX<minX-padding||box.minX>maxX+padding||box.maxY<minY-padding||box.minY>maxY+padding)return triangle;
+      const [a,b,c]=triangle.points;
+      const aa=shared.get(xyKey(a))||a,bb=shared.get(xyKey(b))||b,cc=shared.get(xyKey(c))||c;
+      return aa===a&&bb===b&&cc===c?triangle:{...triangle,points:[aa,bb,cc]};
+    });
+    const previousSet=new Set(result);
+    const visible=unified.filter(triangle=>previousSet.has(triangle)||new Set(triangle.points.map(renderedKey)).size===3);
+    const unchanged=new Set(visible.filter(triangle=>previousSet.has(triangle)));
+    const removed=result.filter(triangle=>!unchanged.has(triangle));
+    const added=visible.filter(triangle=>!unchanged.has(triangle));
+    if(validReplacement(removed,added)) {
+      result=visible;
+      for(const face of added)for(const p of face.points)indexPoint(p);
+    }
     }
   }
   // A newly inserted ridge cannot retain an old CDT fan's interpolated
