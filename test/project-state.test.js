@@ -89,3 +89,10 @@ test('mesh reduction percentage roundtrips and rejects invalid amounts', () => {
     assert.throws(() => parseProject(JSON.stringify(raw)), /プロジェクト/);
   }
 });
+
+test('hollow curvature protection roundtrips and rejects nonboolean settings', () => {
+  const state=fixture();state.objects[0].settings.hollowCurveSafe=true;
+  assert.equal(parseProject(serializeProject(state)).objects[0].settings.hollowCurveSafe,true);
+  const raw=JSON.parse(serializeProject(state));raw.state.objects[0].settings.hollowCurveSafe='true';
+  assert.throws(()=>parseProject(JSON.stringify(raw)),/プロジェクト/);
+});

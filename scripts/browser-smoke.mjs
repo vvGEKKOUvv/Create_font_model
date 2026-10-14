@@ -67,6 +67,7 @@ try {
         `scene.updateMatrixWorld(true);
        window.__sceneSnapshot = {
          environmentId: scene.environment?.uuid,
+         environmentPreset,
          objects: group.children.map(mesh => ({
            metalness: mesh.material.metalness,
            roughness: mesh.material.roughness,
@@ -1300,7 +1301,7 @@ try {
   const maps = new Set();
   for (const preset of ["studio","softbox","outdoor","sunset"]) {
     await page.locator("#environment-preset").selectOption(preset);
-    await page.waitForTimeout(100);
+    await expect.poll(() => page.evaluate(() => window.__sceneSnapshot.environmentPreset)).toBe(preset);
     maps.add(await page.evaluate(() => window.__sceneSnapshot.environmentId));
   }
   assert.equal(maps.size,4,"Four distinct environment maps are rendered");
@@ -1335,6 +1336,23 @@ try {
   await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].triangleCount,meshIndex)).toBe(reducedTriangles);
   await editField("meshReductionPercentage",0);
   await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].triangleCount,meshIndex)).toBe(triangleCount);
+  await page.locator("#file").setInputFiles({name:"curvature.svg",mimeType:"image/svg+xml",buffer:Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><ellipse id="Curvature" cx="50" cy="20" rx="50" ry="20"/></svg>')});
+  await expect(page.locator("#selected-name")).toHaveText(/Curvature/);
+  await editField("bevelSize",0);
+  await page.locator("#hollow").check();
+  await editField("wallThickness",12);
+  const safeIndex = (await projectData()).state.selected;
+  await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].effectiveWallThickness,safeIndex)).toBe(12);
+  await page.locator("#hollowCurveSafe").check();
+  await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].effectiveWallThickness,safeIndex)).toBeLessThan(8);
+  const curveState = await projectData();
+  assert.equal(curveState.state.objects[safeIndex].settings.wallThickness,12,"requested wall stays editable");
+  assert.equal(curveState.state.objects[safeIndex].settings.hollowCurveSafe,true);
+  await page.locator("#hollowCurveSafe").uncheck();
+  await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].effectiveWallThickness,safeIndex)).toBe(12);
+  await page.locator("#project-file").setInputFiles({name:"curve-safe.pathform",mimeType:"application/json",buffer:Buffer.from(JSON.stringify(curveState))});
+  await expect(page.locator("#hollowCurveSafe")).toBeChecked();
+  await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].effectiveWallThickness,safeIndex)).toBeLessThan(8);
   await page.setViewportSize({ width: 390, height: 844 });
   await expect
     .poll(() =>

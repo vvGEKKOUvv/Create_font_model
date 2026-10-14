@@ -24,6 +24,7 @@ const defaults = {
   bevelSegments: 5,
   sharpCorners: true,
   hollow: false,
+  hollowCurveSafe: false,
   wallThickness: 4,
   uvScaleX: 1,
   uvScaleY: 1,
@@ -110,6 +111,7 @@ app.innerHTML = `
       <summary>内側をくり抜く <span>HOLLOW</span></summary>
       <label class="toggle-row"><span>中空にする</span><input id="hollow" type="checkbox"/><i></i></label>
       ${field("wallThickness", "壁の厚み", 4, 0.001, 30, 0.01)}
+      <label class="toggle-row"><span>内側の曲線を保つ</span><input id="hollowCurveSafe" type="checkbox"/><i></i></label>
     </details>
     <details id="bevel-curve-settings" class="control-section" open>
       <summary>ベベルカーブ <span>PROFILE</span></summary>

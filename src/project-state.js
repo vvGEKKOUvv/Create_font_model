@@ -61,7 +61,7 @@ function validateState(state) {
       for (const key of ["bevelSize", "bevelWidth", "wallThickness", "reductionTolerance"]) if (settings[key] !== undefined && !(typeof settings[key] === "number" && settings[key] >= 0)) fail();
       if (settings.meshReductionPercentage !== undefined && !(typeof settings.meshReductionPercentage === "number" && settings.meshReductionPercentage >= 0 && settings.meshReductionPercentage <= 90)) fail();
       for (const key of ["uvScaleX", "uvScaleY", "uvOffsetX", "uvOffsetY", "uvRotation", "offset", "pathOffset"]) if (settings[key] !== undefined && typeof settings[key] !== "number") fail();
-      for (const key of ["bevelContinue", "sharpCorners", "hollow", "bevelFullWidth"]) if (settings[key] !== undefined && typeof settings[key] !== "boolean") fail();
+      for (const key of ["bevelContinue", "sharpCorners", "hollow", "hollowCurveSafe", "bevelFullWidth"]) if (settings[key] !== undefined && typeof settings[key] !== "boolean") fail();
       if (settings.uvEdits !== undefined && (!record(settings.uvEdits) || !Object.values(settings.uvEdits).every(v => vector(v, 2)))) fail();
       for (const name of ["curvePoints", "innerCurvePoints"]) {
         const points = settings[name];

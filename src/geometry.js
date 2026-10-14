@@ -12,6 +12,7 @@ import {
   invalidateBevelRoof,
 } from "./bevel-roof.js";
 import { hollowContours, hollowFilledRegion } from "./hollow-offset.js";
+import { safeHollowThickness } from "./hollow-smoothing.js";
 import { offsetContours } from "./path-offset.js";
 import {
   prepareOffsetBevelRoof,
@@ -284,19 +285,24 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
   const warnings = [...prepared.warnings, ...shifted.warnings];
   const sharp = settings.sharpCorners !== false;
   const requestedWall = Math.max(0.000001, Number(settings.wallThickness) || 3);
+  const safeWall = settings.hollow && settings.hollowCurveSafe === true
+    ? safeHollowThickness(rings, requestedWall) : requestedWall;
+  if (safeWall < requestedWall) warnings.push(
+    `滑らかな内周を保つため、壁厚を ${safeWall.toPrecision(3)} に制限しました。`,
+  );
   const explicitWidth = settings.bevelWidth !== undefined;
   const requestedBevelWidth = explicitWidth
     ? Math.max(0, Number(settings.bevelWidth))
     : 0;
   const fullWidth = settings.bevelFullWidth === true || explicitWidth;
-  const variantWall = settings.hollow ? requestedWall : 0;
+  const variantWall = settings.hollow ? safeWall : 0;
   const variantKey = `${pathOffset}:` + (fullWidth
     ? `full:${!!settings.hollow}:${variantWall}:${sharp}`
     : `${!!settings.hollow}:${variantWall}:${sharp}:${Math.max(0, Number(settings.bevelSize) || 0)}:${Math.min(depth, 2 * Math.max(0, Number(settings.bevelSize) || 0))}`);
   if (settings.hollow && rings.length > 1) {
     let compound = prepared.variants.get(`compound:${variantKey}`);
     if (!compound) {
-      const hollow = hollowFilledRegion(rings, requestedWall);
+      const hollow = hollowFilledRegion(rings, safeWall);
       compound = { ...hollow, shapes: hollow.components.map(component => {
         const result = new THREE.Shape(component[0]);
         result.closePath();
@@ -339,7 +345,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
       const min = key => Math.min(...children.map(child => child.userData[key]));
       geometry.userData = { ...children[0].userData,
         warnings: [...new Set([...warnings, ...children.flatMap(child => child.userData.warnings),
-          ...(compound.effectiveWallThickness < requestedWall
+          ...(compound.effectiveWallThickness < safeWall
             ? [`指定の壁厚では中抜きが消えるため、壁厚を ${compound.effectiveWallThickness.toPrecision(3)} に縮小しました。`] : [])])],
         effectiveWallThickness: compound.effectiveWallThickness,
         effectivePathOffset: shifted.effectivePathOffset,
@@ -366,7 +372,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
         // the requested value can never find a cavity for very small imports
         // or an oversized numeric input, and previously returned a solid mesh.
         let wall = Math.min(
-          requestedWall,
+          safeWall,
           Math.min(
             outerBox.max.x - outerBox.min.x,
             outerBox.max.y - outerBox.min.y,
@@ -383,7 +389,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
         if (candidate && validRings(candidate)) {
           rings = candidate;
           effectiveWallThickness = wall;
-          if (wall < requestedWall)
+          if (wall < safeWall)
             localWarnings.push(
               `指定の壁厚では穴が消えるため、壁厚を ${wall.toPrecision(3)} に縮小しました。`,
             );
