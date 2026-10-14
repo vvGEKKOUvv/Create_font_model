@@ -84,7 +84,7 @@ export function prepareOffsetBevelRoof(rings, widthHint) {
         Math.max(scale * scale * 1e-7, Math.abs(clippedArea) * 1e-7);
     const value = compatible
       ? direct
-      : result.map((ring) => retainContourDensity(ring, paths, origin, scale));
+      : result.map((ring) => retainContourDensity(ring, paths, origin, scale, distance));
     if (layerCache.size >= 64)
       layerCache.delete(layerCache.keys().next().value);
     layerCache.set(cacheKey, value);
@@ -144,7 +144,7 @@ function parallelOffset(path, distance, ringIndex) {
 // Offset cleanup may collapse dozens of short input edges into one long edge.
 // Reinsert their closest boundary positions, keeping the offset itself unchanged.
 // This controls tangential tessellation independently of bevel profile samples.
-function retainContourDensity(ring, sources, origin, scale) {
+function retainContourDensity(ring, sources, origin, scale, insetDistance) {
   const compatible = sources.filter(
     (source) =>
       ClipperLib.Clipper.Orientation(source) ===
@@ -188,6 +188,10 @@ function retainContourDensity(ring, sources, origin, scale) {
     // Source correspondence alone bounds sampling; never subdivide by global mean edge length.
     const sorted = inserts[i].sort((x, y) => x - y);
     const points = [a];
+    // Projected correspondence points are optional, not shape corners. Keep
+    // a small inset-relative separation so collapsed source details do not
+    // reappear as almost coincident vertices and needle triangles.
+    const helperSpacing = Math.max(2, insetDistance * scale * 0.01);
     for (const t of sorted) {
       const p = {
         X: a.X + t * (b.X - a.X),
@@ -210,8 +214,8 @@ function retainContourDensity(ring, sources, origin, scale) {
       // Original contour vertices and offset corners remain unchanged.
       if (nearRenderedCorner(a) || nearRenderedCorner(b)) continue;
       if (
-        Math.hypot(p.X - previous.X, p.Y - previous.Y) > 2 &&
-        Math.hypot(p.X - b.X, p.Y - b.Y) > 2
+        Math.hypot(p.X - previous.X, p.Y - previous.Y) > helperSpacing &&
+        Math.hypot(p.X - b.X, p.Y - b.Y) > helperSpacing
       )
         points.push(p);
     }

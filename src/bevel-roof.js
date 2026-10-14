@@ -1,4 +1,5 @@
 import cdt2d from "cdt2d";
+import { cleanupPlanarPatch } from "./roof-planar-cleanup.js";
 import { validateRoofTriangles } from "./roof-topology.js";
 import { ShapeUtils, Vector2 } from "three";
 import skeletonPackage from "straight-skeleton";
@@ -269,7 +270,8 @@ export function triangulateBevelRoof(roof, width, samples, profile) {
     }
     return 0;
   };
-  const triangles = [];
+  let triangles = [];
+  const uncleanedTriangles = [];
   roof.faceCells ||= [];
   for (let faceIndex = 0; faceIndex < roof.faces.length; faceIndex++) {
     const face = roof.faces[faceIndex];
@@ -311,6 +313,17 @@ export function triangulateBevelRoof(roof, width, samples, profile) {
       return true;
     });
     const polygons = convex ? [face] : cells.map((indices) => indices.map((i) => face[i]));
+    const protectedPoints = new Set();
+    const pointKey = p => `${Math.fround(p.x)},${Math.fround(p.y)},${Math.round(heightAt(p.time) * 1e7)}`;
+    for (let i=0;!convex && i<face.length;i++) {
+      const a=face[i], b=face[(i+1)%face.length];
+      protectedPoints.add(pointKey(a));
+      for (const time of limits) if ((time-a.time)*(time-b.time)<0) {
+        const t=(time-a.time)/(b.time-a.time);
+        protectedPoints.add(pointKey({x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t,time}));
+      }
+    }
+    const bands = limits.slice(1).map(() => []);
     for (const base of polygons) {
       for (let band = 0; band < limits.length - 1; band++) {
         const poly = cut(
@@ -325,13 +338,15 @@ export function triangulateBevelRoof(roof, width, samples, profile) {
             (tri[1].y - tri[0].y) * (tri[2].x - tri[0].x);
           if (Math.abs(cross) < EPS) continue;
           if (cross < 0) tri.reverse();
-          triangles.push({
+          bands[band].push({
             faceIndex,
             points: tri.map((p) => ({ ...p, height: heightAt(p.time) })),
           });
         }
       }
     }
+    for (const band of bands) uncleanedTriangles.push(...band);
+    for (const band of bands) triangles.push(...(convex ? band : cleanupPlanarPatch(band, p => !protectedPoints.has(`${Math.fround(p.x)},${Math.fround(p.y)},${Math.round(p.height * 1e7)}`))));
   }
   const sameRendered = (a, b) =>
     Math.fround(a.x) === Math.fround(b.x) &&
@@ -345,7 +360,14 @@ export function triangulateBevelRoof(roof, width, samples, profile) {
     triangles[kept++] = triangle;
   }
   triangles.length = kept;
-  validateRoofTriangles(triangles, roof.rings);
+  try { validateRoofTriangles(triangles, roof.rings); }
+  catch (error) {
+    // Band seam rounding can differ at an event. Keep the original valid
+    // triangulation rather than selecting another skeleton or losing a hole.
+    const original = uncleanedTriangles.filter(({points:[a,b,c]}) => !sameRendered(a,b) && !sameRendered(b,c) && !sameRendered(c,a));
+    validateRoofTriangles(original, roof.rings);
+    triangles = original;
+  }
   if (roof.triangleCache.size >= 2)
     roof.triangleCache.delete(roof.triangleCache.keys().next().value);
   roof.triangleCache.set(triangleKey, triangles);
