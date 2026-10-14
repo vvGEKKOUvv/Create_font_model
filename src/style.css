@@ -1333,3 +1333,5 @@ header { gap: 14px; }
 }
 .material-select { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:7px 0; color:var(--muted); font-size:12px; }
 .material-select select { width:150px; min-width:0; }
+
+.bevel-editor .curve-tools .curve-handle-label { margin-left: auto; }

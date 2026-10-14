@@ -22,7 +22,6 @@ const defaults = {
   bevelWidth: 3,
   bevelContinue: true,
   bevelSegments: 5,
-  sharpCorners: true,
   hollow: false,
   wallThickness: 4,
   uvScaleX: 1,
@@ -104,7 +103,6 @@ app.innerHTML = `
       <label class="toggle-row"><span>正面が合流するまで広げる</span><input id="bevelContinue" type="checkbox" checked/><i></i></label>
       ${field("bevelSegments", "分割数", 5, 1, 16, 1)}
       <p id="geometry-status" class="control-note"></p>
-      <label class="toggle-row"><span>尖った角を保持</span><input id="sharpCorners" type="checkbox" checked/><i></i></label>
     </details>
     <details id="hollow-settings" class="control-section" open>
       <summary>内側をくり抜く <span>HOLLOW</span></summary>
@@ -119,7 +117,7 @@ app.innerHTML = `
       <summary>マテリアル <span>MATERIAL</span></summary>
       <label class="material-select"><span>質感</span><select id="material-type"><option value="standard">標準</option><option value="metal">金属</option></select></label>
       <label class="material-select"><span>環境</span><select id="environment-preset"><option value="studio">スタジオ</option><option value="softbox">ソフトボックス</option><option value="outdoor">屋外</option><option value="sunset">夕景</option></select></label>
-      <label class="color-row"><input type="color" id="color" value="#b6ee75"/><span id="color-value">#B6EE75</span><span class="muted">カラー</span></label>
+      <label class="color-row"><input type="color" id="color" value="#b0b0b0"/><span id="color-value">#B0B0B0</span><span class="muted">カラー</span></label>
     </details>
     <details id="uv-settings" class="control-section" open>
       <summary>UV 設定 <span>UV MAP</span></summary>
@@ -523,7 +521,7 @@ function list() {
   );
 }
 function safeColor(value) {
-  return /^#[\da-f]{6}$/i.test(value) ? value : "#b6ee75";
+  return /^#[\da-f]{6}$/i.test(value) ? value : "#b0b0b0";
 }
 function escapeHTML(s) {
   return String(s).replace(
@@ -588,7 +586,7 @@ async function load(text, name) {
       name: `${o.name || "パス"} ${String(++objectSequence).padStart(3, "0")}`,
       visible: true,
       invalid: false,
-      color: safeColor(o.color),
+      color: "#b0b0b0",
       settings: initialSettings(o.shape),
     }));
     const meshes = makeMeshes(next);
@@ -660,10 +658,6 @@ $("dropzone").ondrop = (e) => {
 function syncBevelLimit() {
   const o = selectedObject();
   if (!o) return;
-  $("sharpCorners").disabled = o.settings.bevelContinue;
-  $("sharpCorners").title = o.settings.bevelContinue
-    ? "合流モードでは角と稜線を保持します"
-    : "";
   const widthMaximum = Math.max(
     o.settings.bevelWidth,
     group.children[selected]?.geometry.userData.maximumBevelControlWidth || group.children[selected]?.geometry.userData.maximumBevelWidth || 100,

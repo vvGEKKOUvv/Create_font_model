@@ -372,16 +372,17 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
         }
       });
       const min = key => Math.min(...children.map(child => child.userData[key]));
+      const max = key => Math.max(...children.map(child => child.userData[key]));
       geometry.userData = { ...children[0].userData,
         warnings: [...new Set([...warnings, ...children.flatMap(child => child.userData.warnings),
           ...(compound.effectiveWallThickness < safeWall
             ? [`指定の壁厚では中抜きが消えるため、壁厚を ${compound.effectiveWallThickness.toPrecision(3)} に縮小しました。`] : [])])],
         effectiveWallThickness: compound.effectiveWallThickness,
         effectivePathOffset: shifted.effectivePathOffset,
-        effectiveBevel: min("effectiveBevel"),
+        effectiveBevel: max("effectiveBevel"),
         effectiveBevelDepth: min("effectiveBevelDepth"),
-        maximumBevelWidth: min("maximumBevelWidth"),
-        maximumBevelControlWidth: min("maximumBevelControlWidth"),
+        maximumBevelWidth: max("maximumBevelWidth"),
+        maximumBevelControlWidth: max("maximumBevelControlWidth"),
         originalCount: prepared.originalCount, reducedCount: prepared.reducedCount,
         hollowComponentCount: children.length,
         uvKeys: keys, baseUVs: new Float64Array(base),
@@ -513,10 +514,15 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
       box,
       bevel,
       effectiveWallThickness,
-      midpointWidth: opposingMidpointWidth(rings),
       maximumBevelWidth,
       warnings: localWarnings,
     };
+    // Most meshes use a validated local roof and never need the fallback
+    // nearest-gap search. Cache that quadratic search only if fallback uses it.
+    let midpointWidth;
+    Object.defineProperty(variant, "midpointWidth", {
+      get() { return midpointWidth ??= opposingMidpointWidth(rings); },
+    });
     if (fullWidth)
       Object.defineProperties(variant, {
         maximumBevelWidth: {
@@ -586,7 +592,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
       rings,
       narrowDenseConvex
         ? Math.min(box.max.x - box.min.x, box.max.y - box.min.y) * 0.1
-        : effectiveWallThickness > 0 ? effectiveWallThickness / 2 : undefined,
+        : undefined,
     );
     if (
       settings.bevelContinue === true ||
@@ -603,8 +609,14 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
     );
   if (safeHollowFallback)
     warnings.push("中抜きの穴と面の接続を保つため、通常ベベルで再生成し、輪郭幅を安全な最大幅に制限しました。");
-  const maximumWidth = Math.min(roof ? roof.maximumWidth : Math.max(variant.maximumBevelWidth, variant.bevel),
-    variant.midpointWidth, effectiveWallThickness > 0 ? effectiveWallThickness / 2 : Infinity);
+  // The roof partitions the filled region at its local meeting ridges.
+  // Narrow areas stop at their ridge while the remaining wider areas keep
+  // growing; a global nearest-gap limit would freeze the entire object.
+  // Conventional inset fallback has no local ridge partition, so keep its
+  // conservative global limit rather than let opposing contours cross.
+  const maximumWidth = roof ? roof.maximumWidth : Math.min(
+    Math.max(variant.maximumBevelWidth, variant.bevel), variant.midpointWidth,
+    effectiveWallThickness > 0 ? effectiveWallThickness / 2 : Infinity);
   let bevel = roof
     ? explicitWidth
       ? Math.min(requestedBevelWidth, roof.maximumWidth)

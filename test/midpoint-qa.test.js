@@ -35,6 +35,27 @@ function checkMesh(geometry) {
       assert.ok(index >= 1 && index <= vertexCount, 'OBJ vertex index valid');
     }
 }
+
+// Intersect projected triangles, independently of generator metadata.
+function frontHeight(geometry, x, sourceY) {
+  const positions = geometry.getAttribute('position');
+  const y = -sourceY;
+  let minimum = Infinity;
+  for (let i = 0; i < positions.count; i += 3) {
+    const ax = positions.getX(i), ay = positions.getY(i);
+    const bx = positions.getX(i + 1), by = positions.getY(i + 1);
+    const cx = positions.getX(i + 2), cy = positions.getY(i + 2);
+    const det = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+    if (Math.abs(det) < 1e-10) continue;
+    const u = ((by - cy) * (x - cx) + (cx - bx) * (y - cy)) / det;
+    const v = ((cy - ay) * (x - cx) + (ax - cx) * (y - cy)) / det;
+    const w = 1 - u - v;
+    if (Math.min(u, v, w) >= -1e-6)
+      minimum = Math.min(minimum, u * positions.getZ(i) + v * positions.getZ(i + 1) + w * positions.getZ(i + 2));
+  }
+  return minimum;
+}
+
 const settings = { depth: 60, bevelSize: 28, bevelWidth: 100, bevelContinue: true, bevelSegments: 4 };
 
 test('QA hollow rectangular wall does not bevel beyond its opposing midpoint', () => {
@@ -45,13 +66,23 @@ test('QA hollow rectangular wall does not bevel beyond its opposing midpoint', (
   checkMesh(geometry);
 });
 
-test('QA native uneven hole limits both bevel sides by the narrowest four-unit gap', () => {
+test('QA native uneven hole lets wide walls reach their local midpoint independently', () => {
   const shape = rectangle(0, 0, 100, 80);
   shape.holes.push(rectangle(4, 20, 76, 40, Path));
-  const geometry = buildMesh(shape, settings);
-  assert.ok(geometry.userData.effectiveBevel > 0);
-  assert.ok(geometry.userData.effectiveBevel <= 2 + 1e-6);
-  checkMesh(geometry);
+  const narrow = buildMesh(shape, { ...settings, bevelWidth: 2 });
+  const wide = buildMesh(shape, { ...settings, bevelWidth: 10 });
+  const saturated = buildMesh(shape, settings);
+  assert.ok(wide.userData.effectiveBevel > 9.9, 'a four-unit wall must not cap the twenty-unit wall globally');
+  assert.ok(frontHeight(wide, 85, 40) > frontHeight(narrow, 85, 40) + 5,
+    'wide section continues beveling after the narrow section has met');
+  for (const geometry of [narrow, wide, saturated]) {
+    assert.ok(frontHeight(geometry, 2, 40) <= frontHeight(geometry, 1.5, 40) + 1e-4,
+      'narrow section ridge stays at its own x=2 midpoint');
+    assert.equal(frontHeight(geometry, 40, 40), Infinity, 'native hole remains open');
+    checkMesh(geometry);
+  }
+  assert.ok(Math.abs(frontHeight(wide, 90, 40) - frontHeight(saturated, 90, 40)) < 1e-4,
+    'wide midpoint stops once reached');
 });
 
 test('QA automatic hollow around an existing hole obeys each component wall midpoint', () => {
@@ -82,4 +113,19 @@ test('QA solid outline retains full bevel without a hollow midpoint restriction'
   assert.ok(geometry.userData.effectiveBevel >= 39.99);
   assert.equal(geometry.userData.effectiveBevelDepth, 28);
   checkMesh(geometry);
+});
+
+test('QA multiple cavities remain open while wider opposing gaps reach their own ridge', () => {
+  const shape = rectangle(0, 0, 100, 80);
+  shape.holes.push(rectangle(4, 20, 35, 40, Path), rectangle(60, 20, 20, 40, Path));
+  const early = buildMesh(shape, { ...settings, bevelWidth: 2 });
+  const full = buildMesh(shape, settings);
+  assert.ok(full.userData.effectiveBevel > 9.9);
+  assert.ok(frontHeight(full, 85, 40) > frontHeight(early, 85, 40) + 5);
+  for (const geometry of [early, full]) {
+    assert.equal(frontHeight(geometry, 20, 40), Infinity);
+    assert.equal(frontHeight(geometry, 70, 40), Infinity);
+    assert.ok(frontHeight(geometry, 2, 40) <= frontHeight(geometry, 1.5, 40) + 1e-4);
+    checkMesh(geometry);
+  }
 });

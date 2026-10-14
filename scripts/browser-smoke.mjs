@@ -1324,6 +1324,7 @@ try {
   await expect(page.locator("#environment-preset")).toHaveValue("sunset");
   await page.locator("#file").setInputFiles({name:"mesh-circle.svg",mimeType:"image/svg+xml",buffer:Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><circle id="MeshCircle" cx="50" cy="50" r="40" fill="#dddddd"/></svg>')});
   await expect(page.locator("#selected-name")).toHaveText(/MeshCircle/);
+  await expect(page.locator("#color")).toHaveValue("#b0b0b0");
   await editField("bevelSize",0);
   await editField("depth",20);
   const meshIndex = (await projectData()).state.selected;
@@ -1350,6 +1351,7 @@ try {
   await editField("bevelWidth",100);
   await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].effectiveBevel,meshIndex)).toBeLessThanOrEqual(4);
   await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].effectiveBevelDepth,meshIndex)).toBe(16);
+  await expect(page.locator("#sharpCorners")).toHaveCount(0);
   await expect(page.locator("#hollowCurveSafe")).toHaveCount(0);
   await expect(page.locator("#curve-add")).toHaveCount(0);
   await expect(page.locator("#curve-delete")).toHaveCount(0);
@@ -1357,6 +1359,8 @@ try {
   const expandBox = await page.locator("#curve-expand").boundingBox();
   assert.ok(expandBox.x+expandBox.width > editorBox.x+editorBox.width-25,"Expand sits at the right edge");
   assert.ok(expandBox.y < editorBox.y+60,"Expand sits in the top row");
+  const handleControlBox = await page.locator(".curve-handle-label").boundingBox();
+  assert.ok(handleControlBox.x+handleControlBox.width > editorBox.x+editorBox.width-25,"Handle controls align right");
   await page.setViewportSize({ width: 390, height: 844 });
   await expect
     .poll(() =>
