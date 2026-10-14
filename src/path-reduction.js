@@ -21,7 +21,7 @@ const distanceSq = (p, a, b) => {
   );
   return (p.x - a.x - t * dx) ** 2 + (p.y - a.y - t * dy) ** 2;
 };
-function clean(points, epsilon) {
+export function clean(points, epsilon) {
   const ring = [];
   for (const p of points) {
     if (!Number.isFinite(p.x) || !Number.isFinite(p.y))
@@ -31,26 +31,35 @@ function clean(points, epsilon) {
   }
   if (ring.length > 1 && ring[0].distanceToSquared(ring.at(-1)) <= epsilon ** 2)
     ring.pop();
-  let changed = true;
-  while (changed && ring.length > 3) {
-    changed = false;
-    for (let i = ring.length - 1; i >= 0 && ring.length > 3; i--) {
-      const p = ring[i],
-        a = ring[(i + ring.length - 1) % ring.length],
-        b = ring[(i + 1) % ring.length];
-      if (distanceSq(p, a, b) <= epsilon ** 2) {
-        ring.splice(i, 1);
-        changed = true;
-      }
+  // Linked neighbours avoid repeated array splices for densely sampled straight edges.
+  const next = ring.map((_, i) => (i + 1) % ring.length);
+  const previous = ring.map((_, i) => (i + ring.length - 1) % ring.length);
+  const alive = new Uint8Array(ring.length).fill(1);
+  const queue = ring.map((_, i) => ring.length - 1 - i);
+  let count = ring.length;
+  for (let head = 0; head < queue.length && count > 3; head++) {
+    const i = queue[head];
+    if (!alive[i]) continue;
+    const a = previous[i], b = next[i];
+    if (distanceSq(ring[i], ring[a], ring[b]) <= epsilon ** 2) {
+      alive[i] = 0;
+      count--;
+      next[a] = b;
+      previous[b] = a;
+      queue.push(a, b);
     }
   }
+  const retained = ring.filter((_, i) => alive[i]);
+  ring.length = 0;
+  for (const p of retained) ring.push(p);
   if (ring.length < 3 || Math.abs(area(ring)) <= epsilon ** 2)
     throw new Error(
       "輪郭が退化しています。閉じた面積のあるパスを使用してください。",
     );
   return ring;
 }
-function simplify(ring, tolerance) {
+export function simplify(ring, tolerance, operationLimit = Infinity) {
+  let operations = 0;
   const anchors = [0];
   for (let i = 1; i < ring.length; i++) {
     const a = ring[(i + ring.length - 1) % ring.length],
@@ -88,6 +97,7 @@ function simplify(ring, tolerance) {
       let farthest = -1,
         max = squared;
       for (let i = a + 1; i < b; i++) {
+        if (++operations > operationLimit) throw new Error("輪郭の簡略化が複雑すぎます。SVG を分割してください。");
         const d = distanceSq(
           ring[i % ring.length],
           ring[a % ring.length],
@@ -137,7 +147,7 @@ function inside(p, ring) {
   }
   return result;
 }
-function valid(rings, epsilon) {
+export function valid(rings, epsilon) {
   for (let r = 0; r < rings.length; r++) {
     const ring = rings[r];
     if (

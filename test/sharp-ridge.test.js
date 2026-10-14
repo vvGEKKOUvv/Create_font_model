@@ -11,7 +11,9 @@ test('planar roof bevels omit redundant axial bands while curved profiles retain
     hollow: true, wallThickness: 8, curvePoints: defaultProfile() };
   const coarse = buildMesh(shape, { ...settings, bevelSegments: 2 });
   const dense = buildMesh(shape, { ...settings, bevelSegments: 16 });
-  assert.equal(coarse.getAttribute('position').count, dense.getAttribute('position').count);
+  assert.ok(coarse.getAttribute('position').count < dense.getAttribute('position').count);
+  assert.equal(coarse.userData.bevelSamples.length,4);
+  assert.equal(dense.userData.bevelSamples.length,18);
   assert.deepEqual(coarse.boundingBox, dense.boundingBox);
   const curved = [{ x: 0, y: 0, mode: 'linear' }, { x: 0.5, y: 0.75, mode: 'linear' }, { x: 1, y: 1, mode: 'linear' }];
   const curvedGeometry = buildMesh(shape, { ...settings, curvePoints: curved, bevelSegments: 16 });

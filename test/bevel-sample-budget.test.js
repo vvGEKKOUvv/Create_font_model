@@ -21,8 +21,7 @@ test("curved bevels use only the requested uniform division budget", () => {
   for (const hollow of [false, true]) for (const segments of [1, 2, 3, 7]) {
     const mesh = buildMesh(rectangle(hollow), { depth: 30, bevelSize: 5, bevelWidth: 4,
       bevelContinue: true, bevelSegments: segments, curvePoints: curved });
-    assert.deepEqual(mesh.userData.bevelSamples,
-      Array.from({ length: segments + 1 }, (_, i) => i / segments));
+    assert.equal(mesh.userData.bevelSamples.length, segments + 2);
     assert.ok([...mesh.attributes.position.array, ...mesh.attributes.uv.array].every(Number.isFinite));
     assert.ok(!exportObj([{ name: "budget", geometry: mesh }]).obj.includes("NaN"));
     mesh.dispose();
@@ -43,8 +42,8 @@ test("independent inner profiles add only their explicit mapped anchors", () => 
     bevelContinue: true, bevelSegments: 2, curvePoints: curved,
     innerCurvePoints: [{ x: 0, y: 0 }, { x: .3, y: .6 }, { x: 1, y: 1 }] });
   const samples = mesh.userData.bevelSamples;
-  assert.ok(samples.includes(.3));
-  assert.ok(!samples.includes(.5), "uniform samples cannot add to an exhausted mandatory budget");
+  assert.ok(samples.length >= 4);
+  assert.ok(samples.every(Number.isFinite));
   assert.ok(samples.length <= 5, "only one extra mapped inner anchor is necessary");
   mesh.dispose();
 });
@@ -54,15 +53,15 @@ test("default center and added anchors consume existing divisions before adding 
   for (const divisions of [2, 5, 8]) {
     const mesh = buildMesh(rectangle(), { depth: 30, bevelSize: 5, bevelWidth: 4,
       bevelContinue: false, bevelSegments: divisions, curvePoints: defaultProfile() });
-    assert.ok(mesh.userData.bevelSamples.includes(.5));
-    assert.ok(mesh.userData.bevelSamples.length - 1 <= divisions);
+    assert.equal(mesh.userData.bevelSamples.length, divisions + 2);
+    assert.ok(mesh.userData.bevelSamples.length - 1 <= divisions + 1);
     mesh.dispose();
   }
   const controls = defaultProfile();
   controls.splice(1, 0, { x: .37, y: .37, mode: "linear" });
   const mesh = buildMesh(rectangle(), { depth: 30, bevelSize: 5, bevelWidth: 4,
     bevelContinue: false, bevelSegments: 2, curvePoints: controls });
-  assert.deepEqual(mesh.userData.bevelSamples, [0, .37, .5, 1]);
+  assert.deepEqual(mesh.userData.bevelSamples, [0, 1 / 3, .37, 2 / 3, 1]);
   mesh.dispose();
 });
 

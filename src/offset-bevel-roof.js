@@ -46,7 +46,15 @@ export function prepareOffsetBevelRoof(rings, widthHint) {
       return paths.map((ring, r) =>
         ring.map((p, i) => ({ ...p, sourceRing: r, sourceIndex: i })),
       );
-    const offset = new ClipperLib.ClipperOffset(10, 0.01 * scale);
+    // A low miter limit truncates acute cavity corners before the wavefront
+    // meets its opposing side. That changes the ring topology and forces a
+    // zipper fan instead of the source corner's straight bisector rail.
+    // Boolean offset clipping still resolves actual collisions; do not bevel
+    // the mathematical miter merely because its source angle is acute.
+    // Keep possible miter coordinates inside Clipper's exact integer range
+    // even for unusually large imported coordinates.
+    const miterLimit = Math.min(1e6, 1e15 / (extent * scale));
+    const offset = new ClipperLib.ClipperOffset(miterLimit, 0.01 * scale);
     offset.AddPaths(
       paths,
       ClipperLib.JoinType.jtMiter,

@@ -5,6 +5,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { parseSvg, buildMesh, exportObj, applyUvSettings } from "./geometry.js";
 import { defaultProfile } from "./bevel-profile.js";
 import { prepareContours } from "./path-reduction.js";
+import { inspectImportPath, reduceImportPath } from "./import-reduction.js";
 import { createBevelEditor } from "./bevel-editor.js";
 import { createTransformTools, prepareObjectMesh } from "./transform-tools.js";
 import { createHistory } from "./history.js";
@@ -21,7 +22,7 @@ const defaults = {
   bevelSize: 3,
   bevelWidth: 3,
   bevelContinue: true,
-  bevelSegments: 5,
+  bevelSegments: 4,
   hollow: false,
   wallThickness: 4,
   uvScaleX: 1,
@@ -101,7 +102,7 @@ app.innerHTML = `
       ${field("bevelSize", "奥行方向", 3, 0, 12, 0.1)}
       ${field("bevelWidth", "輪郭幅", 3, 0, 100, 0.1)}
       <label class="toggle-row"><span>正面が合流するまで広げる</span><input id="bevelContinue" type="checkbox" checked/><i></i></label>
-      ${field("bevelSegments", "分割数", 5, 1, 16, 1)}
+      ${field("bevelSegments", "分割数", 4, 0, 16, 1)}
       <p id="geometry-status" class="control-note"></p>
     </details>
     <details id="hollow-settings" class="control-section" open>
@@ -325,28 +326,10 @@ function initialSettings(shape) {
       Math.min(box.max.x - box.min.x, box.max.y - box.min.y),
     );
   const depth = Math.min(defaults.depth, span * 0.3);
-  let tolerance = 0;
-  try {
-    prepareContours(shape, 0);
-  } catch (error) {
-    if (!/3,000|3000/.test(error.message)) throw error;
-    const diagonal = box.getSize(new THREE.Vector2()).length();
-    let accepted = false;
-    for (let attempt = 0; attempt < 6; attempt++) {
-      tolerance = Math.max(1e-6, diagonal * 1e-6) * 4 ** attempt;
-      try {
-        prepareContours(shape, tolerance);
-        accepted = true;
-        break;
-      } catch (retry) {
-        if (!/3,000|3000/.test(retry.message)) throw retry;
-      }
-    }
-    if (!accepted) throw error;
-  }
+  prepareContours(shape, 0);
   return {
     ...defaults,
-    reductionTolerance: tolerance,
+    reductionTolerance: 0,
     depth,
     bevelSize: Math.min(defaults.bevelSize, span * 0.04, depth * 0.2),
     bevelWidth: Math.min(defaults.bevelWidth, span * 0.04),
@@ -577,9 +560,23 @@ function curveDraw() {
 }
 async function load(text, name) {
   try {
-    const parsed = parseSvg(text),
-      source = ++fileSequence;
-    const next = parsed.objects.map((o, i) => ({
+    const parsed = parseSvg(text);
+    const inspections = parsed.objects.map(o => inspectImportPath(o.shape));
+    const oversized = inspections.filter(data => data.overBudget);
+    if (oversized.length && !window.confirm(`${name} の ${oversized.length} 個のパスが処理上限（3,000頂点）を超えています。最大 ${Math.max(...oversized.map(data => data.originalCount)).toLocaleString()} 頂点です。形状を可能な限り保って処理可能な頂点数まで削減し、読み込みますか？`)) {
+      notice("読み込みをキャンセルしました。");
+      return;
+    }
+    const reductions = [];
+    const entries = parsed.objects.map((object, i) => {
+      if (!inspections[i].overBudget) return object;
+      const result = reduceImportPath(object.shape);
+      const { shape, ...details } = result;
+      reductions.push(`${result.originalCount.toLocaleString()} → ${result.reducedCount.toLocaleString()} 頂点`);
+      return { ...object, shape, importReduction: details };
+    });
+    const source = ++fileSequence;
+    const next = entries.map((o, i) => ({
       ...o,
       id: `file-${source}-${o.id}`,
       sourceName: name,
@@ -609,7 +606,7 @@ async function load(text, name) {
     sync();
     transformTools.sync();
     refreshMeshInfo();
-    if (parsed.warnings.length) notice(parsed.warnings.join(" / "));
+    if (parsed.warnings.length || reductions.length) notice([...parsed.warnings,...reductions.map(text => `読み込み時に ${text} に削減しました。`)].join(" / "));
     $("dropzone").classList.add("loaded");
     $("dropzone").querySelector("strong").textContent = name;
     recordHistory(true);

@@ -937,6 +937,20 @@ try {
       const a = (i * Math.PI * 2) / 3200;
       return `${i ? "L" : "M"}${100 + 100 * Math.cos(a)} ${100 + 100 * Math.sin(a)}`;
     }).join(" ") + "Z";
+  const beforeOversized = await page.locator("#object-count").textContent();
+  const beforeOversizedName = await page.locator("#selected-name").textContent();
+  page.once("dialog",dialog=>{assert.equal(dialog.type(),"confirm");assert.match(dialog.message(),/3,000/);dialog.dismiss();});
+  await page.locator("#file").setInputFiles({
+    name: "3200-points.svg",
+    mimeType: "image/svg+xml",
+    buffer: Buffer.from(
+      `<svg xmlns="http://www.w3.org/2000/svg"><path id="Huge" d="${hugePath}"/></svg>`,
+    ),
+  });
+  await expect(page.locator("#message")).toContainText("キャンセル");
+  assert.equal(await page.locator("#object-count").textContent(),beforeOversized);
+  assert.equal(await page.locator("#selected-name").textContent(),beforeOversizedName);
+  page.once("dialog",dialog=>dialog.accept());
   await page.locator("#file").setInputFiles({
     name: "3200-points.svg",
     mimeType: "image/svg+xml",
@@ -947,15 +961,10 @@ try {
   await expect(page.locator("#selected-name")).toHaveText(/Huge \d+/, { timeout: 15000 });
   await expect(page.locator("#object-count")).toHaveText("5");
   await expect(page.locator("#message")).not.toHaveClass(/error/);
-  assert(
-    Number(await page.locator("#reductionTolerance").inputValue()) > 0,
-    "Oversized contour is initially reduced enough to import",
-  );
-  const hugeStats = (await page.locator("#reduction-info").textContent()).match(
-    /([\d,]+) → ([\d,]+)/,
-  );
-  assert.equal(Number(hugeStats[1].replaceAll(",", "")), 3200);
-  assert(Number(hugeStats[2].replaceAll(",", "")) <= 3000);
+  assert.equal(Number(await page.locator("#reductionTolerance").inputValue()),0,"approved reduction changes the source path");
+  const hugeImport = (await projectData()).state.objects.at(-1).importReduction;
+  assert.equal(hugeImport.originalCount,3200);
+  assert(hugeImport.reducedCount<=3000);
   await page.locator("#file").setInputFiles({
     name: "tiny.svg",
     mimeType: "image/svg+xml",

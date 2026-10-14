@@ -108,7 +108,7 @@ export function createBevelEditor(host, { getObject, onChange }) {
     const x = clamp(pos.x, 0.01, 0.99),
       i = p.findIndex((v) => v.x > x);
     if (i < 1 || x - p[i - 1].x < 0.01 || p[i].x - x < 0.01) return;
-    p.splice(i, 0, { x, y: clamp(pos.y), mode: "linear" });
+    p.splice(i, 0, { x, y: clamp(pos.y), mode: "linear", edge: true });
     selected = i;
     save(p);
   }

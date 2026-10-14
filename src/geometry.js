@@ -664,10 +664,9 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
     warnings.push(
       "輪郭の交差を防ぐため、ベベル幅を安全な最大幅に制限しました。",
     );
-  const segments = Math.max(
-    1,
-    Math.min(32, Math.floor(Number(settings.bevelSegments) || 8)),
-  );
+  const rawSegments = Number(settings.bevelSegments);
+  const segments = Math.max(0, Math.min(32,
+    Number.isFinite(rawSegments) ? Math.floor(rawSegments) : 8));
   const curve = THREE.MathUtils.clamp(Number(settings.curve) || 0, 0, 1);
   let points = [];
   if (Array.isArray(settings.curvePoints) && settings.curvePoints.length) {
@@ -690,63 +689,54 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
     usePoints
       ? evaluateProfile(points, t)
       : (1 - curve) * t + curve * (1 - Math.cos((t * Math.PI) / 2));
-  // Explicit control vertices consume the division budget first. Only a
-  // greater number of mandatory intervals may exceed the requested budget.
-  const samples = [0, 1, ...points.map((p) => p.x), ...innerPoints.map((p) => p.x)]
-    .sort((a, b) => a - b)
-    .filter((t, i, values) => i === 0 || t - values[i - 1] > 1e-7);
-  // A control on the inner curve lives at its own lateral distance. Include
-  // that distance in the outer roof parameterization before height remapping.
-  const mappedInnerAnchors = [];
-  if (separateInnerProfile) {
-    const mapped = innerPoints.map(({ x: t }) => {
-      const target = innerProfile(t);
-      let low = 0, high = 1;
-      for (let i = 0; i < 32; i++) {
-        const mid = (low + high) / 2;
-        if (profile(mid) < target) low = mid;
-        else high = mid;
-      }
-      const value = (low + high) / 2;
-      return value < EPS ? 0 : value > 1 - EPS ? 1 : value;
-    });
-    mappedInnerAnchors.push(...mapped);
-    for (const t of mapped)
-      if (!samples.some((p) => Math.abs(p - t) < 1e-7)) samples.push(t);
-    samples.sort((a, b) => a - b);
+  // The count means interior loops. Approximate the physical profile length
+  // before selecting cuts; parameter t alone is not uniform on a curved bevel.
+  const straight = control => control.length >= 2
+    ? control.every(p => Math.abs(p.x - p.y) < 1e-12) &&
+      control.slice(0, -1).every((p, i) => profileSpanIsStraight(p, control[i + 1]))
+    : curve === 0;
+  const straightBoth = straight(points) && straight(innerPoints);
+  const resolution = straightBoth ? 1 : 512;
+  const cumulative = [0];
+  let previousOuter = profile(0), previousInner = innerProfile(0);
+  for (let i = 1; i <= resolution; i++) {
+    const outer = profile(i / resolution), inner = innerProfile(i / resolution);
+    const outerLength = Math.hypot(bevelHeight / resolution, bevel * (outer - previousOuter));
+    const innerLength = Math.hypot(bevelHeight / resolution, bevel * (inner - previousInner));
+    cumulative.push(cumulative.at(-1) + (separateInnerProfile ? (outerLength + innerLength) / 2 : outerLength));
+    previousOuter = outer; previousInner = inner;
   }
-  // A straight bevel profile is a plane: extra axial cuts do not describe
-  // any shape. Keep bends in either profile, but remove collinear roof levels.
-  const mandatorySamples = [...points, ...innerPoints].map((p) => p.x).concat(mappedInnerAnchors);
-  const anchorSamples = samples.slice();
-  const intervalCounts = anchorSamples.slice(1).map(() => 1);
-  for (let count = intervalCounts.length; count < segments; count++) {
-    let longest = 0;
-    for (let i = 1; i < intervalCounts.length; i++)
-      if ((anchorSamples[i + 1] - anchorSamples[i]) / intervalCounts[i] >
-          (anchorSamples[longest + 1] - anchorSamples[longest]) / intervalCounts[longest]) longest = i;
-    intervalCounts[longest]++;
-  }
-  samples.length = 0;
-  for (let i = 0; i < intervalCounts.length; i++) {
-    const start = anchorSamples[i], end = anchorSamples[i + 1];
-    for (let j = 0; j < intervalCounts[i]; j++)
-      samples.push(start + (end - start) * j / intervalCounts[i]);
+  const samples = [0];
+  for (let j = 1; j <= segments; j++) {
+    if (straightBoth) { samples.push(j / (segments + 1)); continue; }
+    const target = cumulative.at(-1) * j / (segments + 1);
+    let low = 0, high = resolution;
+    while (high - low > 1) {
+      const mid = (low + high) >> 1;
+      if (cumulative[mid] < target) low = mid; else high = mid;
+    }
+    const length = cumulative[high] - cumulative[low];
+    samples.push((low + (length > 0 ? (target - cumulative[low]) / length : 0)) / resolution);
   }
   samples.push(1);
-  const straightProfile = (control) => control.length >= 2
-    ? control.slice(0, -1).every((p, i) => profileSpanIsStraight(p, control[i + 1]))
-    : curve === 0;
-  if (roof && !roof.offsetRoof && straightProfile(points) && straightProfile(innerPoints)) {
-    for (let i = samples.length - 2; i > 0; i--) {
-      const a = samples[i - 1], b = samples[i], c = samples[i + 1];
-      if (mandatorySamples.some((t) => Math.abs(t - b) < 1e-7)) continue;
-      const collinear = (evaluate) => Math.abs(
-        (evaluate(b) - evaluate(a)) * (c - a) -
-        (evaluate(c) - evaluate(a)) * (b - a)) < 1e-10;
-      if (collinear(profile) && collinear(innerProfile)) samples.splice(i, 1);
+  // The original default middle control edits the curve, but is not an extra
+  // loop. Added controls explicitly request an edge, even at zero loop count.
+  const explicitAnchors = (control) => control.filter((p, i) => i > 0 && i < control.length - 1 &&
+    (p.edge === true || (p.edge !== false && (control.length !== 3 ||
+      Math.abs(p.x - .5) > 1e-8 || Math.abs(p.y - .5) > 1e-8))));
+  const anchors = explicitAnchors(points).map(p => p.x);
+  if (separateInnerProfile) for (const p of explicitAnchors(innerPoints)) {
+    const target = innerProfile(p.x);
+    let low = 0, high = 1;
+    for (let i = 0; i < 32; i++) {
+      const mid = (low + high) / 2;
+      if (profile(mid) < target) low = mid; else high = mid;
     }
+    anchors.push((low + high) / 2);
   }
+  for (const t of anchors)
+    if (!samples.some(value => Math.abs(value - t) < 1e-7)) samples.push(t);
+  samples.sort((a, b) => a - b);
   if ((roof || (safeHollowFallback && separateInnerProfile)) &&
       (!monotonicProfile(points) || !monotonicProfile(innerPoints)))
     throw new Error("内側・外側のベベルカーブは、戻らない形状にしてください。");

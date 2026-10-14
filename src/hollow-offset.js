@@ -18,7 +18,9 @@ export function hollowContours(outer, thickness) {
     Y: Math.round((p.y - origin.y) * scale),
   }));
   if (!ClipperLib.Clipper.Orientation(path)) path.reverse();
-  const offset = new ClipperLib.ClipperOffset(10, 0.01 * scale);
+  // Retain true acute-corner intersections instead of clipping a miter to a
+  // short bevel. Actual collisions are resolved by polygon offset cleanup.
+  const offset = new ClipperLib.ClipperOffset(Math.min(1e6, 1e15 / (Math.max(extent, 1) * scale)), 0.01 * scale);
   offset.AddPath(
     path,
     ClipperLib.JoinType.jtMiter,
@@ -59,7 +61,7 @@ export function hollowFilledRegion(rings, requestedThickness) {
   });
   let wall = Math.min(requestedThickness, extent / 2), cavity;
   for (let attempt = 0; attempt <= 32; attempt++) {
-    const offset = new ClipperLib.ClipperOffset(10, 0.01 * scale);
+    const offset = new ClipperLib.ClipperOffset(Math.min(1e6, 1e15 / (Math.max(extent, 1) * scale)), 0.01 * scale);
     offset.AddPaths(paths, ClipperLib.JoinType.jtMiter, ClipperLib.EndType.etClosedPolygon);
     cavity = new ClipperLib.Paths();
     offset.Execute(cavity, -wall * scale);

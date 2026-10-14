@@ -97,3 +97,14 @@ test('retired hollow curvature setting is ignored when loading old projects', ()
   const raw=JSON.parse(serializeProject(state));raw.state.objects[0].settings.hollowCurveSafe=true;
   assert.equal(parseProject(JSON.stringify(raw)).objects[0].settings.hollowCurveSafe,undefined);
 });
+
+test('new project saves zero bevel loops and migrates the old band count', () => {
+  const state=fixture();state.objects[0].settings.bevelSegments=0;
+  const text=serializeProject(state);
+  assert.equal(JSON.parse(text).version,2);
+  assert.equal(parseProject(text).objects[0].settings.bevelSegments,0);
+  const old=JSON.parse(text);old.version=1;old.state.objects[0].settings.bevelSegments=5;
+  const loaded=parseProject(JSON.stringify(old));
+  assert.equal(loaded.objects[0].settings.bevelSegments,4);
+  assert.equal(loaded.objects[0].settings.curvePoints[0].edge,false);
+});

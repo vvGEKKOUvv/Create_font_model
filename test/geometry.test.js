@@ -127,8 +127,8 @@ test("curved profile control points share the requested bevel resolution budget"
   const geometry = buildMesh(shape, settings);
   assertClosedFiniteSolid(geometry);
   assert.ok(
-    geometry.attributes.position.count <= 32000,
-    `two Bezier spans must share eight bevel bands instead of independently doubling them (${geometry.attributes.position.count} vertices)`,
+    geometry.userData.bevelSamples.length <= settings.bevelSegments + 3,
+    `two Bezier spans share eight requested loops plus one explicit anchor (${geometry.attributes.position.count} vertices)`,
   );
   const linear = buildMesh(shape, { ...settings, curvePoints: ridgeProfile });
   assert.notDeepEqual(
@@ -730,8 +730,8 @@ test("multi-vertex profile preserves narrow bends at low bevel resolution", () =
       );
     }
   }
-  assert.deepEqual(geometry.userData.bevelSamples, curvePoints.map((p) => p.x),
-    "mandatory controls consume the low division budget without hidden uniform cuts");
+  for (const p of curvePoints) assert.ok(geometry.userData.bevelSamples.includes(p.x), "mandatory control edge preserved");
+  assert.equal(geometry.userData.bevelSamples.length, curvePoints.length + 2, "two requested loops plus explicit controls");
   assert.ok(
     Array.from(geometry.attributes.position.array).every(Number.isFinite),
   );

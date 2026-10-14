@@ -57,7 +57,7 @@ function validateState(state) {
     if (object.pivot !== undefined && !vector(object.pivot, 3)) fail();
     if (object.transform !== undefined && (!record(object.transform) || !["position", "rotation", "scale"].every(key => vector(object.transform[key], 3)) || object.transform.scale.some(v => v === 0))) fail();
     for (const settings of [object.settings, object.validSettings].filter(Boolean)) {
-      if (!record(settings) || !(typeof settings.depth === "number" && settings.depth > 0) || !Number.isInteger(settings.bevelSegments) || settings.bevelSegments < 1 || settings.bevelSegments > 64) fail();
+      if (!record(settings) || !(typeof settings.depth === "number" && settings.depth > 0) || !Number.isInteger(settings.bevelSegments) || settings.bevelSegments < 0 || settings.bevelSegments > 64) fail();
       for (const key of ["bevelSize", "bevelWidth", "wallThickness", "reductionTolerance"]) if (settings[key] !== undefined && !(typeof settings[key] === "number" && settings[key] >= 0)) fail();
       if (settings.meshReductionPercentage !== undefined && !(typeof settings.meshReductionPercentage === "number" && settings.meshReductionPercentage >= 0 && settings.meshReductionPercentage <= 90)) fail();
       for (const key of ["uvScaleX", "uvScaleY", "uvOffsetX", "uvOffsetY", "uvRotation", "offset", "pathOffset"]) if (settings[key] !== undefined && typeof settings[key] !== "number") fail();
@@ -67,6 +67,7 @@ function validateState(state) {
         const points = settings[name];
         if (points === undefined) continue;
         try { normalizeProfile(points); } catch { fail(); }
+        if (points.some(p => p?.edge !== undefined && typeof p.edge !== "boolean")) fail();
         if (!Array.isArray(points) || points.length < 2 || points.length > 16 || !points.every(p => record(p) && typeof p.x === "number" && typeof p.y === "number" && p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1)) fail();
       }
     }
@@ -96,7 +97,7 @@ export function serializeProject(state) {
   const data = { ...state, objects: state.objects.map(object => ({ ...removeRetiredSettings(object), shape: object.shape.toJSON() })) };
   validateJson(data);
   validateState(data);
-  const text = JSON.stringify({ format: FORMAT, version: 1, state: data });
+  const text = JSON.stringify({ format: FORMAT, version: 2, state: data });
   if (new TextEncoder().encode(text).length > MAX_BYTES) fail();
   return text;
 }
@@ -105,7 +106,18 @@ export function parseProject(text) {
   let data;
   try { data = JSON.parse(text); } catch { fail(); }
   validateJson(data);
-  if (!record(data) || data.format !== FORMAT || data.version !== 1) fail();
+  if (!record(data) || data.format !== FORMAT || ![1,2].includes(data.version)) fail();
   validateState(data.state);
+  if (data.version === 1) for (const object of data.state.objects) {
+    for (const settings of [object.settings,object.validSettings].filter(Boolean)) {
+      settings.bevelSegments = Math.max(0,settings.bevelSegments-1);
+      for (const key of ["curvePoints","innerCurvePoints"]) if (Array.isArray(settings[key])) {
+        const interior=settings[key].slice(1,-1);
+        const middle=interior.reduce((best,p)=>!best||Math.abs(p.x-.5)<Math.abs(best.x-.5)?p:best,null);
+        for (const point of settings[key]) if (point.edge === undefined)
+          point.edge=point !== middle && point !== settings[key][0] && point !== settings[key].at(-1);
+      }
+    }
+  }
   return { ...data.state, objects: data.state.objects.map(object => ({ ...removeRetiredSettings(object), shape: new Shape().fromJSON(object.shape) })) };
 }

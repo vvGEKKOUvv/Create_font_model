@@ -55,7 +55,7 @@ export function moveProfileHandle(input, index, name, pos) {
 }
 export function defaultProfile() {
   return normalizeProfile([0, 0.5, 1].map((x) => ({
-    x, y: x, mode: "bezier", handleMode: "aligned",
+    x, y: x, mode: "bezier", handleMode: "aligned", edge: false,
   })));
 }
 export function normalizeProfile(input) {
