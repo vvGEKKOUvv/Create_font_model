@@ -5,7 +5,7 @@ import { prepareContours } from "./path-reduction.js";
 
 import { independentRoofProfiles } from "./dual-bevel-profile.js";
 
-import { normalizeProfile, evaluateProfile, profileSpanIsStraight } from "./bevel-profile.js";
+import { normalizeProfile, evaluateProfile, profileSpanIsStraight, monotonicProfile } from "./bevel-profile.js";
 import {
   prepareBevelRoof,
   triangulateBevelRoof,
@@ -690,31 +690,16 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
     usePoints
       ? evaluateProfile(points, t)
       : (1 - curve) * t + curve * (1 - Math.cos((t * Math.PI) / 2));
-  const bezierSamples = [];
-  for (const sampledPoints of [points, innerPoints])
-    for (let i = 0; i < sampledPoints.length - 1; i++) {
-      const a = sampledPoints[i],
-        b = sampledPoints[i + 1];
-      if (profileSpanIsStraight(a, b)) continue;
-      // Curved segments need intermediate rings even with a low division setting.
-      const count = Math.max(2, Math.ceil(Math.max(8, segments) * (b.x - a.x)));
-      for (let j = 1; j < count; j++)
-        bezierSamples.push(a.x + ((b.x - a.x) * j) / count);
-    }
-  // Include every control point so a narrow bend survives low segment counts.
-  // Share the same samples on both ends, with a single level at depth / 2.
-  const samples = [
-    ...new Set([
-      ...Array.from({ length: segments + 1 }, (_, i) => i / segments),
-      ...(usePoints ? points.map((p) => p.x) : []),
-      ...innerPoints.map((p) => p.x),
-      ...bezierSamples,
-    ]),
-  ].sort((a, b) => a - b);
+  // Explicit control vertices consume the division budget first. Only a
+  // greater number of mandatory intervals may exceed the requested budget.
+  const samples = [0, 1, ...points.map((p) => p.x), ...innerPoints.map((p) => p.x)]
+    .sort((a, b) => a - b)
+    .filter((t, i, values) => i === 0 || t - values[i - 1] > 1e-7);
   // A control on the inner curve lives at its own lateral distance. Include
   // that distance in the outer roof parameterization before height remapping.
+  const mappedInnerAnchors = [];
   if (separateInnerProfile) {
-    const mapped = samples.map((t) => {
+    const mapped = innerPoints.map(({ x: t }) => {
       const target = innerProfile(t);
       let low = 0, high = 1;
       for (let i = 0; i < 32; i++) {
@@ -725,35 +710,46 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
       const value = (low + high) / 2;
       return value < EPS ? 0 : value > 1 - EPS ? 1 : value;
     });
+    mappedInnerAnchors.push(...mapped);
     for (const t of mapped)
       if (!samples.some((p) => Math.abs(p - t) < 1e-7)) samples.push(t);
     samples.sort((a, b) => a - b);
   }
   // A straight bevel profile is a plane: extra axial cuts do not describe
   // any shape. Keep bends in either profile, but remove collinear roof levels.
+  const mandatorySamples = [...points, ...innerPoints].map((p) => p.x).concat(mappedInnerAnchors);
+  const anchorSamples = samples.slice();
+  const intervalCounts = anchorSamples.slice(1).map(() => 1);
+  for (let count = intervalCounts.length; count < segments; count++) {
+    let longest = 0;
+    for (let i = 1; i < intervalCounts.length; i++)
+      if ((anchorSamples[i + 1] - anchorSamples[i]) / intervalCounts[i] >
+          (anchorSamples[longest + 1] - anchorSamples[longest]) / intervalCounts[longest]) longest = i;
+    intervalCounts[longest]++;
+  }
+  samples.length = 0;
+  for (let i = 0; i < intervalCounts.length; i++) {
+    const start = anchorSamples[i], end = anchorSamples[i + 1];
+    for (let j = 0; j < intervalCounts[i]; j++)
+      samples.push(start + (end - start) * j / intervalCounts[i]);
+  }
+  samples.push(1);
   const straightProfile = (control) => control.length >= 2
     ? control.slice(0, -1).every((p, i) => profileSpanIsStraight(p, control[i + 1]))
     : curve === 0;
   if (roof && !roof.offsetRoof && straightProfile(points) && straightProfile(innerPoints)) {
     for (let i = samples.length - 2; i > 0; i--) {
       const a = samples[i - 1], b = samples[i], c = samples[i + 1];
+      if (mandatorySamples.some((t) => Math.abs(t - b) < 1e-7)) continue;
       const collinear = (evaluate) => Math.abs(
         (evaluate(b) - evaluate(a)) * (c - a) -
         (evaluate(c) - evaluate(a)) * (b - a)) < 1e-10;
       if (collinear(profile) && collinear(innerProfile)) samples.splice(i, 1);
     }
   }
-  if (safeHollowFallback && separateInnerProfile) {
-    for (const evaluate of [profile, innerProfile]) {
-      let previous = evaluate(0);
-      for (let i = 1; i <= 512; i++) {
-        const value = evaluate(i / 512);
-        if (value < previous - 1e-8)
-          throw new Error("内側・外側のベベルカーブは、戻らない形状にしてください。");
-        previous = value;
-      }
-    }
-  }
+  if ((roof || (safeHollowFallback && separateInnerProfile)) &&
+      (!monotonicProfile(points) || !monotonicProfile(innerPoints)))
+    throw new Error("内側・外側のベベルカーブは、戻らない形状にしてください。");
   const levels = bevel
     ? samples.map((t) => ({
         z: bevelHeight * t,
@@ -831,7 +827,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
   }
   if (roofTriangles) {
     if (separateInnerProfile)
-      roofTriangles = independentRoofProfiles(roofTriangles, rings, profile, innerProfile);
+      roofTriangles = independentRoofProfiles(roofTriangles, rings, profile, innerProfile, JSON.stringify([points, innerPoints, curve]));
     // Faces grow from oriented source edges. Nearby curve samples may share
     // shading, but opposite edges or a sharp source corner must keep the
     // medial ridge as a crease, even when the bevel is shallow.
@@ -1060,6 +1056,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
       ? Math.max(roof.maximumWidth, Math.min(box.max.x - box.min.x, box.max.y - box.min.y) / 2)
       : maximumWidth,
     continuedBevel: !!roofTriangles,
+    bevelSamples: samples.slice(),
     effectiveBevelDepth: bevelHeight,
     centralWallDepth: depth - 2 * bevelHeight,
     effectiveWallThickness,

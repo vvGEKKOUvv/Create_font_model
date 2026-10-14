@@ -1,0 +1,86 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { Shape, Path } from "three";
+import { buildMesh, exportObj } from "../src/geometry.js";
+import { defaultProfile, normalizeProfile, monotonicProfile } from "../src/bevel-profile.js";
+
+function rectangle(hole = false) {
+  const shape = new Shape();
+  shape.moveTo(0, 0); shape.lineTo(100, 0); shape.lineTo(100, 80); shape.lineTo(0, 80); shape.closePath();
+  if (hole) {
+    const path = new Path();
+    path.moveTo(20, 20); path.lineTo(20, 60); path.lineTo(80, 60); path.lineTo(80, 20); path.closePath();
+    shape.holes.push(path);
+  }
+  return shape;
+}
+const curved = [{ x: 0, y: 0, mode: "bezier", out: { x: .1, y: .6 } },
+  { x: 1, y: 1, mode: "bezier", in: { x: .7, y: .95 } }];
+
+test("curved bevels use only the requested uniform division budget", () => {
+  for (const hollow of [false, true]) for (const segments of [1, 2, 3, 7]) {
+    const mesh = buildMesh(rectangle(hollow), { depth: 30, bevelSize: 5, bevelWidth: 4,
+      bevelContinue: true, bevelSegments: segments, curvePoints: curved });
+    assert.deepEqual(mesh.userData.bevelSamples,
+      Array.from({ length: segments + 1 }, (_, i) => i / segments));
+    assert.ok([...mesh.attributes.position.array, ...mesh.attributes.uv.array].every(Number.isFinite));
+    assert.ok(!exportObj([{ name: "budget", geometry: mesh }]).obj.includes("NaN"));
+    mesh.dispose();
+  }
+});
+
+test("explicit collinear curve controls retain mandatory bevel edges", () => {
+  const controls = defaultProfile();
+  controls.splice(1, 0, { x: .25, y: .25, mode: "linear" });
+  const mesh = buildMesh(rectangle(), { depth: 30, bevelSize: 5, bevelWidth: 4,
+    bevelContinue: true, bevelSegments: 1, curvePoints: controls });
+  assert.deepEqual(mesh.userData.bevelSamples, [0, .25, .5, 1]);
+  mesh.dispose();
+});
+
+test("independent inner profiles add only their explicit mapped anchors", () => {
+  const mesh = buildMesh(rectangle(true), { depth: 30, bevelSize: 5, bevelWidth: 4,
+    bevelContinue: true, bevelSegments: 2, curvePoints: curved,
+    innerCurvePoints: [{ x: 0, y: 0 }, { x: .3, y: .6 }, { x: 1, y: 1 }] });
+  const samples = mesh.userData.bevelSamples;
+  assert.ok(samples.includes(.3));
+  assert.ok(!samples.includes(.5), "uniform samples cannot add to an exhausted mandatory budget");
+  assert.ok(samples.length <= 5, "only one extra mapped inner anchor is necessary");
+  mesh.dispose();
+});
+
+
+test("default center and added anchors consume existing divisions before adding edges", () => {
+  for (const divisions of [2, 5, 8]) {
+    const mesh = buildMesh(rectangle(), { depth: 30, bevelSize: 5, bevelWidth: 4,
+      bevelContinue: false, bevelSegments: divisions, curvePoints: defaultProfile() });
+    assert.ok(mesh.userData.bevelSamples.includes(.5));
+    assert.ok(mesh.userData.bevelSamples.length - 1 <= divisions);
+    mesh.dispose();
+  }
+  const controls = defaultProfile();
+  controls.splice(1, 0, { x: .37, y: .37, mode: "linear" });
+  const mesh = buildMesh(rectangle(), { depth: 30, bevelSize: 5, bevelWidth: 4,
+    bevelContinue: false, bevelSegments: 2, curvePoints: controls });
+  assert.deepEqual(mesh.userData.bevelSamples, [0, .37, .5, 1]);
+  mesh.dispose();
+});
+
+
+test("low divisions reject hidden returning cubic curves analytically", () => {
+  const returning = normalizeProfile([{ x: 0, y: 0 },
+    { x: .4, y: .5, mode: "bezier", out: { x: .4001, y: .8 } },
+    { x: .4003, y: .5001, mode: "bezier", in: { x: .4002, y: .2 } },
+    { x: 1, y: 1 }]);
+  assert.equal(monotonicProfile(returning), false);
+  assert.equal(monotonicProfile(defaultProfile()), true);
+  assert.equal(monotonicProfile(normalizeProfile(curved)), true);
+  for (const hollow of [false, true]) {
+    assert.throws(() => buildMesh(rectangle(hollow), {
+      depth: 30, bevelSize: 5, bevelWidth: 4, bevelContinue: true,
+      bevelSegments: 1, curvePoints: returning,
+    }), /戻らない/);
+  }
+  assert.equal(monotonicProfile(normalizeProfile([{ x: 0, y: 0 },
+    { x: .4, y: .8 }, { x: .6, y: .2 }, { x: 1, y: 1 }])), false);
+});

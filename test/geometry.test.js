@@ -730,10 +730,8 @@ test("multi-vertex profile preserves narrow bends at low bevel resolution", () =
       );
     }
   }
-  assert.ok(
-    vertices.some((v) => Math.abs(v[2] - 0.5) < 1e-6),
-    "uniform samples remain between custom control points",
-  );
+  assert.deepEqual(geometry.userData.bevelSamples, curvePoints.map((p) => p.x),
+    "mandatory controls consume the low division budget without hidden uniform cuts");
   assert.ok(
     Array.from(geometry.attributes.position.array).every(Number.isFinite),
   );

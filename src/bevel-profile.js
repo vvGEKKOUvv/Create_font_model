@@ -206,3 +206,26 @@ export function evaluateProfile(points, x) {
   }
   return cubic(a.y, c.y, d.y, b.y, (lo + hi) / 2);
 }
+
+// Exact cubic derivative minimum; validation never depends on mesh divisions.
+// Input uses the normalized, ordered-x controls shared with evaluateProfile.
+export function monotonicProfile(points) {
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i], b = points[i + 1];
+    if (profileSpanIsStraight(a, b)) {
+      if (b.y < a.y - 1e-10) return false;
+      continue;
+    }
+    const left = a.mode === "bezier" ? a.out.y : mix(a.y, b.y, 1 / 3);
+    const right = b.mode === "bezier" ? b.in.y : mix(a.y, b.y, 2 / 3);
+    const d0 = left - a.y, d1 = right - left, d2 = b.y - right;
+    const qa = d0 - 2 * d1 + d2, qb = 2 * (d1 - d0);
+    let minimum = Math.min(d0, d2);
+    if (qa > 0) {
+      const t = -qb / (2 * qa);
+      if (t > 0 && t < 1) minimum = Math.min(minimum, (qa * t + qb) * t + d0);
+    }
+    if (minimum < -1e-10) return false;
+  }
+  return true;
+}

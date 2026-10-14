@@ -15,7 +15,7 @@ test('planar roof bevels omit redundant axial bands while curved profiles retain
   assert.deepEqual(coarse.boundingBox, dense.boundingBox);
   const curved = [{ x: 0, y: 0, mode: 'linear' }, { x: 0.5, y: 0.75, mode: 'linear' }, { x: 1, y: 1, mode: 'linear' }];
   const curvedGeometry = buildMesh(shape, { ...settings, curvePoints: curved, bevelSegments: 16 });
-  assert.ok(curvedGeometry.getAttribute('position').count > dense.getAttribute('position').count);
+  assert.notDeepEqual(curvedGeometry.getAttribute('position').array, dense.getAttribute('position').array, 'curve shape changes without requiring extra automatic subdivisions');
   assert.equal(curvedGeometry.userData.effectiveBevelDepth, dense.userData.effectiveBevelDepth);
   for (const geometry of [coarse, dense, curvedGeometry]) geometry.dispose();
 });

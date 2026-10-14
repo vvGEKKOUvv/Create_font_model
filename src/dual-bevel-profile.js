@@ -2,6 +2,9 @@
 // at their common ridge. Distance-weighted curves keep that ridge watertight.
 const weightsCache = new WeakMap();
 const transformedCache = new WeakMap();
+// Controls do not change when depth or width changes. Keep sampled profiles
+// separate from each roof topology so parameter drags reuse their inversion table.
+const profileTables = new Map();
 function tree(segments) {
   const minX = Math.min(...segments.map(s => Math.min(s[0].x,s[1].x)));
   const maxX = Math.max(...segments.map(s => Math.max(s[0].x,s[1].x)));
@@ -29,14 +32,22 @@ function distance(p,node,best=Infinity) {
   else for(const child of node.children) best=distance(p,child,best);
   return best;
 }
-export function independentRoofProfiles(triangles,rings,outer,inner) {
+export function independentRoofProfiles(triangles,rings,outer,inner,profileKey) {
   const count=512;
-  const a=Array.from({length:count+1},(_,i)=>outer(i/count));
-  const b=Array.from({length:count+1},(_,i)=>inner(i/count));
+  let table=profileKey === undefined ? undefined : profileTables.get(profileKey);
+  if (!table) {
+    const a=Array.from({length:count+1},(_,i)=>outer(i/count));
+    const b=Array.from({length:count+1},(_,i)=>inner(i/count));
+    table={a,b,cacheKey:JSON.stringify([a,b])};
+    if (profileKey !== undefined) {
+      if(profileTables.size>=32) profileTables.delete(profileTables.keys().next().value);
+      profileTables.set(profileKey,table);
+    }
+  }
+  const {a,b,cacheKey}=table;
   if (a.every((v,i)=>Math.abs(v-b[i])<1e-10)) return triangles;
   if ([a,b].some(values=>values.some((v,i)=>i&&v<values[i-1]-1e-8)))
     throw new Error('内側・外側のベベルカーブは、戻らない形状にしてください。');
-  const cacheKey=JSON.stringify([a,b]);
   let cache=transformedCache.get(triangles);
   if (!cache) {cache=new Map();transformedCache.set(triangles,cache);}
   if(cache.has(cacheKey)) return cache.get(cacheKey);
@@ -56,15 +67,20 @@ export function independentRoofProfiles(triangles,rings,outer,inner) {
     }));
     weightsCache.set(triangles,weights);
   }
+  const vertices=new Map();
   const result = triangles.map((face,f)=>({...face,points:face.points.map((p,i)=>{
     if (p.height<=0 || p.height>=1) return p;
+    const vertexKey=`${p.x},${p.y},${p.height}`;
+    if(vertices.has(vertexKey)) return {...p,height:vertices.get(vertexKey)};
     const w=weights[f][i], target=outer(p.height);
     let lo=0,hi=count;
     const value=j=>a[j]*(1-w)+b[j]*w;
     while(hi-lo>1) {const mid=(hi+lo)>>1;if(value(mid)<target)lo=mid;else hi=mid;}
     const low=value(lo),high=value(hi);
     const height=(lo+(high>low?(target-low)/(high-low):0))/count;
-    return {...p,height:Math.max(0,Math.min(1,height))};
+    const result={...p,height:Math.max(0,Math.min(1,height))};
+    vertices.set(vertexKey,result.height);
+    return result;
   })}));
   if(cache.size>=8) cache.delete(cache.keys().next().value);
   cache.set(cacheKey,result);

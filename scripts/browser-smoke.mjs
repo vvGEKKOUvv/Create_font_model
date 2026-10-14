@@ -59,6 +59,7 @@ try {
       /buildMesh\(o\.shape, o\.settings\)/g,
       "(window.__geometryBuilds = (window.__geometryBuilds || 0) + 1, buildMesh(o.shape, o.settings))",
     );
+    source = source.replace("new THREE.WireframeGeometry(mesh.geometry)","(window.__wireframeBuilds = (window.__wireframeBuilds || 0) + 1, new THREE.WireframeGeometry(mesh.geometry))");
     assert(source.includes("renderer.render(scene, camera);"));
     await route.fulfill({
       response,
@@ -73,6 +74,7 @@ try {
            roughness: mesh.material.roughness,
            geometryId: mesh.geometry.uuid,
            triangleCount: mesh.geometry.attributes.position.count / 3,
+           bevelSamples: mesh.geometry.userData.bevelSamples,
            localZ: [mesh.geometry.boundingBox.min.z, mesh.geometry.boundingBox.max.z],
            wireframe: mesh.material.wireframe,
            colorWrite: mesh.material.colorWrite,
@@ -1351,6 +1353,11 @@ try {
   await editField("bevelWidth",100);
   await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].effectiveBevel,meshIndex)).toBeLessThanOrEqual(4);
   await expect.poll(() => page.evaluate(i => window.__sceneSnapshot.objects[i].effectiveBevelDepth,meshIndex)).toBe(16);
+  await page.locator("#wireframe-mode").selectOption("overlay");
+  await page.locator("#wireframe").check();
+  const wireframeBuildsBefore = await page.evaluate(() => window.__wireframeBuilds);
+  await editField("depth",42);
+  await expect.poll(() => page.evaluate(() => window.__wireframeBuilds)).toBe(wireframeBuildsBefore+1);
   await expect(page.locator("#sharpCorners")).toHaveCount(0);
   await expect(page.locator("#hollowCurveSafe")).toHaveCount(0);
   await expect(page.locator("#curve-add")).toHaveCount(0);

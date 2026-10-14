@@ -277,7 +277,7 @@ function applyDisplayStyle(mesh, object) {
   }
   if (occluder) occluder.visible = enabled && hiddenMode;
 }
-function makeMeshes(entries) {
+function makeMeshes(entries, display = true) {
   const meshes = [];
   try {
     entries.forEach((o) => {
@@ -302,7 +302,7 @@ function makeMeshes(entries) {
       const mesh = new THREE.Mesh(geometry, material);
       mesh.userData.objectId = o.id;
       prepareObjectMesh(mesh, o);
-      applyDisplayStyle(mesh, o);
+      if (display) applyDisplayStyle(mesh, o);
       meshes.push(mesh);
     });
     return meshes;
@@ -388,7 +388,7 @@ function rebuildObject(object, replacement = null) {
   const index = objects.indexOf(object);
   if (index < 0) return true;
   try {
-    replacement ??= makeMeshes([object])[0];
+    replacement ??= makeMeshes([object], false)[0];
     const mesh = group.children[index];
     const oldGeometry = mesh.geometry;
     mesh.geometry = replacement.geometry;
