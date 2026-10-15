@@ -25,9 +25,16 @@ export function prepareHollowMidpointRoof(outer, wall) {
   if(wall>=source.maximumWidth)return null;
   const span=Math.max(1,...outer.map(p=>Math.hypot(p.x-outer[0].x,p.y-outer[0].y)));
   const tolerance=span*1e-8;
-  const nodes=new Map();
-  const canonical=p=>{const key=`${Math.round(p.x/tolerance)},${Math.round(p.y/tolerance)},${Math.round(p.time/tolerance)}`;if(!nodes.has(key))nodes.set(key,p);return nodes.get(key);};
   const half=wall/2,faces=[],edges=[];
+  const nodes=new Map();
+  const canonical=p=>{
+    // Shared fold and cavity vertices must have the same exact distance on
+    // both incident faces. A nearby skeleton event can otherwise be reused
+    // on one side with time half+epsilon and folded on the other side to
+    // half-epsilon, turning the meeting line into two separated edges.
+    for (const critical of [half,wall])
+      if (Math.abs(p.time-critical)<=tolerance) { p={...p,time:critical}; break; }
+    const key=`${Math.round(p.x/tolerance)},${Math.round(p.y/tolerance)},${Math.round(p.time/tolerance)}`;if(!nodes.has(key))nodes.set(key,p);return nodes.get(key);};
   for(const raw of source.faces){
     const face=cut(raw,wall,false).map(canonical);if(face.length<3)continue;
     for(let i=0;i<face.length;i++){const a=face[i],b=face[(i+1)%face.length];if(Math.abs(a.time-wall)<tolerance&&Math.abs(b.time-wall)<tolerance)edges.push([a,b]);}

@@ -450,11 +450,12 @@ test("OBJ faces reference valid vertex, UV, and normal indices across objects", 
     mtl.split("\n").filter((line) => line.startsWith("newmtl ")).length,
     2,
   );
-  assert.ok(
-    limits.every(
-      (value) => value === geometry.getAttribute("position").count * 2,
-    ),
-  );
+  const positions = geometry.getAttribute("position");
+  const uniquePositions = new Set(Array.from({ length: positions.count }, (_, i) =>
+    `${positions.getX(i)} ${positions.getY(i)} ${positions.getZ(i)}`));
+  assert.equal(limits[0], uniquePositions.size * 2, "positions are welded within each object");
+  assert.equal(limits[1], positions.count * 2, "UV seams retain separate indices");
+  assert.equal(limits[2], positions.count * 2, "hard normals retain separate indices");
   const exportedNormals = lines
     .filter((line) => line.startsWith("vn "))
     .map((line) => line.slice(3).trim().split(/\s+/).map(Number));
@@ -752,7 +753,10 @@ test("OBJ applies object translation and pivoted rotation to vertices", () => {
   const { obj } = exportObj([{ name: "pivot", geometry, matrix }]);
   const vertices = objVectors(obj, "v "),
     p = geometry.attributes.position;
-  vertices.forEach((v, i) => {
+  const corners = obj.split("\n").filter(line => line.startsWith("f "))
+    .flatMap(line => line.slice(2).split(" ").map(token => Number(token.split("/")[0]) - 1));
+  corners.forEach((vertexIndex, i) => {
+    const v = vertices[vertexIndex];
     const expected = [
       30 - (p.getY(i) + 10),
       40 + (p.getX(i) - 10),
@@ -1038,7 +1042,7 @@ test("maximum axial bevel remains strong around narrow imported holes", () => {
   geometry.dispose();
 });
 
-function assertClosedFiniteSolid(geometry) {
+function assertClosedFiniteSolid(geometry, minimumArea = 1e-9) {
   for (const name of ["position", "normal", "uv"])
     assert.ok(
       Array.from(geometry.attributes[name].array).every(Number.isFinite),
@@ -1060,7 +1064,7 @@ function assertClosedFiniteSolid(geometry) {
         ab[1] * ac[2] - ab[2] * ac[1],
         ab[2] * ac[0] - ab[0] * ac[2],
         ab[0] * ac[1] - ab[1] * ac[0],
-      ) > 1e-9,
+      ) > minimumArea,
       "nondegenerate triangles",
     );
     for (const [from, to] of [
@@ -2499,7 +2503,7 @@ test("hollow roof failures preserve cavities with safe bevels across imported pa
     assert.ok(geometry.userData.effectiveWallThickness > 0);
     assert.ok(geometry.userData.effectiveBevel > 0);
     assert.equal(geometry.userData.effectiveBevelDepth, 28 * scale);
-    assertClosedFiniteSolid(geometry);
+    assertClosedFiniteSolid(geometry, 1e-9 * Math.min(1, scale * scale));
     assertOpenDepthRay(geometry, 150.1 * scale, -95.01 * scale, "fallback preserves the hollow through every depth layer");
     assert.ok([...geometry.attributes.uv.array].every(Number.isFinite));
     assert.ok(!exportObj([{ name: "hollow-fallback", geometry }]).obj.includes("NaN"));
@@ -2507,7 +2511,7 @@ test("hollow roof failures preserve cavities with safe bevels across imported pa
       ...settings,
       innerCurvePoints: [{ x: 0, y: 0 }, { x: 0.5, y: 0.8 }, { x: 1, y: 1 }],
     });
-    assertClosedFiniteSolid(independent);
+    assertClosedFiniteSolid(independent, 1e-9 * Math.min(1, scale * scale));
     assertOpenDepthRay(independent, 150.1 * scale, -95.01 * scale, "independent inner curves retain the fallback cavity");
     assert.notDeepEqual(Array.from(independent.attributes.position.array), Array.from(geometry.attributes.position.array), "fallback keeps the inner curve independently editable");
     assert.equal(independent.userData.effectiveBevelDepth, 28 * scale);

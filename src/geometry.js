@@ -395,6 +395,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
   let variant = prepared.variants.get(variantKey);
   if (!variant) {
     let effectiveWallThickness = 0;
+    let hollowMidpointRoof = null;
     const localWarnings = [];
     if (settings.hollow) {
       {
@@ -409,15 +410,23 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
             outerBox.max.y - outerBox.min.y,
           ) / 2,
         );
-        let inner = hollowContours(rings[0], wall);
+        const cavityAt = thickness => {
+          hollowMidpointRoof = null;
+          try { hollowMidpointRoof = prepareHollowMidpointRoof(rings[0], thickness); }
+          catch { /* Retain the validated contour fallback for unsupported roofs. */ }
+          return hollowMidpointRoof
+            ? hollowMidpointRoof.rings.slice(1).map(ring => ring.map(p => new THREE.Vector2(p.x, p.y)))
+            : hollowContours(rings[0], thickness);
+        };
+        let inner = cavityAt(wall);
         // Only reduce an actually oversized wall whose cavities disappear.
         // Topology changes inside a surviving cavity do not reduce thickness.
         for (let attempt = 0; !inner.length && attempt < 32; attempt++) {
           wall *= 0.5;
-          inner = hollowContours(rings[0], wall);
+          inner = cavityAt(wall);
         }
         const candidate = inner.length ? [rings[0], ...inner] : null;
-        if (candidate && validRings(candidate)) {
+        if (candidate && (hollowMidpointRoof || validRings(candidate))) {
           rings = candidate;
           effectiveWallThickness = wall;
           if (wall < safeWall)
@@ -515,6 +524,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
       box,
       bevel,
       effectiveWallThickness,
+      hollowMidpointRoof,
       maximumBevelWidth,
       warnings: localWarnings,
     };
@@ -566,11 +576,9 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
   let roof = null;
   let roofFailure = null;
   if (settings.hollow && effectiveWallThickness > 0 &&
-      Number(settings.bevelSize) > 0 && !safeHollowFallback &&
-      (settings.bevelContinue === true || separateInnerProfile ||
-       (explicitWidth && requestedBevelWidth > variant.maximumBevelWidth + EPS))) {
+      Number(settings.bevelSize) > 0 && !safeHollowFallback) {
     try {
-      roof = prepareHollowMidpointRoof(rings[0], effectiveWallThickness);
+      roof = variant.hollowMidpointRoof ?? prepareHollowMidpointRoof(rings[0], effectiveWallThickness);
       if (roof) {
         rings = roof.rings.map(ring => ring.map(p => new THREE.Vector2(p.x, p.y)));
       }
@@ -1143,7 +1151,7 @@ export function applyUvSettings(geometry, settings = {}) {
 export function exportObj(items) {
   const obj = ["# Path Studio OBJ", "mtllib model.mtl"],
     mtl = ["# Path Studio materials"];
-  let base = 1;
+  let positionBase = 1, attributeBase = 1;
   const names = new Set();
   items.forEach((item, index) => {
     const geometry = item.geometry.index
@@ -1173,10 +1181,16 @@ export function exportObj(items) {
     const normalMatrix = new THREE.Matrix3().getNormalMatrix(matrix);
     const point = new THREE.Vector3(),
       normal = new THREE.Vector3();
+    const positionIds = new Map(), cornerPositions = [];
     obj.push(`o ${name}`, `usemtl ${material}`);
     for (let i = 0; i < p.count; i++) {
       point.fromBufferAttribute(p, i).applyMatrix4(matrix);
-      obj.push(`v ${point.x} ${point.y} ${point.z}`);
+      const key = `${point.x} ${point.y} ${point.z}`;
+      if (!positionIds.has(key)) {
+        positionIds.set(key, positionBase + positionIds.size);
+        obj.push(`v ${key}`);
+      }
+      cornerPositions.push(positionIds.get(key));
     }
     for (let i = 0; i < p.count; i++)
       obj.push(`vt ${uv?.getX(i) || 0} ${uv?.getY(i) || 0}`);
@@ -1188,7 +1202,7 @@ export function exportObj(items) {
     }
     for (let i = 0; i < p.count; i += 3)
       obj.push(
-        `f ${(matrix.determinant() < 0 ? [base + i, base + i + 2, base + i + 1] : [base + i, base + i + 1, base + i + 2]).map((v) => `${v}/${v}/${v}`).join(" ")}`,
+        `f ${(matrix.determinant() < 0 ? [i, i + 2, i + 1] : [i, i + 1, i + 2]).map(corner => `${cornerPositions[corner]}/${attributeBase + corner}/${attributeBase + corner}`).join(" ")}`,
       );
     mtl.push(
       `newmtl ${material}`,
@@ -1199,7 +1213,8 @@ export function exportObj(items) {
       "d 1",
       "",
     );
-    base += p.count;
+    positionBase += positionIds.size;
+    attributeBase += p.count;
     if (geometry !== item.geometry) geometry.dispose();
   });
   return { obj: obj.join("\n") + "\n", mtl: mtl.join("\n") + "\n" };

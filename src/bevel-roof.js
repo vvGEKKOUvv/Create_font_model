@@ -336,7 +336,7 @@ export function triangulateBevelRoof(roof, width, samples, profile) {
           const cross =
             (tri[1].x - tri[0].x) * (tri[2].y - tri[0].y) -
             (tri[1].y - tri[0].y) * (tri[2].x - tri[0].x);
-          if (Math.abs(cross) < EPS) continue;
+          if (cross === 0) continue;
           if (cross < 0) tri.reverse();
           bands[band].push({
             faceIndex,
@@ -364,8 +364,30 @@ export function triangulateBevelRoof(roof, width, samples, profile) {
   catch (error) {
     // Band seam rounding can differ at an event. Keep the original valid
     // triangulation rather than selecting another skeleton or losing a hole.
-    const original = uncleanedTriangles.filter(({points:[a,b,c]}) => !sameRendered(a,b) && !sameRendered(b,c) && !sameRendered(c,a));
-    validateRoofTriangles(original, roof.rings);
+    let original = uncleanedTriangles.filter(({points:[a,b,c]}) => !sameRendered(a,b) && !sameRendered(b,c) && !sameRendered(c,a));
+    try { validateRoofTriangles(original, roof.rings); }
+    catch (failure) {
+      if (!roof.midpointRoof) throw failure;
+      // A roof is a single-valued height field. At a sampled collision, two
+      // distinct double-precision XY nodes can become one renderer vertex.
+      // Merge their subpixel heights as well, rather than retaining a tiny
+      // vertical slit or abandoning the entire shared meeting roof.
+      const rendered = new Map();
+      for (const { points } of original) for (const p of points) {
+        const key = `${Math.fround(p.x)},${Math.fround(p.y)}`;
+        const entry = rendered.get(key);
+        if (entry) { entry.min = Math.min(entry.min, p.height); entry.max = Math.max(entry.max, p.height); }
+        else rendered.set(key, { min: p.height, max: p.height });
+      }
+      const merged = original.map(face => ({ ...face, points: face.points.map(p => {
+        const entry = rendered.get(`${Math.fround(p.x)},${Math.fround(p.y)}`);
+        return entry.max - entry.min < 1e-3
+          ? { ...p, height: entry.max === 1 ? 1 : entry.min }
+          : p;
+      }) })).filter(({ points: [a,b,c] }) => !sameRendered(a,b) && !sameRendered(b,c) && !sameRendered(c,a));
+      validateRoofTriangles(merged, roof.rings);
+      original = merged;
+    }
     triangles = original;
   }
   if (roof.triangleCache.size >= 2)

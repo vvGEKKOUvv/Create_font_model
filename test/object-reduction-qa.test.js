@@ -28,8 +28,8 @@ function assertExport(geometry) {
   applyUvSettings(geometry,{uvScale:1.25,uvRotation:17,uvEdits:{[geometry.userData.uvKeys[0]]:[.2,.4]}});
   const {obj}=exportObj([{name:'QA',geometry}]);
   assert.ok(!/NaN|Infinity/.test(obj));
-  const count=obj.split('\n').filter(l=>l.startsWith('v ')).length;
-  for(const line of obj.split('\n').filter(l=>l.startsWith('f '))) for(const index of line.slice(2).split(' ').flatMap(v=>v.split('/'))) assert.ok(Number(index)>=1&&Number(index)<=count);
+  const counts=['v ','vt ','vn '].map(prefix=>obj.split('\n').filter(l=>l.startsWith(prefix)).length);
+  for(const line of obj.split('\n').filter(l=>l.startsWith('f '))) for(const corner of line.slice(2).split(' ')) corner.split('/').forEach((index,kind)=>assert.ok(Number(index)>=1&&Number(index)<=counts[kind]));
 }
 
 test('depth rebuild expands around stable transformed object origin and exported center',()=>{
