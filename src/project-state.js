@@ -73,6 +73,12 @@ function validateState(state) {
     }
     validatePath(object.shape, true);
   }
+  if (state.selectedIds !== undefined && (!Array.isArray(state.selectedIds) ||
+      new Set(state.selectedIds).size !== state.selectedIds.length ||
+      state.selectedIds.some(id => typeof id !== "string" || !ids.has(id)) ||
+      (state.objects.length && !state.selectedIds.includes(state.objects[state.selected].id)))) fail();
+  if (state.selectionAnchorId !== undefined && state.selectionAnchorId !== null &&
+      (typeof state.selectionAnchorId !== "string" || !ids.has(state.selectionAnchorId))) fail();
   if (state.view !== undefined) {
     if (!record(state.view)) fail();
     if (state.view.environmentPreset !== undefined && !["studio", "softbox", "outdoor", "sunset"].includes(state.view.environmentPreset)) fail();

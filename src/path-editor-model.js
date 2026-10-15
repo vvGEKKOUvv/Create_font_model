@@ -14,7 +14,10 @@ function extract(shape) {
 }
 export function createPathDrafts(text) {
   const { objects, warnings } = parseSvg(text, { forEditing: true });
-  return { warnings, drafts: objects.map(entry => {
+  return { warnings, drafts: createObjectDrafts(objects) };
+}
+export function createObjectDrafts(objects) {
+  return objects.map(entry => {
     let contours = entry.editorContours || extract(entry.shape);
     const epsilon = epsilonOf(contours.map(c => c.points));
     contours = contours.map(c => {
@@ -28,7 +31,7 @@ export function createPathDrafts(text) {
     return { id: entry.id, name: entry.name, layerName: entry.layerName || "", color: entry.color,
       enabled: true, edited: false, originalShape: entry.shape, contours: copyContours(contours),
       originalContours: copyContours(contours) };
-  }) };
+  });
 }
 function normalizedRings(contours) {
   return contours.map((contour, index) => {

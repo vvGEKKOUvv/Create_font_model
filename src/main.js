@@ -1,3 +1,4 @@
+import { resolveSelection } from "./object-selection.js";
 import { reduceSourcePath } from "./source-reduction.js";
 import { reduceMeshGeometry } from "./mesh-reduction.js";
 import * as THREE from "three";
@@ -6,7 +7,8 @@ import { parseSvg, buildMesh, exportObj, applyUvSettings } from "./geometry.js";
 import { defaultProfile } from "./bevel-profile.js";
 import { prepareContours } from "./path-reduction.js";
 import { inspectImportPath, reduceImportPath } from "./import-reduction.js";
-import { editSvgPaths } from "./path-editor.js";
+import { centerImportedPaths } from "./import-origin.js";
+import { editSvgPaths, editExistingPaths } from "./path-editor.js";
 import { createBevelEditor } from "./bevel-editor.js";
 import { createTransformTools, prepareObjectMesh } from "./transform-tools.js";
 import { createHistory } from "./history.js";
@@ -75,6 +77,7 @@ app.innerHTML = `
       <summary>オブジェクト選択 <span id="object-count">0</span></summary>
       <div id="objects"></div>
       <label class="rename-row"><span>名前</span><input id="object-name" type="text" maxlength="120" aria-label="オブジェクト名" placeholder="選択オブジェクトの名前"/></label>
+      <button id="edit-path" class="subtle" disabled>選択したパスを編集</button>
       <div class="object-actions"><button id="duplicate" class="subtle" disabled>複製</button><button id="delete-object" class="subtle" disabled aria-label="選択したパスを削除">削除</button><button id="reorder-up" class="subtle" disabled>↑ 上へ</button><button id="reorder-down" class="subtle" disabled>↓ 下へ</button></div>
       <label class="export-folder-option"><input id="export-folder" type="checkbox"/> OBJ の保存先を指定</label>
       <p class="export-visibility-note">非表示のオブジェクトは書き出し対象外</p>
@@ -173,6 +176,8 @@ let fileSequence = 0;
 let objectSequence = 0;
 let objects = [],
   selected = 0;
+let selectedIds = new Set();
+let selectionAnchorId = null;
 let history = null;
 function recordHistory(immediate = false) {
   history?.record();
@@ -186,6 +191,20 @@ function notice(text, error = false) {
 function selectedObject() {
   return objects[selected];
 }
+function selectedObjects() {
+  return objects.filter(object => selectedIds.has(object.id));
+}
+function selectObject(index, event = {}) {
+  flushPending();
+  const next = resolveSelection(objects, selectedIds, selectionAnchorId, index, event);
+  // Keep one active object while the list is nonempty.
+  if (!next.ids.size && objects[index]) { next.ids.add(objects[index].id); next.activeId = objects[index].id; }
+  selectedIds = next.ids;
+  selectionAnchorId = next.anchorId;
+  selected = Math.max(0, objects.findIndex(object => object.id === next.activeId));
+  uvSelectedKey = null; uvDragKey = null;
+  updateObjectSelection(); syncSelectionActions(); sync(); drawUV(); transformTools.sync();
+}
 const transformTools = createTransformTools({
   scene,
   camera,
@@ -194,17 +213,9 @@ const transformTools = createTransformTools({
   group,
   getObjects: () => objects,
   getSelected: () => selected,
+  getSelectedObjects: selectedObjects,
   onChange: (immediate) => recordHistory(immediate),
-  onSelect: (index) => {
-    flushPending();
-    selected = index;
-    uvSelectedKey = null;
-    uvDragKey = null;
-    list();
-    sync();
-    drawUV();
-    transformTools.sync();
-  },
+  onSelect: (index, event) => selectObject(index, event),
 });
 const transformControls = transformTools.controls;
 function dispose() {
@@ -466,24 +477,31 @@ function fit() {
   }
   grid.position.y = box.min.y - 1;
 }
-function list() {
+function updateObjectSelection() {
+  document.querySelectorAll("[data-object]").forEach((row) => {
+    const object = objects[Number(row.dataset.object)];
+    const active = !!object && selectedIds.has(object.id);
+    row.classList.toggle("active", active);
+    row.setAttribute("aria-pressed", String(active));
+  });
+}
+function syncSelectionActions() {
+  $("edit-path").disabled = !selectedObject();
   $("duplicate").disabled = !selectedObject();
   $("delete-object").disabled = !selectedObject();
   $("apply-reduction").disabled = !selectedObject();
   $("reorder-up").disabled = !objects.length || selected === 0;
   $("reorder-down").disabled = !objects.length || selected === objects.length - 1;
   $("object-name").disabled = !selectedObject();
+}
+function list() {
+  syncSelectionActions();
   $("object-count").textContent = objects.length;
   $("objects").innerHTML = objects
-    .map(
-      (
-        o,
-        i,
-      ) => `<div class="object-entry ${o.visible === false ? "object-hidden" : ""}">
-      <button class="object-row ${selected === i ? "active" : ""}" data-object="${i}"><i style="background:${safeColor(o.color)}"></i><span>${escapeHTML(o.name)}</span><small title="${escapeHTML([o.layerName, o.sourceName].filter(Boolean).join(" / "))}">${escapeHTML([o.layerName, o.sourceName].filter(Boolean).join(" / "))}</small></button>
+    .map((o, i) => `<div class="object-entry ${o.visible === false ? "object-hidden" : ""}">
+      <button class="object-row ${selectedIds.has(o.id) ? "active" : ""}" data-object="${i}" aria-pressed="${selectedIds.has(o.id)}"><i style="background:${safeColor(o.color)}"></i><span data-object-name="${i}" title="ダブルクリックで名前を変更">${escapeHTML(o.name)}</span><small title="${escapeHTML([o.layerName, o.sourceName].filter(Boolean).join(" / "))}">${escapeHTML([o.layerName, o.sourceName].filter(Boolean).join(" / "))}</small></button>
       <button class="object-visibility" data-visibility="${i}" aria-label="${escapeHTML(o.name)}を${o.visible === false ? "表示" : "非表示"}" aria-pressed="${o.visible !== false}" title="${o.visible === false ? "表示する" : "非表示にする"}">${o.visible === false ? "○" : "◉"}</button>
-    </div>`,
-    )
+    </div>`)
     .join("");
   document.querySelectorAll("[data-visibility]").forEach((button) => {
     button.onclick = () => {
@@ -497,19 +515,54 @@ function list() {
       transformTools.sync();
     };
   });
-  document.querySelectorAll("[data-object]").forEach(
-    (el) =>
-      (el.onclick = () => {
-        flushPending();
-        selected = Number(el.dataset.object);
-        uvSelectedKey = null;
-        uvDragKey = null;
-        list();
+  document.querySelectorAll("[data-object]").forEach((row) => {
+    row.onclick = (event) => {
+      if (event.target.closest(".object-inline-name")) return;
+      selectObject(Number(row.dataset.object), event);
+    };
+  });
+  document.querySelectorAll("[data-object-name]").forEach((label) => {
+    label.ondblclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const object = objects[Number(label.dataset.objectName)];
+      if (!object || label.querySelector("input")) return;
+      const input = document.createElement("input");
+      input.className = "object-inline-name";
+      input.dataset.renameObject = label.dataset.objectName;
+      input.type = "text";
+      input.maxLength = 120;
+      input.setAttribute("aria-label", "オブジェクト名を変更");
+      input.value = object.name;
+      label.replaceChildren(input);
+      let finished = false;
+      const finish = (commit) => {
+        if (finished) return;
+        finished = true;
+        const name = input.value.trim().slice(0, 120);
+        if (commit && name && name !== object.name && objects.includes(object)) {
+          flushPending();
+          recordHistory(true);
+          object.name = name;
+          recordHistory(true);
+        }
+        label.textContent = object.name;
+        const visibility = label.closest(".object-entry")?.querySelector("[data-visibility]");
+        visibility?.setAttribute("aria-label", `${object.name}を${object.visible === false ? "表示" : "非表示"}`);
         sync();
-        transformTools.sync();
-        drawUV();
-      }),
-  );
+      };
+      input.onkeydown = (keyEvent) => {
+        keyEvent.stopPropagation();
+        if (keyEvent.isComposing) return;
+        if (keyEvent.key === "Enter") { keyEvent.preventDefault(); finish(true); }
+        if (keyEvent.key === "Escape") { keyEvent.preventDefault(); finish(false); }
+      };
+      input.onblur = () => finish(true);
+      input.onclick = input.ondblclick = (inputEvent) => inputEvent.stopPropagation();
+      input.focus();
+      input.select();
+    };
+  });
 }
 function safeColor(value) {
   return /^#[\da-f]{6}$/i.test(value) ? value : "#b0b0b0";
@@ -532,7 +585,7 @@ function sync() {
     updateGeometryInfo();
     return;
   }
-  $("selected-name").textContent = o.name;
+  $("selected-name").textContent = selectedIds.size > 1 ? `${selectedIds.size} 個選択 · ${o.name}` : o.name;
   $("object-name").value = o.name;
   o.settings.pathOffset ??= 0;
   o.settings.meshReductionPercentage ??= 0;
@@ -562,8 +615,13 @@ const bevelEditor = createBevelEditor(
     onChange: () => {
       const o = selectedObject();
       if (!o) return;
-      const cleared = clearShapeUV(o);
-      scheduleRebuild(o);
+      const key = $("curve-side").value === "inner" ? "innerCurvePoints" : "curvePoints";
+      let cleared = false;
+      for (const target of selectedObjects()) {
+        if (target !== o) target.settings[key] = structuredClone(o.settings[key]);
+        cleared = clearShapeUV(target) || cleared;
+        scheduleRebuild(target);
+      }
       recordHistory();
       if (cleared) notice("形状の変更に伴い UV 頂点修正をクリアしました。");
     },
@@ -572,12 +630,20 @@ const bevelEditor = createBevelEditor(
 function curveDraw() {
   bevelEditor.sync();
 }
-async function load(text, name, editBeforeImport = false) {
+async function load(text, name, editBeforeImport = false, repairOnProblem = false) {
   try {
     const parsed = editBeforeImport ? await editSvgPaths(text, name) : parseSvg(text);
     if (!parsed) { notice("読み込みをキャンセルしました。"); return; }
+    if (repairOnProblem && !editBeforeImport && parsed.warnings.length) {
+      notice("読み込み時に問題が見つかったため、パス調整エディタを開きます。");
+      return load(text, name, true, false);
+    }
     const inspections = parsed.objects.map(o => inspectImportPath(o.shape));
     const oversized = inspections.filter(data => data.overBudget);
+    if (repairOnProblem && !editBeforeImport && oversized.length) {
+      notice("頂点数が処理上限を超えているため、パス調整エディタを開きます。");
+      return load(text, name, true, false);
+    }
     if (oversized.length && !window.confirm(`${name} の ${oversized.length} 個のパスが処理上限（3,000頂点）を超えています。最大 ${Math.max(...oversized.map(data => data.originalCount)).toLocaleString()} 頂点です。形状を可能な限り保って処理可能な頂点数まで削減し、読み込みますか？`)) {
       notice("読み込みをキャンセルしました。");
       return;
@@ -590,8 +656,9 @@ async function load(text, name, editBeforeImport = false) {
       reductions.push(`${result.originalCount.toLocaleString()} → ${result.reducedCount.toLocaleString()} 頂点`);
       return { ...object, shape, importReduction: details };
     });
+    if (!objects.length) group.position.set(0, 0, 0);
     const source = ++fileSequence;
-    const next = entries.map((o, i) => ({
+    const next = centerImportedPaths(entries).map((o, i) => ({
       ...o,
       id: `file-${source}-${o.id}`,
       sourceName: name,
@@ -600,6 +667,7 @@ async function load(text, name, editBeforeImport = false) {
       invalid: false,
       color: "#b0b0b0",
       settings: initialSettings(o.shape),
+      transform: { position: group.position.clone().negate().toArray(), rotation: [0,0,0], scale: [1,1,1] },
     }));
     const meshes = makeMeshes(next);
     flushPending();
@@ -610,11 +678,9 @@ async function load(text, name, editBeforeImport = false) {
     uvSelectedKey = null;
     uvDragKey = null;
     meshes.forEach((mesh) => group.add(mesh));
+    selectObject(index);
     if (first) {
       group.position.set(0, 0, 0);
-      group.position.sub(
-        new THREE.Box3().setFromObject(group).getCenter(new THREE.Vector3()),
-      );
       fit();
     }
     list();
@@ -626,10 +692,14 @@ async function load(text, name, editBeforeImport = false) {
     $("dropzone").querySelector("strong").textContent = name;
     recordHistory(true);
   } catch (e) {
+    if (repairOnProblem && !editBeforeImport && /<svg[\s>]/i.test(text) && !/<!ENTITY|<!DOCTYPE[^>]*\[/i.test(text)) {
+      notice(`${e.message} パス調整エディタで確認してください。`, true);
+      return load(text, name, true, false);
+    }
     notice(e.message, true);
   }
 }
-async function read(file, editBeforeImport = false) {
+async function read(file, editBeforeImport = false, repairOnProblem = false) {
   if (!file) return;
   if (!/\.svg$/i.test(file.name)) {
     notice(
@@ -642,14 +712,14 @@ async function read(file, editBeforeImport = false) {
     notice("SVG は 5 MB 以下にしてください。", true);
     return;
   }
-  await load(await file.text(), file.name, editBeforeImport);
+  await load(await file.text(), file.name, editBeforeImport, repairOnProblem);
 }
 let importQueue = Promise.resolve();
-function enqueueFiles(files, editBeforeImport = false) {
+function enqueueFiles(files, editBeforeImport = false, repairOnProblem = false) {
   const added = Array.from(files);
   importQueue = importQueue
     .then(async () => {
-      for (const file of added) await read(file, editBeforeImport);
+      for (const file of added) await read(file, editBeforeImport, repairOnProblem);
     })
     .catch((e) => notice(e.message, true));
 }
@@ -670,8 +740,43 @@ $("dropzone").ondragleave = () => $("dropzone").classList.remove("dragging");
 $("dropzone").ondrop = (e) => {
   e.preventDefault();
   $("dropzone").classList.remove("dragging");
-  enqueueFiles(e.dataTransfer.files);
+  enqueueFiles(e.dataTransfer.files, false, true);
 };
+
+$("edit-path").onclick = async () => {
+  const targets = selectedObjects();
+  if (!targets.length) return;
+  flushPending();
+  try {
+    const edited = await editExistingPaths(targets);
+    if (!edited) return;
+    // The editor's excluded rows are left unchanged during post-import editing.
+    const replacements = edited.objects.map(entry => {
+      const original = targets.find(object => object.id === entry.id);
+      const replacement = { ...original, shape: entry.shape, name: entry.name, invalid: false,
+        settings: { ...original.settings } };
+      if (entry.shape !== original.shape) delete replacement.settings.uvEdits;
+      return replacement;
+    });
+    const meshes = makeMeshes(replacements);
+    history.commit(); transformTools.detach();
+    replacements.forEach((replacement, i) => {
+      const index = objects.findIndex(object => object.id === replacement.id);
+      const previous = group.children[index];
+      objects[index] = replacement;
+      group.remove(previous);
+      group.add(meshes[i]);
+      group.children.splice(group.children.indexOf(meshes[i]), 1);
+      group.children.splice(index, 0, meshes[i]);
+      disposeWireframe(previous);
+      previous.geometry.dispose(); previous.material.dispose();
+    });
+    uvSelectedKey = null; uvDragKey = null;
+    list(); sync(); transformTools.sync(); refreshMeshInfo(); recordHistory(true);
+    notice("パスの変更を適用しました。");
+  } catch (error) { notice(error.message, true); }
+};
+
 function syncBevelLimit() {
   const o = selectedObject();
   if (!o) return;
@@ -688,7 +793,6 @@ function syncBevelLimit() {
     el.value = o.settings.bevelWidth;
   }
   const maximum = o.settings.depth / 2;
-  o.settings.bevelSize = Math.min(o.settings.bevelSize, maximum);
   for (const el of [
     $("bevelSize"),
     document.querySelector('[data-range="bevelSize"]'),
@@ -716,11 +820,11 @@ Object.keys(defaults).forEach((key) => {
     }
     if (key === "depth" || key === "bevelContinue") syncBevelLimit();
     if (key === "hollow") curveDraw();
-    const clearedUV = !key.startsWith("uv") && clearShapeUV(o);
-    if (key.startsWith("uv")) {
-      updateUV(o);
-    } else {
-      scheduleRebuild(o);
+    let clearedUV = false;
+    for (const target of selectedObjects()) {
+      target.settings[key] = o.settings[key];
+      if (key.startsWith("uv")) updateUV(target);
+      else { clearedUV = clearShapeUV(target) || clearedUV; scheduleRebuild(target); }
     }
     recordHistory();
     if (clearedUV) notice("形状の変更に伴い UV 頂点修正をクリアしました。");
@@ -737,21 +841,21 @@ Object.keys(defaults).forEach((key) => {
     };
 });
 $("color").oninput = () => {
-  const o = selectedObject();
-  if (!o) return;
-  o.color = $("color").value;
+  for (const object of selectedObjects()) {
+    object.color = $("color").value;
+    const mesh = group.children[objects.indexOf(object)];
+    if (mesh) applyDisplayStyle(mesh, object);
+  }
   recordHistory();
-  $("color-value").textContent = o.color.toUpperCase();
+  $("color-value").textContent = $("color").value.toUpperCase();
   list();
-  const mesh = group.children[selected];
-  if (mesh) applyDisplayStyle(mesh, o);
 };
 $("material-type").onchange = () => {
-  const object = selectedObject();
-  if (!object) return;
-  object.materialType = $("material-type").value;
-  const mesh = group.children[selected];
-  if (mesh) applyDisplayStyle(mesh, object);
+  for (const object of selectedObjects()) {
+    object.materialType = $("material-type").value;
+    const mesh = group.children[objects.indexOf(object)];
+    if (mesh) applyDisplayStyle(mesh, object);
+  }
   recordHistory(true);
 };
 $("environment-preset").onchange = () => {
@@ -777,14 +881,11 @@ $("object-name").onchange = () => {
 };
 $("fit").onclick = fit;
 $("reset").onclick = () => {
-  const o = selectedObject();
-  if (o) {
-    o.settings = initialSettings(o.shape);
-    recordHistory(true);
-    sync();
-    rebuild();
-    fit();
-  }
+  const targets = selectedObjects();
+  if (!targets.length) return;
+  flushPending(); history.commit();
+  for (const object of targets) { object.settings = initialSettings(object.shape); scheduleRebuild(object); }
+  flushPending(); sync(); recordHistory(true); fit();
 };
 $("export").onclick = async () => {
   if (!objects.length) {
@@ -1062,7 +1163,7 @@ function captureHistory() {
           : object.settings,
       ),
     })),
-    selected,
+    selected, selectedIds: [...selectedIds], selectionAnchorId,
     groupPosition: group.position.toArray(),
     sourceLabel: $("dropzone").querySelector("strong").textContent,
     fileSequence, objectSequence, view: captureView(),
@@ -1105,6 +1206,11 @@ function restoreHistory(snapshot, strict = false) {
   dispose();
   objects = restored;
   selected = Math.min(snapshot.selected, Math.max(0, objects.length - 1));
+  const validIds = new Set(objects.map(object => object.id));
+  selectedIds = new Set((snapshot.selectedIds ?? [objects[selected]?.id]).filter(id => validIds.has(id)));
+  if (objects.length && !selectedIds.size) selectedIds.add(objects[selected].id);
+  if (objects.length && !selectedIds.has(objects[selected].id)) selected = objects.findIndex(object => selectedIds.has(object.id));
+  selectionAnchorId = validIds.has(snapshot.selectionAnchorId) ? snapshot.selectionAnchorId : objects[selected]?.id ?? null;
   prepared.forEach((mesh) => group.add(mesh));
   group.position.fromArray(snapshot.groupPosition);
   uvSelectedKey = null;
@@ -1130,7 +1236,7 @@ history = createHistory({
   restore: restoreHistory,
   fingerprint: (snapshot) =>
     JSON.stringify(snapshot, (key, value) =>
-      ["shape", "selected", "validSettings", "invalid", "view", "fileSequence", "objectSequence"].includes(key)
+      ["shape", "selected", "selectedIds", "selectionAnchorId", "validSettings", "invalid", "view", "fileSequence", "objectSequence"].includes(key)
         ? undefined
         : value,
     ),
@@ -1201,47 +1307,46 @@ function restoreView(view) {
 }
 $("delete-object").onclick = () => {
   flushPending();
-  const object = selectedObject();
-  if (!object) return;
-  history.commit();
-  transformTools.detach();
-  const mesh = group.children[selected];
-  objects.splice(selected, 1);
-  pendingObjects.delete(object);
-  if (mesh) {
-    group.remove(mesh);
-    disposeWireframe(mesh);
-    mesh.geometry.dispose();
-    mesh.material.dispose();
+  const targets = selectedObjects();
+  if (!targets.length) return;
+  history.commit(); transformTools.detach();
+  const removed = new Set(targets.map(object => object.id));
+  for (let i = objects.length - 1; i >= 0; i--) if (removed.has(objects[i].id)) {
+    pendingObjects.delete(objects[i]); objects.splice(i, 1);
+    const mesh = group.children[i]; group.remove(mesh); disposeWireframe(mesh);
+    mesh.geometry.dispose(); mesh.material.dispose();
   }
   selected = Math.min(selected, Math.max(0, objects.length - 1));
-  uvSelectedKey = null;
-  uvDragKey = null;
+  selectedIds = new Set(objects[selected] ? [objects[selected].id] : []);
+  selectionAnchorId = objects[selected]?.id ?? null;
+  uvSelectedKey = null; uvDragKey = null;
   if (!objects.length) {
     $("dropzone").classList.remove("loaded");
     $("dropzone").querySelector("strong").textContent = "SVG を追加";
   }
-  list(); sync(); transformTools.sync(); refreshMeshInfo();
-  recordHistory(true);
-  notice(`${object.name} を削除しました。`);
+  list(); sync(); transformTools.sync(); refreshMeshInfo(); recordHistory(true);
+  notice(targets.length === 1 ? `${targets[0].name} を削除しました。` : `${targets.length} 個のパスを削除しました。`);
 };
 $("duplicate").onclick = () => {
   try {
     if (!flushPending()) throw new Error("生成できない設定を修正してから複製してください。");
-    const original = selectedObject();
-    if (!original || original.invalid) return;
-    const copy = copyObjectState(original);
-    copy.id = `copy-${THREE.MathUtils.generateUUID()}`;
-    const base = `${original.name} 複製`;
-    let name = base, n = 2;
-    while (objects.some(o => o.name === name)) name = `${base} ${n++}`;
-    copy.name = name;
-    const mesh = makeMeshes([copy])[0];
-    objects.push(copy); group.add(mesh); selected = objects.length - 1;
+    const originals = selectedObjects();
+    if (!originals.length || originals.some(object => object.invalid)) return;
+    const names = new Set(objects.map(object => object.name));
+    const copies = originals.map(original => {
+      const copy = copyObjectState(original);
+      copy.id = `copy-${THREE.MathUtils.generateUUID()}`;
+      const base = `${original.name} 複製`; let name = base, n = 2;
+      while (names.has(name)) name = `${base} ${n++}`;
+      copy.name = name; names.add(name); return copy;
+    });
+    const meshes = makeMeshes(copies); history.commit();
+    objects.push(...copies); meshes.forEach(mesh => group.add(mesh));
+    selected = objects.length - copies.length;
+    selectedIds = new Set(copies.map(object => object.id)); selectionAnchorId = copies[0].id;
     uvSelectedKey = null; uvDragKey = null;
-    list(); sync(); transformTools.sync(); refreshMeshInfo(); drawUV();
-    recordHistory(true);
-    notice("オブジェクトを複製しました。");
+    list(); sync(); transformTools.sync(); refreshMeshInfo(); drawUV(); recordHistory(true);
+    notice(copies.length === 1 ? "オブジェクトを複製しました。" : `${copies.length} 個のオブジェクトを複製しました。`);
   } catch (error) { notice(error.message, true); }
 };
 $("project-save").onclick = async () => {

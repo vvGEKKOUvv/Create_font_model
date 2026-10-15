@@ -27,6 +27,25 @@ function apply(mesh, object) {
   mesh.updateMatrixWorld(true);
 }
 
+// Sharing one edited field must not copy unrelated transform axes.
+export function setTransformAxis(objects, kind, axis, value) {
+  if (!Number.isFinite(value)) return;
+  const adjusted = kind === "rotation" ? value * Math.PI / 180
+    : kind === "scale" ? Math.max(0.01, value) : value;
+  for (const object of objects) object.transform[kind][axis] = adjusted;
+}
+
+export function applyTransformDelta(meshes, previousMatrix, currentMatrix) {
+  const delta = currentMatrix.clone().multiply(previousMatrix.clone().invert());
+  for (const mesh of meshes) {
+    mesh.updateMatrix();
+    delta.clone().multiply(mesh.matrix).decompose(mesh.position, mesh.quaternion, mesh.scale);
+    mesh.scale.set(Math.max(0.01, mesh.scale.x), Math.max(0.01, mesh.scale.y), Math.max(0.01, mesh.scale.z));
+    mesh.updateMatrix();
+    mesh.updateMatrixWorld(true);
+  }
+}
+
 export function createTransformTools({
   scene,
   camera,
@@ -35,6 +54,7 @@ export function createTransformTools({
   group,
   getObjects,
   getSelected,
+  getSelectedObjects,
   onSelect,
   onChange = () => {},
 }) {
@@ -62,12 +82,14 @@ export function createTransformTools({
   ).after(panel);
   let controls = null,
     mode = "translate";
+  let previousMatrix = null;
   if (renderer) {
     controls = new TransformControls(camera, renderer.domElement);
     controls.setSize(0.85);
     scene.add(controls.getHelper());
     controls.addEventListener("dragging-changed", (e) => {
       if (orbit) orbit.enabled = !e.value;
+      previousMatrix = e.value && controls.object ? controls.object.matrix.clone() : null;
       if (!e.value) onChange(true);
     });
     controls.addEventListener("objectChange", () => {
@@ -79,15 +101,11 @@ export function createTransformTools({
         Math.max(0.01, mesh.scale.y),
         Math.max(0.01, mesh.scale.z),
       );
-      object.transform = {
-        position: mesh.position
-          .clone()
-          .sub(new THREE.Vector3().fromArray(object.pivot))
-          .toArray(),
-        rotation: [mesh.rotation.x, mesh.rotation.y, mesh.rotation.z],
-        scale: mesh.scale.toArray(),
-      };
       mesh.updateMatrix();
+      const others = selectedEntries().filter(entry => entry.object !== object);
+      if (previousMatrix) applyTransformDelta(others.map(entry => entry.mesh), previousMatrix, mesh.matrix);
+      previousMatrix = mesh.matrix.clone();
+      for (const entry of [{ object, mesh }, ...others]) saveTransform(entry.mesh, entry.object);
       syncNumbers();
       onChange();
     });
@@ -119,8 +137,23 @@ export function createTransformTools({
         group.children.filter((m) => m.visible),
         false,
       )[0];
-      if (hit) onSelect(group.children.indexOf(hit.object));
+      if (hit) onSelect(group.children.indexOf(hit.object), e);
     });
+  }
+  function selectedEntries() {
+    const objects = getSelectedObjects?.() ?? [activeObject()];
+    return [...new Set(objects)].filter(Boolean).map(object => ({
+      object,
+      mesh: group.children.find(mesh => mesh.userData.objectId === object.id)
+        ?? group.children[getObjects().indexOf(object)],
+    })).filter(entry => entry.mesh);
+  }
+  function saveTransform(mesh, object) {
+    object.transform = {
+      position: mesh.position.clone().sub(new THREE.Vector3().fromArray(object.pivot)).toArray(),
+      rotation: [mesh.rotation.x, mesh.rotation.y, mesh.rotation.z],
+      scale: mesh.scale.toArray(),
+    };
   }
   function activeObject() {
     return getObjects()[getSelected()];
@@ -163,13 +196,9 @@ export function createTransformTools({
           value = Number(input.value);
         if (!o || !mesh || input.value === "" || !Number.isFinite(value))
           return;
-        o.transform[kind][i] =
-          kind === "rotation"
-            ? (value * Math.PI) / 180
-            : kind === "scale"
-              ? Math.max(0.01, value)
-              : value;
-        apply(mesh, o);
+        const entries = selectedEntries();
+        setTransformAxis(entries.map(entry => entry.object), kind, i, value);
+        for (const entry of entries) apply(entry.mesh, entry.object);
         onChange();
       };
       input.onchange = () => {
@@ -178,15 +207,14 @@ export function createTransformTools({
       };
     });
   document.getElementById("transform-reset").onclick = () => {
-    const o = activeObject(),
-      mesh = group.children[getSelected()];
-    if (!o || !mesh) return;
-    o.transform = {
-      position: [0, 0, 0],
-      rotation: [0, 0, 0],
-      scale: [1, 1, 1],
-    };
-    apply(mesh, o);
+    for (const { object, mesh } of selectedEntries()) {
+      object.transform = {
+        position: [0, 0, 0],
+        rotation: [0, 0, 0],
+        scale: [1, 1, 1],
+      };
+      apply(mesh, object);
+    }
     syncNumbers();
     onChange(true);
   };

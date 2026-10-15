@@ -1,5 +1,5 @@
 import './path-editor.css';
-import { PATH_EDITOR_VERTEX_LIMIT, createPathDrafts, validateDraft, toImportEntry, simplifyDraft, closeDraft, resetDraft, moveDraftPoint, deleteDraftPoint, addDraftPoint } from './path-editor-model.js';
+import { PATH_EDITOR_VERTEX_LIMIT, createPathDrafts, createObjectDrafts, validateDraft, toImportEntry, simplifyDraft, closeDraft, resetDraft, moveDraftPoint, deleteDraftPoint, addDraftPoint } from './path-editor-model.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const svgNode = (name, attrs = {}) => {
@@ -10,7 +10,12 @@ const svgNode = (name, attrs = {}) => {
 
 /** Edit a separate import draft; the current project is untouched until confirmation. */
 export async function editSvgPaths(text, fileName = 'SVG') {
-  const { drafts, warnings } = createPathDrafts(text);
+  return editDrafts(createPathDrafts(text), fileName);
+}
+export async function editExistingPaths(objects) {
+  return editDrafts({ drafts: createObjectDrafts(objects), warnings: [] }, '選択中のパス', true);
+}
+function editDrafts({ drafts, warnings }, fileName, existing = false) {
   if (!drafts.length) throw new Error('編集できるパスがありません。');
   return new Promise((resolve) => {
     const dialog = document.createElement('dialog');
@@ -20,6 +25,7 @@ export async function editSvgPaths(text, fileName = 'SVG') {
     dialog.querySelector('.path-editor-filename').textContent = fileName;
     document.body.append(dialog);
     const find = (id) => dialog.querySelector(`#path-editor-${id}`);
+    if (existing) find('import').textContent = '変更を適用';
     const canvas = find('canvas'), list = dialog.querySelector('.path-editor-list');
     let active = 0, selected = null, dragging = null, view = null, notice = '', finished = false;
     let dragFrame = null, pendingPoint = null;
@@ -79,7 +85,7 @@ export async function editSvgPaths(text, fileName = 'SVG') {
       const invalid = enabled.filter(draft => !validationOf(draft).valid);
       find('status').textContent = `${validation.vertexCount} 頂点${current().contours.some(c => !c.closed) ? ' · 開いた輪郭あり' : ''}${validation.errors.length ? '\n'+validation.errors.join('\n') : ''}${validation.vertexCount>PATH_EDITOR_VERTEX_LIMIT ? '\n頂点を削減してから頂点を編集してください。' : ''}${notice ? '\n'+notice : ''}`;
       find('import').disabled = !enabled.length || invalid.length > 0;
-      dialog.querySelector('.path-editor-summary').textContent = `${enabled.length} パスを追加${invalid.length ? ` · ${invalid.length} パスの調整が必要です` : ''}`;
+      dialog.querySelector('.path-editor-summary').textContent = `${enabled.length} パスを${existing ? '編集' : '追加'}${invalid.length ? ` · ${invalid.length} パスの調整が必要です` : ''}`;
       find('delete-point').disabled = !selected;
       find('add-point').disabled = validation.vertexCount>PATH_EDITOR_VERTEX_LIMIT || !current().contours.some(c => c.points.length >= 2);
       find('close').disabled = !current().contours.some(c => !c.closed);
@@ -88,7 +94,7 @@ export async function editSvgPaths(text, fileName = 'SVG') {
       list.replaceChildren();
       drafts.forEach((draft,index) => {
         const row = document.createElement('div'); row.className = `path-editor-row ${active === index ? 'active' : ''}`;
-        const check = document.createElement('input'); check.type = 'checkbox'; check.checked = draft.enabled; check.setAttribute('aria-label', `${draft.name} を追加`);
+        const check = document.createElement('input'); check.type = 'checkbox'; check.checked = draft.enabled; check.setAttribute('aria-label', `${draft.name} を${existing ? '編集' : '追加'}`);
         check.addEventListener('change', () => { draft.enabled = check.checked; renderCanvas(); syncStatus(); });
         const button = document.createElement('button'); button.type = 'button'; button.className = 'path-editor-select';
         const name = document.createElement('span'); name.textContent = draft.name;

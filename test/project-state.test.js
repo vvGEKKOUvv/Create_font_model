@@ -108,3 +108,22 @@ test('new project saves zero bevel loops and migrates the old band count', () =>
   assert.equal(loaded.objects[0].settings.bevelSegments,4);
   assert.equal(loaded.objects[0].settings.curvePoints[0].edge,false);
 });
+
+test('project retains multi selection by stable IDs and remains compatible with legacy single selection', () => {
+  const state = fixture(), second = { ...state.objects[0], id: 'second', name: 'Second', shape: state.objects[0].shape.clone() };
+  state.objects.push(second);
+  state.selected = 1; state.selectedIds = [state.objects[0].id, second.id]; state.selectionAnchorId = state.objects[0].id;
+  const loaded = parseProject(serializeProject(state));
+  assert.deepEqual(loaded.selectedIds, state.selectedIds);
+  assert.equal(loaded.selectionAnchorId, state.selectionAnchorId);
+  delete state.selectedIds; delete state.selectionAnchorId;
+  assert.equal(parseProject(serializeProject(state)).selected, 1);
+});
+test('project rejects stale, repeated or mismatched selection IDs', () => {
+  for (const fields of [
+    {selectedIds:['missing']},
+    {selectedIds:['file-1-path-1','file-1-path-1']},
+    {selectedIds:[]},
+    {selectionAnchorId:'missing'},
+  ]) assert.throws(() => serializeProject({...fixture(), ...fields}), /プロジェクト/);
+});
