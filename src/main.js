@@ -1,3 +1,5 @@
+import { createPresetPanel } from "./preset-panel.js";
+import { applyPresetToObject } from "./parameter-presets.js";
 import { resolveSelection } from "./object-selection.js";
 import { reduceSourcePath } from "./source-reduction.js";
 import { reduceMeshGeometry } from "./mesh-reduction.js";
@@ -83,6 +85,7 @@ app.innerHTML = `
       <p class="export-visibility-note">非表示のオブジェクトは書き出し対象外</p>
       <div class="selection-heading"><p id="selected-name" class="muted">オブジェクトを選択</p><button id="reset" class="subtle">リセット ↺</button></div>
     </details>
+    <details class="control-section" id="preset-settings"></details>
     <details class="control-section" id="reduction-settings" open>
       <summary>パスのリダクション <span>REDUCTION</span></summary>
       ${field("reductionTolerance", "許容誤差", 0, 0, 5, 0.01)}
@@ -179,6 +182,7 @@ let objects = [],
 let selectedIds = new Set();
 let selectionAnchorId = null;
 let history = null;
+let presetPanel = null;
 function recordHistory(immediate = false) {
   history?.record();
   if (immediate) history?.commit();
@@ -493,6 +497,7 @@ function updateObjectSelection() {
   });
 }
 function syncSelectionActions() {
+  presetPanel?.sync();
   $("edit-path").disabled = !selectedObject();
   $("duplicate").disabled = !selectedObject();
   $("delete-object").disabled = !selectedObject();
@@ -1258,6 +1263,27 @@ history = createHistory({
     $("redo").disabled = !history.canRedo;
   },
 });
+presetPanel = createPresetPanel({
+  container: $("preset-settings"), getObject: selectedObject, flush: flushPending, onNotice: notice,
+  onApply: (preset) => {
+    if (!flushPending()) throw new Error("生成できない設定を修正してから適用してください。");
+    const targets = selectedObjects();
+    if (!targets.length) throw new Error("適用するオブジェクトを選択してください。");
+    const replacements = targets.map(object => ({...applyPresetToObject(object, preset), invalid:false}));
+    const meshes = makeMeshes(replacements);
+    history.commit(); transformTools.detach();
+    replacements.forEach((replacement, i) => {
+      const index = objects.findIndex(object => object.id === replacement.id), previous = group.children[index];
+      objects[index] = replacement;
+      group.remove(previous); group.add(meshes[i]);
+      group.children.splice(group.children.indexOf(meshes[i]), 1); group.children.splice(index, 0, meshes[i]);
+      disposeWireframe(previous); previous.geometry.dispose(); previous.material.dispose();
+    });
+    uvSelectedKey = null; uvDragKey = null;
+    list(); sync(); transformTools.sync(); refreshMeshInfo(); recordHistory(true);
+    return {count:replacements.length, warnings:[...new Set(meshes.flatMap(mesh => mesh.geometry.userData.warnings ?? []))]};
+  },
+});
 function travelHistory(direction) {
   flushPending();
   try {
@@ -1289,7 +1315,7 @@ transformTools.sync();
 refreshMeshInfo();
 
 function captureView() {
-  return {environmentPreset, cameraPosition: camera.position.toArray(), cameraQuaternion: camera.quaternion.toArray(), zoom: camera.zoom, target: controls?.target.toArray() || [0,0,0], wireframe: $("wireframe").checked, wireframeMode: $("wireframe-mode").value, tab: activeView, exportFolder: $("export-folder").checked, uvEditMode: $("uv-edit-mode").checked, sections: [...document.querySelectorAll("aside details")].map(el => el.open), sectionLayout: 3, curveSide: $("curve-side").value, transformMode: transformControls?.getMode() || "translate", transformSpace: $("transform-local").checked};
+  return {environmentPreset, cameraPosition: camera.position.toArray(), cameraQuaternion: camera.quaternion.toArray(), zoom: camera.zoom, target: controls?.target.toArray() || [0,0,0], wireframe: $("wireframe").checked, wireframeMode: $("wireframe-mode").value, tab: activeView, exportFolder: $("export-folder").checked, uvEditMode: $("uv-edit-mode").checked, sections: [...document.querySelectorAll("aside details")].filter(el => el.id !== "preset-settings").map(el => el.open), sectionLayout: 3, curveSide: $("curve-side").value, transformMode: transformControls?.getMode() || "translate", transformSpace: $("transform-local").checked};
 }
 function restoreView(view) {
   environmentPreset = environmentController.set(view.environmentPreset || "studio");
@@ -1306,6 +1332,7 @@ function restoreView(view) {
   $("export-folder").checked = view.exportFolder === true;
   let sectionIndex = 0;
   document.querySelectorAll("aside details").forEach(el => {
+    if (el.id === "preset-settings") return;
     if (view.sectionLayout !== 3 && el.id === "mesh-reduction-settings") return;
     if (![2, 3].includes(view.sectionLayout) && el.id === "bevel-curve-settings") return;
     const value = view.sections?.[sectionIndex++];

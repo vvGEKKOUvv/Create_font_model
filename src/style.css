@@ -1360,3 +1360,12 @@ header { gap: 14px; }
 }
 
 .right-panel #edit-path { width: 100%; min-height: 26px; padding: 4px 7px; margin-top: 5px; font-size: 11px; }
+
+.preset-controls { display: grid; gap: 5px; padding-top: 6px; }
+.preset-controls > label { display: flex; align-items: center; gap: 7px; font-size: 11px; }
+.preset-controls input[type=text], .preset-controls select { min-width: 0; width: 100%; color: #dbe3eb; background: #171d24; border: 1px solid #3a4652; border-radius: 4px; padding: 5px 6px; }
+.preset-actions { display: flex; gap: 5px; }
+.preset-controls button { min-height: 26px; padding: 4px 7px; font-size: 11px; }
+.preset-actions button { flex: 1; }
+#preset-status { font-size: 10px; line-height: 1.5; color: #9eadbb; margin: 0; }
+#preset-status.error { color: #f08d7d; }
