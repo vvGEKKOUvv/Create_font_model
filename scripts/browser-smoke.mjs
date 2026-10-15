@@ -1377,6 +1377,59 @@ try {
   assert.ok(expandBox.y < editorBox.y+60,"Expand sits in the top row");
   const handleControlBox = await page.locator(".curve-handle-label").boundingBox();
   assert.ok(handleControlBox.x+handleControlBox.width > editorBox.x+editorBox.width-25,"Handle controls align right");
+  // Selected-path deletion keeps remaining meshes/camera intact and is reversible.
+  await page.reload();
+  await page.evaluate(() => { window.showDirectoryPicker = undefined; window.showSaveFilePicker = undefined; });
+  await expect(page.locator("#delete-object")).toBeDisabled();
+  await page.locator("#file").setInputFiles({name:"delete.svg",mimeType:"image/svg+xml",buffer:Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><path id="Keep" d="M0 0H30V30H0Z"/><path id="Delete" d="M50 0H80V30H50Z"/></svg>')});
+  await expect(page.locator("#object-count")).toHaveText("2");
+  await page.locator('[data-object="1"]').click();
+  await editField("object-name", "Delete me");
+  await editField("position-x", 13);
+  await editField("rotation-y", 17);
+  await editField("scale-z", 1.4);
+  const deletionState = await projectData();
+  const deletionView = await page.evaluate(() => window.__sceneSnapshot);
+  await page.locator("#delete-object").click();
+  await expect(page.locator("#object-count")).toHaveText("1");
+  await expect(page.locator("#selected-name")).toHaveText(/^Keep(?: \d+)?$/);
+  await expect.poll(() => page.evaluate(() => window.__sceneSnapshot.objects.length)).toBe(1);
+  const afterDelete = await page.evaluate(() => window.__sceneSnapshot);
+  assert.deepEqual(afterDelete.objects, [deletionView.objects[0]], "Deleting one path preserves the remaining mesh instance and transform");
+  assert.deepEqual(afterDelete.camera, deletionView.camera, "Deleting a selected path preserves the camera");
+  assert.deepEqual(afterDelete.target, deletionView.target, "Deleting a selected path preserves the orbit target");
+  assert(!/o Delete_me/.test((await exported())["model.obj"]), "Deleted path is absent from actual OBJ output");
+  await page.locator("#undo").click();
+  await expect(page.locator("#object-count")).toHaveText("2");
+  await expect(page.locator("#selected-name")).toHaveText("Delete me");
+  assert.deepEqual((await projectData()).state.objects, deletionState.state.objects, "Undo deletion restores source geometry, name, material and transforms");
+  await expect.poll(() => page.evaluate(() => window.__sceneSnapshot.objects.length)).toBe(2);
+  const undoDeleteView = await page.evaluate(() => window.__sceneSnapshot);
+  assert.deepEqual(undoDeleteView.objects.map(o => [o.matrix,o.triangleCount]), deletionView.objects.map(o => [o.matrix,o.triangleCount]), "Undo deletion restores actual geometry and world transforms");
+  await page.locator("#redo").click();
+  await expect(page.locator("#object-count")).toHaveText("1");
+  await page.locator("#delete-object").click();
+  await expect(page.locator("#object-count")).toHaveText("0");
+  await expect(page.locator("#selected-name")).toHaveText("オブジェクトを選択");
+  await expect(page.locator("#delete-object")).toBeDisabled();
+  await expect(page.locator("#duplicate")).toBeDisabled();
+  await expect(page.locator("#geometry-status")).toHaveText("");
+  await expect.poll(() => page.evaluate(() => window.__sceneSnapshot.objects.length)).toBe(0);
+  assert.equal((await projectData()).state.objects.length, 0, "Deleting the last path produces a persistable empty project");
+  await page.locator("#undo").click();
+  await expect(page.locator("#object-count")).toHaveText("1");
+  await page.locator("#redo").click();
+  await expect(page.locator("#object-count")).toHaveText("0");
+  await page.locator("#file").setInputFiles({name:"unfilled.svg",mimeType:"image/svg+xml",buffer:Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><g fill="none" stroke="#000"><path id="Unfilled" d="M0 0H50V50H0Z M10 10V40H40V10Z"/></g></svg>')});
+  await expect(page.locator("#object-count")).toHaveText("1");
+  await expect(page.locator("#selected-name")).toHaveText(/^Unfilled(?: \d+)?$/);
+  await expect(page.locator("#delete-object")).toBeEnabled();
+  await expect(page.locator("#message")).not.toHaveClass(/error/);
+  const unfilledState = await projectData();
+  assert.equal(unfilledState.state.objects[0].shape.holes.length, 1, "Unfilled import preserves its enclosed hole");
+  const unfilledExport = (await exported())["model.obj"];
+  assert.match(unfilledExport, /^f /m, "Closed unfilled paths generate exportable faces after clearing the project");
+  assert(!/NaN|Infinity/.test(unfilledExport));
   await page.setViewportSize({ width: 390, height: 844 });
   await expect
     .poll(() =>
@@ -1387,7 +1440,7 @@ try {
     .toBe(true);
   assert.deepEqual(errors, []);
   console.log(
-    "Browser smoke passed: empty startup, additive and repeated imports, previous object/camera persistence, maximum bevel axial reach and full-width L ridges, slim sidebar controls, single-click curve insertion, Delete removal, collapsible right sidebar, 3D/UV tabs, reduced orbit inertia, WebGL, SVG import, selected-object transform controls and actual gizmo drag, transform persistence/export, enlarged curve editor, per-vertex linear/Bezier and handle drag, UV transforms and vertex drag/reset, material, hollow, OBJ/MTL downloads, invalid input preservation, mobile layout, selected-only/debounced rebuilds, UV/material geometry reuse, reduction and automatic wall safety.",
+    "Browser smoke passed: selected-path deletion/undo/redo/empty state, closed unfilled SVG import, empty startup, additive and repeated imports, previous object/camera persistence, maximum bevel axial reach and full-width L ridges, slim sidebar controls, single-click curve insertion, Delete removal, collapsible right sidebar, 3D/UV tabs, reduced orbit inertia, WebGL, SVG import, selected-object transform controls and actual gizmo drag, transform persistence/export, enlarged curve editor, per-vertex linear/Bezier and handle drag, UV transforms and vertex drag/reset, material, hollow, OBJ/MTL downloads, invalid input preservation, mobile layout, selected-only/debounced rebuilds, UV/material geometry reuse, reduction and automatic wall safety.",
   );
 } finally {
   if (browser) await browser.close();

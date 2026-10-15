@@ -72,7 +72,7 @@ app.innerHTML = `
       <summary>オブジェクト選択 <span id="object-count">0</span></summary>
       <div id="objects"></div>
       <label class="rename-row"><span>名前</span><input id="object-name" type="text" maxlength="120" aria-label="オブジェクト名" placeholder="選択オブジェクトの名前"/></label>
-      <div class="object-actions"><button id="duplicate" class="subtle" disabled>複製</button><button id="reorder-up" class="subtle" disabled>↑ 上へ</button><button id="reorder-down" class="subtle" disabled>↓ 下へ</button></div>
+      <div class="object-actions"><button id="duplicate" class="subtle" disabled>複製</button><button id="delete-object" class="subtle" disabled aria-label="選択したパスを削除">削除</button><button id="reorder-up" class="subtle" disabled>↑ 上へ</button><button id="reorder-down" class="subtle" disabled>↓ 下へ</button></div>
       <label class="export-folder-option"><input id="export-folder" type="checkbox"/> OBJ の保存先を指定</label>
       <p class="export-visibility-note">非表示のオブジェクトは書き出し対象外</p>
       <div class="selection-heading"><p id="selected-name" class="muted">オブジェクトを選択</p><button id="reset" class="subtle">リセット ↺</button></div>
@@ -341,7 +341,11 @@ function initialSettings(shape) {
 }
 function updateGeometryInfo() {
   const data = group.children[selected]?.geometry.userData;
-  if (!data) return;
+  if (!data) {
+    for (const id of ["reduction-info", "mesh-reduction-info", "offset-info", "geometry-status"])
+      $(id).textContent = "";
+    return;
+  }
   const before = data.originalCount ?? 0,
     after = data.reducedCount ?? before;
   $("reduction-info").textContent =
@@ -461,6 +465,7 @@ function fit() {
 }
 function list() {
   $("duplicate").disabled = !selectedObject();
+  $("delete-object").disabled = !selectedObject();
   $("apply-reduction").disabled = !selectedObject();
   $("reorder-up").disabled = !objects.length || selected === 0;
   $("reorder-down").disabled = !objects.length || selected === objects.length - 1;
@@ -517,7 +522,13 @@ function escapeHTML(s) {
 }
 function sync() {
   const o = selectedObject();
-  if (!o) return;
+  if (!o) {
+    $("selected-name").textContent = "オブジェクトを選択";
+    $("object-name").value = "";
+    curveDraw();
+    updateGeometryInfo();
+    return;
+  }
   $("selected-name").textContent = o.name;
   $("object-name").value = o.name;
   o.settings.pathOffset ??= 0;
@@ -1179,6 +1190,32 @@ function restoreView(view) {
   $("curve-side").dispatchEvent(new Event("change"));
   activateView(view.tab);
 }
+$("delete-object").onclick = () => {
+  flushPending();
+  const object = selectedObject();
+  if (!object) return;
+  history.commit();
+  transformTools.detach();
+  const mesh = group.children[selected];
+  objects.splice(selected, 1);
+  pendingObjects.delete(object);
+  if (mesh) {
+    group.remove(mesh);
+    disposeWireframe(mesh);
+    mesh.geometry.dispose();
+    mesh.material.dispose();
+  }
+  selected = Math.min(selected, Math.max(0, objects.length - 1));
+  uvSelectedKey = null;
+  uvDragKey = null;
+  if (!objects.length) {
+    $("dropzone").classList.remove("loaded");
+    $("dropzone").querySelector("strong").textContent = "SVG を追加";
+  }
+  list(); sync(); transformTools.sync(); refreshMeshInfo();
+  recordHistory(true);
+  notice(`${object.name} を削除しました。`);
+};
 $("duplicate").onclick = () => {
   try {
     if (!flushPending()) throw new Error("生成できない設定を修正してから複製してください。");

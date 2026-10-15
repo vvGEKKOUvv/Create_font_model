@@ -1279,6 +1279,7 @@ header { gap: 14px; }
   line-height: 1.5;
 }
 .right-panel #duplicate,
+.right-panel #delete-object,
 .right-panel #reorder-up,
 .right-panel #reorder-down,
 .right-panel #apply-reduction {
@@ -1321,6 +1322,7 @@ header { gap: 14px; }
   .right-panel .control-section > summary,
   .right-panel .object-row,
   .right-panel #duplicate,
+  .right-panel #delete-object,
   .right-panel #reorder-up,
   .right-panel #reorder-down,
   .right-panel #apply-reduction {

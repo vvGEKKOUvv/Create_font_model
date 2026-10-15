@@ -100,21 +100,27 @@ export function parseSvg(text) {
         hidden = true;
     }
     if (hidden) continue;
-    if (style.fill === "none") {
-      warnings.push(
-        "塗りのないパスは対象外です。Illustrator で線をアウトライン化してください。",
-      );
-      continue;
+    const unfilled = style.fill === "none";
+    const isOpen = (p) => !p.autoClose && p.getPoint(0).distanceTo(p.getPoint(1)) > EPS;
+    let outline = path;
+    if (unfilled) {
+      // Treat closed unfilled contours as extrusion outlines, not as stroke
+      // ribbons. Do not silently invent a closing edge for open line artwork.
+      const closed = path.subPaths.filter((p) => !isOpen(p));
+      if (closed.length !== path.subPaths.length)
+        warnings.push("塗りのない開いたパスは読み込みませんでした。押し出す輪郭を SVG 側で閉じてください。");
+      if (!closed.length) continue;
+      outline = new THREE.ShapePath();
+      outline.subPaths = closed;
+      outline.userData = path.userData;
     }
     if (
-      path.subPaths.some(
-        (p) => !p.autoClose && p.getPoint(0).distanceTo(p.getPoint(1)) > EPS,
-      )
+      !unfilled && path.subPaths.some(isOpen)
     )
       warnings.push(
         "閉じていない塗りパスを直線で閉じて変換しました。必要に応じて SVG 側で閉じてください。",
       );
-    for (const shape of SVGLoader.createShapes(path)) {
+    for (const shape of SVGLoader.createShapes(outline)) {
       if (objects.length >= 256)
         throw new Error(
           "オブジェクト数が多すぎます（最大 256）。SVG を分割してください。",
@@ -130,7 +136,7 @@ export function parseSvg(text) {
   }
   if (!objects.length)
     throw new Error(
-      "押し出せる塗りパスがありません。線はアウトライン化してください。",
+      "押し出せる輪郭がありません。塗りのないパスは輪郭を閉じてください。",
     );
   return { objects, warnings: [...new Set(warnings)] };
 }
