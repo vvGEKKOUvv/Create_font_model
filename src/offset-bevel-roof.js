@@ -2,6 +2,7 @@ import ClipperLib from "clipper-lib";
 import cdt2d from "cdt2d";
 import { constrainHollowCornerRidges } from "./hollow-corner-ridges.js";
 import { validateRoofTriangles } from "./roof-topology.js";
+import { prepareBevelRoof, triangulateBevelRoof } from "./bevel-roof.js";
 
 const cache = new WeakMap();
 export function prepareOffsetBevelRoof(rings, widthHint) {
@@ -9,6 +10,13 @@ export function prepareOffsetBevelRoof(rings, widthHint) {
   let roofs = cache.get(rings);
   if (!roofs) { roofs = new Map(); cache.set(rings, roofs); }
   if (roofs.has(hintKey)) return roofs.get(hintKey);
+  // Preserve a complete medial partition whenever the exact kernel is valid.
+  // The geometry fallback has already recorded failures on the same rings,
+  // so it does not repeat expensive failed kernel strategies.
+  let medialRoof = null;
+  if (rings.length > 1) {
+    try { medialRoof = prepareBevelRoof(rings); } catch { /* Use offset bands below. */ }
+  }
   const origin = rings[0][0];
   const extent = Math.max(
     1,
@@ -117,7 +125,8 @@ export function prepareOffsetBevelRoof(rings, widthHint) {
     origin,
     scale,
     exactSource,
-    maximumWidth: Math.max(
+    medialRoof,
+    maximumWidth: medialRoof?.maximumWidth ?? Math.max(
       0,
       low - Math.max(low * 0.0001, extent * 2 ** -23 * 2),
     ),
@@ -451,6 +460,11 @@ function improveStripDiagonals(matched) {
 // Triangulate the difference of successive offset regions. Offsets can remove
 // small tips or split cavities without shrinking the bevel on every other edge.
 export function triangulateOffsetBevelRoof(roof, width, samples, profile) {
+  if (roof.medialRoof) {
+    const triangles = triangulateBevelRoof(roof.medialRoof, width, samples, profile);
+    validateRoofTriangles(triangles, roof.rings);
+    return triangles;
+  }
   const triangleKey = JSON.stringify([width, samples, samples.map(profile)]);
   if (roof.triangleCache.has(triangleKey))
     return roof.triangleCache.get(triangleKey);

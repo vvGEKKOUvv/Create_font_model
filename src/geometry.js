@@ -12,6 +12,7 @@ import {
   invalidateBevelRoof,
 } from "./bevel-roof.js";
 import { hollowContours, hollowFilledRegion } from "./hollow-offset.js";
+import { prepareHollowMidpointRoof } from "./hollow-midpoint-roof.js";
 import { offsetContours } from "./path-offset.js";
 import {
   prepareOffsetBevelRoof,
@@ -564,8 +565,20 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
     });
   let roof = null;
   let roofFailure = null;
+  if (settings.hollow && effectiveWallThickness > 0 &&
+      Number(settings.bevelSize) > 0 && !safeHollowFallback &&
+      (settings.bevelContinue === true || separateInnerProfile ||
+       (explicitWidth && requestedBevelWidth > variant.maximumBevelWidth + EPS))) {
+    try {
+      roof = prepareHollowMidpointRoof(rings[0], effectiveWallThickness);
+      if (roof) {
+        rings = roof.rings.map(ring => ring.map(p => new THREE.Vector2(p.x, p.y)));
+      }
+    } catch { /* Use the validated general roof when a folded roof is unavailable. */ }
+  }
   if (
     Number(settings.bevelSize) > 0 &&
+    !roof &&
     !safeHollowFallback &&
     !narrowDenseConvex &&
     (settings.bevelContinue === true ||
@@ -803,6 +816,8 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
         ? triangulateOffsetBevelRoof(roof, bevel, samples, profile)
         : triangulateBevelRoof(roof, bevel, samples, profile);
     } catch (error) {
+      if (roof.midpointRoof && error.code === "INVALID_BEVEL_TOPOLOGY")
+        return buildMesh(shape, settings, true);
       if (!roof.offsetRoof && error.code === "INVALID_BEVEL_TOPOLOGY") {
         invalidateBevelRoof(rings, error);
         return buildMesh(shape, settings);
