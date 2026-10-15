@@ -9,7 +9,8 @@
     "build:standalone": "npm run build && node scripts/build-standalone.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "test": "node --test",
-    "test:browser": "node scripts/browser-smoke.mjs"
+    "test:browser": "node scripts/browser-smoke.mjs",
+    "test:path-editor": "node scripts/path-editor-smoke.mjs"
   },
   "dependencies": {
     "cdt2d": "1.0.0",

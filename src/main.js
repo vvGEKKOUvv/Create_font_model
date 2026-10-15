@@ -6,6 +6,7 @@ import { parseSvg, buildMesh, exportObj, applyUvSettings } from "./geometry.js";
 import { defaultProfile } from "./bevel-profile.js";
 import { prepareContours } from "./path-reduction.js";
 import { inspectImportPath, reduceImportPath } from "./import-reduction.js";
+import { editSvgPaths } from "./path-editor.js";
 import { createBevelEditor } from "./bevel-editor.js";
 import { createTransformTools, prepareObjectMesh } from "./transform-tools.js";
 import { createHistory } from "./history.js";
@@ -67,6 +68,8 @@ app.innerHTML = `
         <span class="upload-icon"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 15v6h16v-6"/></svg></span>
         <strong>SVG を追加</strong>
       </label>
+      <button id="path-editor-open" class="subtle">パスを調整して読み込む</button>
+      <input type="file" id="path-editor-file" accept=".svg,image/svg+xml" multiple hidden/>
     </details>
     <details id="objects-details" class="control-section" open>
       <summary>オブジェクト選択 <span id="object-count">0</span></summary>
@@ -477,7 +480,7 @@ function list() {
         o,
         i,
       ) => `<div class="object-entry ${o.visible === false ? "object-hidden" : ""}">
-      <button class="object-row ${selected === i ? "active" : ""}" data-object="${i}"><i style="background:${safeColor(o.color)}"></i><span>${escapeHTML(o.name)}</span><small title="${escapeHTML(o.sourceName || "")}">${escapeHTML(o.sourceName || "")}</small></button>
+      <button class="object-row ${selected === i ? "active" : ""}" data-object="${i}"><i style="background:${safeColor(o.color)}"></i><span>${escapeHTML(o.name)}</span><small title="${escapeHTML([o.layerName, o.sourceName].filter(Boolean).join(" / "))}">${escapeHTML([o.layerName, o.sourceName].filter(Boolean).join(" / "))}</small></button>
       <button class="object-visibility" data-visibility="${i}" aria-label="${escapeHTML(o.name)}を${o.visible === false ? "表示" : "非表示"}" aria-pressed="${o.visible !== false}" title="${o.visible === false ? "表示する" : "非表示にする"}">${o.visible === false ? "○" : "◉"}</button>
     </div>`,
     )
@@ -569,9 +572,10 @@ const bevelEditor = createBevelEditor(
 function curveDraw() {
   bevelEditor.sync();
 }
-async function load(text, name) {
+async function load(text, name, editBeforeImport = false) {
   try {
-    const parsed = parseSvg(text);
+    const parsed = editBeforeImport ? await editSvgPaths(text, name) : parseSvg(text);
+    if (!parsed) { notice("読み込みをキャンセルしました。"); return; }
     const inspections = parsed.objects.map(o => inspectImportPath(o.shape));
     const oversized = inspections.filter(data => data.overBudget);
     if (oversized.length && !window.confirm(`${name} の ${oversized.length} 個のパスが処理上限（3,000頂点）を超えています。最大 ${Math.max(...oversized.map(data => data.originalCount)).toLocaleString()} 頂点です。形状を可能な限り保って処理可能な頂点数まで削減し、読み込みますか？`)) {
@@ -625,7 +629,7 @@ async function load(text, name) {
     notice(e.message, true);
   }
 }
-async function read(file) {
+async function read(file, editBeforeImport = false) {
   if (!file) return;
   if (!/\.svg$/i.test(file.name)) {
     notice(
@@ -638,17 +642,22 @@ async function read(file) {
     notice("SVG は 5 MB 以下にしてください。", true);
     return;
   }
-  await load(await file.text(), file.name);
+  await load(await file.text(), file.name, editBeforeImport);
 }
 let importQueue = Promise.resolve();
-function enqueueFiles(files) {
+function enqueueFiles(files, editBeforeImport = false) {
   const added = Array.from(files);
   importQueue = importQueue
     .then(async () => {
-      for (const file of added) await read(file);
+      for (const file of added) await read(file, editBeforeImport);
     })
     .catch((e) => notice(e.message, true));
 }
+$("path-editor-open").onclick = () => $("path-editor-file").click();
+$("path-editor-file").onchange = (event) => {
+  enqueueFiles(event.target.files, true);
+  event.target.value = "";
+};
 $("file").onchange = (e) => {
   enqueueFiles(e.target.files);
   e.target.value = "";

@@ -54,7 +54,7 @@ function opposingMidpointWidth(rings) {
   // cap vertices and reverse tiny faces on very small imported contours.
   return Math.sqrt(distanceSquared) / 2 * (1 - 1e-3);
 }
-export function parseSvg(text) {
+export function parseSvg(text, { forEditing = false } = {}) {
   if (typeof text !== "string" || !/<svg[\s>]/i.test(text))
     throw new Error("SVG ファイルを読み込んでください。");
   if (text.length > 5_000_000)
@@ -82,6 +82,7 @@ export function parseSvg(text) {
       );
   if (data.paths.length > 512)
     throw new Error("パス数が多すぎます（最大 512）。SVG を分割してください。");
+  let editorEstimate = 0;
   for (const path of data.paths) {
     const style = path.userData?.style || {};
     let hidden = style.display === "none" || style.visibility === "hidden";
@@ -100,15 +101,47 @@ export function parseSvg(text) {
         hidden = true;
     }
     if (hidden) continue;
+    if (forEditing) {
+      let pathEstimate = 0;
+      for (const contour of path.subPaths) {
+        pathEstimate++;
+        for (const curve of contour.curves) {
+          pathEstimate += curve.isLineCurve ? 1 : curve.isEllipseCurve ? 48 : curve.isSplineCurve ? 24 * Math.max(1, curve.points.length) : 24;
+          if (pathEstimate > 20000) throw new Error("パス調整エディタの上限 20,000 頂点を超えています。SVG を分割するか、通常の読み込みでリダクションしてください。");
+        }
+      }
+      editorEstimate += pathEstimate;
+      if (editorEstimate > 200000) throw new Error("パス調整エディタ全体の上限 200,000 頂点を超えています。SVG を分割してください。");
+    }
     const unfilled = style.fill === "none";
     const isOpen = (p) => !p.autoClose && p.getPoint(0).distanceTo(p.getPoint(1)) > EPS;
+    const labels = [];
+    for (let node = path.userData?.node?.parentNode; node?.getAttribute; node = node.parentNode) {
+      if (node.nodeName.toLowerCase() === "g") {
+        const label = node.getAttribute("inkscape:label") || node.getAttribute("data-name") || node.getAttribute("id");
+        if (label) labels.unshift(label);
+      }
+    }
+    const layerName = labels.join(" / ").slice(0, 240);
+    const addObject = (shape, editorContours) => {
+      if (objects.length >= 256) throw new Error("オブジェクト数が多すぎます（最大 256）。SVG を分割してください。");
+      const id = `path-${objects.length + 1}`;
+      const pathName = path.userData?.node?.getAttribute("id") || id;
+      objects.push({ id, name: pathName,
+        layerName, shape, color: `#${path.color.getHexString()}`,
+        ...(editorContours ? { editorContours } : {}) });
+    };
     let outline = path;
-    if (unfilled) {
-      // Treat closed unfilled contours as extrusion outlines, not as stroke
-      // ribbons. Do not silently invent a closing edge for open line artwork.
+    if (unfilled || forEditing) {
       const closed = path.subPaths.filter((p) => !isOpen(p));
-      if (closed.length !== path.subPaths.length)
-        warnings.push("塗りのない開いたパスは読み込みませんでした。押し出す輪郭を SVG 側で閉じてください。");
+      const open = path.subPaths.filter(isOpen);
+      if (forEditing) {
+        for (const contour of open) {
+          const shape = new THREE.Shape();
+          shape.curves = contour.curves.slice();
+          addObject(shape, [{ points: contour.getPoints(24).map(p => ({ x: p.x, y: p.y })), closed: false }]);
+        }
+      } else if (open.length) warnings.push("塗りのない開いたパスは読み込みませんでした。押し出す輪郭を SVG 側で閉じてください。");
       if (!closed.length) continue;
       outline = new THREE.ShapePath();
       outline.subPaths = closed;
@@ -121,17 +154,7 @@ export function parseSvg(text) {
         "閉じていない塗りパスを直線で閉じて変換しました。必要に応じて SVG 側で閉じてください。",
       );
     for (const shape of SVGLoader.createShapes(outline)) {
-      if (objects.length >= 256)
-        throw new Error(
-          "オブジェクト数が多すぎます（最大 256）。SVG を分割してください。",
-        );
-      const id = `path-${objects.length + 1}`;
-      objects.push({
-        id,
-        name: path.userData?.node?.getAttribute("id") || id,
-        shape,
-        color: `#${path.color.getHexString()}`,
-      });
+      addObject(shape);
     }
   }
   if (!objects.length)

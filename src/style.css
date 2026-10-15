@@ -1337,3 +1337,5 @@ header { gap: 14px; }
 .material-select select { width:150px; min-width:0; }
 
 .bevel-editor .curve-tools .curve-handle-label { margin-left: auto; }
+
+.right-panel #path-editor-open { width: 100%; min-height: 26px; margin-top: 5px; padding: 4px 7px; font-size: 11px; }
