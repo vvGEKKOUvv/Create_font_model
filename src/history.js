@@ -28,7 +28,11 @@ export function createHistory({
     if (restoring) return;
     const next = capture(),
       nextKey = key(next);
-    if (nextKey === presentKey) return;
+    if (nextKey === presentKey) {
+      // Keep current selection/view metadata without creating an undo step.
+      present = next;
+      return;
+    }
     past.push(present);
     if (past.length > limit) past.shift();
     present = next;

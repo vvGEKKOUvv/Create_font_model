@@ -50,3 +50,18 @@ test('failed restore preserves history for a successful retry', () => {
   f.recover(); assert.equal(f.history.undo(), true); assert.equal(f.state.value, 0);
   f.history.dispose();
 });
+
+test('selection-only metadata is refreshed without adding undo entries', () => {
+  const f = fixture({fingerprint: state => JSON.stringify({value:state.value, objects:state.objects})});
+  f.state.selectedIds = ['A', 'B']; f.history.commit();
+  assert.equal(f.history.canUndo, false);
+  f.state.objects[0].visible = false; f.history.commit();
+  f.history.undo();
+  assert.deepEqual(f.state.selectedIds, ['A', 'B']);
+  assert.equal(f.state.objects[0].visible, true);
+  f.state.selectedIds = ['B']; f.history.commit();
+  assert.equal(f.history.canRedo, true);
+  f.history.redo();
+  assert.equal(f.state.objects[0].visible, false);
+  f.history.dispose();
+});

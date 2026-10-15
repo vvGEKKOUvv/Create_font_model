@@ -11,7 +11,8 @@
     "test": "node --test",
     "test:browser": "node scripts/browser-smoke.mjs",
     "test:path-editor": "node scripts/path-editor-smoke.mjs",
-    "test:workflow": "node scripts/workflow-smoke.mjs"
+    "test:workflow": "node scripts/workflow-smoke.mjs",
+    "test:editor-history": "node scripts/editor-history-smoke.mjs"
   },
   "dependencies": {
     "cdt2d": "1.0.0",

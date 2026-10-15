@@ -1,0 +1,56 @@
+import { chromium, expect } from '@playwright/test';
+import { spawn } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import assert from 'node:assert/strict';
+const html=process.env.EDITOR_HISTORY_HTML, url=process.env.EDITOR_HISTORY_URL||'http://127.0.0.1:5188';
+const server=html||process.env.EDITOR_HISTORY_URL?null:spawn('npm',['run','dev','--','--host','127.0.0.1','--port','5188','--strictPort'],{detached:true,stdio:'pipe'});
+let log='',browser;server?.stdout.on('data',b=>log+=b);server?.stderr.on('data',b=>log+=b);
+const svg=paths=>Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 200">${paths}</svg>`);
+try {
+ if(server)await expect.poll(async()=>{if(server.exitCode!==null)throw Error(log);try{return(await fetch(url)).ok;}catch{return false;}},{timeout:15000}).toBe(true);
+ browser=await chromium.launch({...process.env.CHROMIUM_PATH?{executablePath:process.env.CHROMIUM_PATH}:{},args:['--no-sandbox','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader']});
+ const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[],requests=[];
+ page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>requests.push(r.url()));
+ await page.addInitScript(()=>{window.showSaveFilePicker=undefined;window.showDirectoryPicker=undefined;});
+ if(html)await page.setContent(await readFile(html,'utf8'),{waitUntil:'load'});else await page.goto(url);
+ await page.evaluate(()=>{window.showSaveFilePicker=undefined;window.showDirectoryPicker=undefined;});
+ const saved=async()=>{const d=page.waitForEvent('download');await page.locator('#project-save').click();return JSON.parse(await readFile(await(await d).path(),'utf8')).state;};
+ const open=async content=>{await page.locator('#path-editor-file').setInputFiles({name:'history.svg',mimeType:'image/svg+xml',buffer:svg(content)});await expect(page.locator('#path-editor-dialog')).toBeVisible();};
+ const points=page.locator('#path-editor-canvas circle[data-contour][data-point]'),canvas=page.locator('#path-editor-canvas');
+ const coords=()=>points.evaluateAll(nodes=>nodes.map(n=>[n.getAttribute('cx'),n.getAttribute('cy')]));
+ const drag=async(locator,dx,dy,button='left')=>{const b=await locator.boundingBox();assert(b);await page.mouse.move(b.x+b.width/2,b.y+b.height/2);await page.mouse.down({button});await page.mouse.move(b.x+b.width/2+dx,b.y+b.height/2+dy,{steps:6});await page.mouse.up({button});};
+ const undo=()=>page.locator('#path-editor-undo').click(),redo=()=>page.locator('#path-editor-redo').click();
+ await open('<path d="M20 20L40 20L60 20L100 20L100 100L20 100"/>');
+ const initialName=await page.locator('#path-editor-name').inputValue();await page.locator('#path-editor-name').focus();await page.locator('#path-editor-name').press('End');await page.keyboard.type(' native');await page.keyboard.press('Control+z');await expect(page.locator('#path-editor-name')).toHaveValue(initialName);await page.locator('#path-editor-name').blur();
+ const original=await coords();await expect(page.locator('#path-editor-undo')).toBeDisabled();
+ await drag(points.first(),12,9);const moved=await coords();assert.notDeepEqual(moved,original);await undo();assert.deepEqual(await coords(),original,'One undo reverses one complete drag');await redo();assert.deepEqual(await coords(),moved);
+ await page.locator('#path-editor-add-point').click();await expect(points).toHaveCount(7);await undo();await expect(points).toHaveCount(6);await redo();await expect(points).toHaveCount(7);
+ await points.first().click();await page.locator('#path-editor-delete-point').click();await expect(points).toHaveCount(6);await undo();await expect(points).toHaveCount(7);
+ await page.locator('#path-editor-close').click();await expect(page.locator('#path-editor-import')).toBeEnabled();await undo();await expect(page.locator('#path-editor-import')).toBeDisabled();await redo();
+ const preReduce=await coords();await page.locator('#path-editor-tolerance').fill('1');await page.locator('#path-editor-reduce').click();assert((await points.count())<preReduce.length);await undo();assert.deepEqual(await coords(),preReduce);
+ await page.locator('#path-editor-name').fill('Local rename');await page.locator('#path-editor-name').blur();await undo();await expect(page.locator('#path-editor-name')).not.toHaveValue('Local rename');await redo();await expect(page.locator('#path-editor-name')).toHaveValue('Local rename');
+ await page.locator('.path-editor-list input[type=checkbox]').uncheck();await undo();await expect(page.locator('.path-editor-list input[type=checkbox]')).toBeChecked();
+ await page.locator('#path-editor-reset').click();assert.deepEqual(await coords(),original);await undo();assert.deepEqual(await coords(),preReduce);
+ await undo();await page.locator('#path-editor-name').fill('Branch');await page.locator('#path-editor-name').blur();await expect(page.locator('#path-editor-redo')).toBeDisabled();
+ const prePan=await coords(),initialBox=await canvas.getAttribute('viewBox');
+ await drag(canvas,30,15,'middle');assert.notEqual(await canvas.getAttribute('viewBox'),initialBox);assert.deepEqual(await coords(),prePan);await page.locator('#path-editor-fit').click();assert.equal(await canvas.getAttribute('viewBox'),initialBox);
+ await canvas.focus();await page.keyboard.down('Space');await drag(canvas,25,12);await page.keyboard.up('Space');assert.notEqual(await canvas.getAttribute('viewBox'),initialBox);assert.deepEqual(await coords(),prePan);await page.locator('#path-editor-fit').click();
+ await page.locator('#path-editor-pan').click();await drag(points.first(),15,10);assert.deepEqual(await coords(),prePan);assert.notEqual(await canvas.getAttribute('viewBox'),initialBox);await page.locator('#path-editor-pan').click();await page.locator('#path-editor-fit').click();
+ await page.locator('#path-editor-cancel').click();await expect(page.locator('#object-count')).toHaveText('0');
+ // Undoing a curve edit must restore the original Bezier, not its sampled polyline.
+ await open('<path d="M20 20C40 0 70 0 100 20L100 100L20 100Z"/>');await drag(points.first(),10,5);await undo();await page.locator('#path-editor-import').click();
+ const curved=await saved();assert(curved.objects[0].shape.curves.some(c=>/bezier/i.test(c.type)),'Undo retains unedited source Bezier curves');
+ await page.locator('#edit-path').click();const beforeKeyboard=await coords();await drag(points.first(),10,5);const afterKeyboard=await coords();await canvas.focus();await page.keyboard.press('Control+z');assert.deepEqual(await coords(),beforeKeyboard);await page.keyboard.press('Control+Shift+z');assert.deepEqual(await coords(),afterKeyboard);await page.keyboard.press('Escape');
+ assert.deepEqual((await saved()).objects,curved.objects,'Local history plus cancel does not affect main project');
+ // Selected eye toggle normalizes mixed visibility atomically, without touching an unselected object.
+ await page.locator('#file').setInputFiles({name:'boxes.svg',mimeType:'image/svg+xml',buffer:svg('<path d="M120 20H160V60H120Z"/><path d="M200 20H240V60H200Z"/>')});await expect(page.locator('#object-count')).toHaveText('3');
+ const row=i=>page.locator(`[data-object="${i}"]`),eye=i=>page.locator(`[data-visibility="${i}"]`);
+ await row(0).click();await eye(0).click();await row(1).click({modifiers:['Control']});const before=await saved();assert.deepEqual(before.objects.map(o=>o.visible),[false,true,true]);
+ await eye(1).click();const hidden=await saved();assert.deepEqual(hidden.objects.map(o=>o.visible),[false,false,true]);assert.deepEqual(hidden.selectedIds,before.selectedIds);
+ const download=page.waitForEvent('download');await page.locator('#export').click();const obj=await readFile(await(await download).path(),'utf8');assert.equal(obj.split('\n').filter(l=>l.startsWith('o ')).length,1,'Hidden selected objects are excluded from OBJ');
+ await page.locator('#undo').click();assert.deepEqual((await saved()).objects.map(o=>o.visible),[false,true,true]);await page.locator('#redo').click();assert.deepEqual((await saved()).objects.map(o=>o.visible),[false,false,true]);
+ await eye(0).click();assert.deepEqual((await saved()).objects.map(o=>o.visible),[true,true,true]);await eye(0).click();assert.deepEqual((await saved()).objects.map(o=>o.visible),[false,false,true]);
+ await eye(2).click();const isolated=await saved();assert.deepEqual(isolated.objects.map(o=>o.visible),[false,false,false]);assert.deepEqual(isolated.selectedIds,before.selectedIds,'Unselected eye preserves selection');
+ await page.setViewportSize({width:390,height:844});await open('<path d="M20 20H80V80H20Z"/>');const size=await page.locator('#path-editor-dialog').evaluate(el=>({w:el.getBoundingClientRect().width,s:el.scrollWidth,c:el.clientWidth}));assert(size.w<=390&&size.s<=size.c+1);await page.locator('#path-editor-cancel').click();
+ assert.deepEqual(errors,[]);if(html)assert.deepEqual(requests,[],'Packaged editor works offline');console.log('Editor history, pan and bulk visibility browser checks passed.');
+} finally {await browser?.close();if(server?.pid)try{process.kill(-server.pid,'SIGTERM');}catch{}}

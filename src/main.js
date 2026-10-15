@@ -483,6 +483,13 @@ function updateObjectSelection() {
     const active = !!object && selectedIds.has(object.id);
     row.classList.toggle("active", active);
     row.setAttribute("aria-pressed", String(active));
+    const eye = row.closest(".object-entry")?.querySelector("[data-visibility]");
+    if (eye && object) {
+      const action = object.visible === false ? "表示" : "非表示";
+      const target = active && selectedIds.size > 1 ? `選択中の ${selectedIds.size} 個` : object.name;
+      eye.title = `${target}を${action}`;
+      eye.setAttribute("aria-label", `${target}を${action}`);
+    }
   });
 }
 function syncSelectionActions() {
@@ -508,9 +515,14 @@ function list() {
       flushPending();
       const index = Number(button.dataset.visibility);
       const object = objects[index];
-      object.visible = object.visible === false;
+      const targets = selectedIds.has(object.id) ? selectedObjects() : [object];
+      const visible = object.visible === false;
+      history.commit();
+      for (const target of targets) {
+        target.visible = visible;
+        applyDisplayStyle(group.children[objects.indexOf(target)], target);
+      }
       recordHistory(true);
-      applyDisplayStyle(group.children[index], object);
       list();
       transformTools.sync();
     };
@@ -563,6 +575,7 @@ function list() {
       input.select();
     };
   });
+  updateObjectSelection();
 }
 function safeColor(value) {
   return /^#[\da-f]{6}$/i.test(value) ? value : "#b0b0b0";
