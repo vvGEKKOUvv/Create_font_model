@@ -1082,7 +1082,15 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
   const protectedMidpointIndices = [];
   if (roof?.midpointRoof && roofTriangles) {
     const midpointXY = new Set();
-    for (const face of roof.faces) for (const point of face) {
+    // Include vertices introduced while triangulating a concave roof face,
+    // not just the original face corners. Every segment of the closed centre
+    // ring must survive later mesh reduction, including collinear seam nodes.
+    const centrePoints = roof.midpointLoops?.flat() ?? roof.faces.flat();
+    for (const point of centrePoints) {
+      if (point.time === roof.maximumWidth)
+        midpointXY.add(`${Math.fround(point.x)},${Math.fround(-point.y)}`);
+    }
+    for (const face of roofTriangles) for (const point of face.points) {
       if (point.time === roof.maximumWidth)
         midpointXY.add(`${Math.fround(point.x)},${Math.fround(-point.y)}`);
     }

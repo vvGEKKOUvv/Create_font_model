@@ -13,6 +13,42 @@ function cut(poly, limit, above) {
   }
   return out.filter((p,i)=>Math.hypot(p.x-out[(i+out.length-1)%out.length].x,p.y-out[(i+out.length-1)%out.length].y)>1e-9);
 }
+// Read the shared meeting line from both sides of the folded roof. Vertices
+// use the same Float32 identity as the exported mesh, so coincident copies
+// become one node rather than a pair of overlapping wireframe edges. Only
+// complete loops are exposed: an ambiguous junction must never be repaired
+// with a segment across the cavity.
+function midpointLoops(faces, half) {
+  const key=p=>`${Math.fround(p.x)},${Math.fround(p.y)}`;
+  const segments=new Map();
+  for(const face of faces)for(let i=0;i<face.length;i++){
+    const a=face[i],b=face[(i+1)%face.length];
+    if(a.time!==half||b.time!==half)continue;
+    const ka=key(a),kb=key(b);if(ka===kb)continue;
+    segments.set([ka,kb].sort().join('|'),[a,b]);
+  }
+  const adjacent=new Map();
+  const edges=[...segments.values()];
+  for(let i=0;i<edges.length;i++)for(const p of edges[i]){
+    const k=key(p);if(!adjacent.has(k))adjacent.set(k,[]);adjacent.get(k).push(i);
+  }
+  if([...adjacent.values()].some(incident=>incident.length!==2))return [];
+  const unused=new Set(edges.map((_,i)=>i)),loops=[];
+  while(unused.size){
+    const first=unused.values().next().value;
+    const [start,second]=edges[first];
+    const loop=[start];let p=second;unused.delete(first);
+    while(key(p)!==key(start)){
+      loop.push(p);
+      const next=adjacent.get(key(p)).find(i=>unused.has(i));
+      if(next===undefined)return [];
+      unused.delete(next);const [a,b]=edges[next];p=key(a)===key(p)?b:a;
+    }
+    if(loop.length<3)return [];
+    loops.push(loop);
+  }
+  return loops;
+}
 // A generated cavity is an outer wavefront at wall thickness W. Folding the
 // solid roof at W/2 retains its meeting ridge independently of requested width.
 // The cavity boundary is rebuilt from the same roof nodes used by its faces.
@@ -73,7 +109,7 @@ export function prepareHollowMidpointRoof(outer, wall) {
   if(!holes.length)return null;
   // Folded outer faces keep their original zero-time boundary; inner faces
   // acquire their zero-time boundary at the exact cavity contour.
-  const roof={faces,faceDirections,maximumWidth:half,rings:[outer,...holes],regularization:source.regularization,ridgeTolerance:source.ridgeTolerance,midpointRoof:true};
+  const roof={faces,faceDirections,maximumWidth:half,rings:[outer,...holes],regularization:source.regularization,ridgeTolerance:source.ridgeTolerance,midpointRoof:true,midpointLoops:midpointLoops(faces,half)};
   try{validateRoofTriangles(triangulateBevelRoof(roof,half,[0,1],t=>t),roof.rings);}catch{return null;}
   if(variants.size>=4)variants.delete(variants.keys().next().value);variants.set(wall,roof);return roof;
 }

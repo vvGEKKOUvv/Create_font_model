@@ -1,6 +1,7 @@
 import cdt2d from "cdt2d";
 import { cleanupPlanarPatch } from "./roof-planar-cleanup.js";
 import { validateRoofTriangles } from "./roof-topology.js";
+import { repairHollowMidpointTriangles } from "./hollow-ring-repair.js";
 import { ShapeUtils, Vector2 } from "three";
 import skeletonPackage from "straight-skeleton";
 
@@ -368,25 +369,32 @@ export function triangulateBevelRoof(roof, width, samples, profile) {
     try { validateRoofTriangles(original, roof.rings); }
     catch (failure) {
       if (!roof.midpointRoof) throw failure;
-      // A roof is a single-valued height field. At a sampled collision, two
-      // distinct double-precision XY nodes can become one renderer vertex.
-      // Merge their subpixel heights as well, rather than retaining a tiny
-      // vertical slit or abandoning the entire shared meeting roof.
-      const rendered = new Map();
-      for (const { points } of original) for (const p of points) {
-        const key = `${Math.fround(p.x)},${Math.fround(p.y)}`;
-        const entry = rendered.get(key);
-        if (entry) { entry.min = Math.min(entry.min, p.height); entry.max = Math.max(entry.max, p.height); }
-        else rendered.set(key, { min: p.height, max: p.height });
+      try {
+        // Recover only tiny numerical seam gaps or a missing collinear
+        // centre-ring node. The repair must validate against every original
+        // boundary before it can replace the sampled surface.
+        original = repairHollowMidpointTriangles(original, roof, heightAt);
+      } catch {
+        // A roof is a single-valued height field. At a sampled collision, two
+        // distinct double-precision XY nodes can become one renderer vertex.
+        // Merge their subpixel heights as well, rather than retaining a tiny
+        // vertical slit or abandoning the entire shared meeting roof.
+        const rendered = new Map();
+        for (const { points } of original) for (const p of points) {
+          const key = `${Math.fround(p.x)},${Math.fround(p.y)}`;
+          const entry = rendered.get(key);
+          if (entry) { entry.min = Math.min(entry.min, p.height); entry.max = Math.max(entry.max, p.height); }
+          else rendered.set(key, { min: p.height, max: p.height });
+        }
+        const merged = original.map(face => ({ ...face, points: face.points.map(p => {
+          const entry = rendered.get(`${Math.fround(p.x)},${Math.fround(p.y)}`);
+          return entry.max - entry.min < 1e-3
+            ? { ...p, height: entry.max === 1 ? 1 : entry.min }
+            : p;
+        }) })).filter(({ points: [a,b,c] }) => !sameRendered(a,b) && !sameRendered(b,c) && !sameRendered(c,a));
+        validateRoofTriangles(merged, roof.rings);
+        original = merged;
       }
-      const merged = original.map(face => ({ ...face, points: face.points.map(p => {
-        const entry = rendered.get(`${Math.fround(p.x)},${Math.fround(p.y)}`);
-        return entry.max - entry.min < 1e-3
-          ? { ...p, height: entry.max === 1 ? 1 : entry.min }
-          : p;
-      }) })).filter(({ points: [a,b,c] }) => !sameRendered(a,b) && !sameRendered(b,c) && !sameRendered(c,a));
-      validateRoofTriangles(merged, roof.rings);
-      original = merged;
     }
     triangles = original;
   }
