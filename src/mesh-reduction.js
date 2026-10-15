@@ -12,10 +12,15 @@ export function reduceMeshGeometry(geometry, percentage = 0) {
     source.userData = { ...geometry.userData };
     if (geometry.userData.baseUVs) source.userData.baseUVs = Float64Array.from(Array.from(geometry.index.array).flatMap(i => [geometry.userData.baseUVs[i * 2], geometry.userData.baseUVs[i * 2 + 1]]));
     if (geometry.userData.uvKeys) source.userData.uvKeys = Array.from(geometry.index.array, i => geometry.userData.uvKeys[i]);
+    if (geometry.userData.protectedMidpointIndices) {
+      const protectedIndices = new Set(geometry.userData.protectedMidpointIndices);
+      source.userData.protectedMidpointIndices = Array.from(geometry.index.array, (index, corner) => protectedIndices.has(index) ? corner : -1).filter(corner => corner >= 0);
+    }
   }
   const positions = source.getAttribute('position'), uv = source.getAttribute('uv');
   const normal = source.getAttribute('normal');
   const base = source.userData.baseUVs ?? uv?.array;
+  const protectedIndices = new Set(source.userData.protectedMidpointIndices ?? []);
   const vertices = [], lookup = new Map(), faces = [];
   for (let i = 0; i < positions.count; i++) {
     const p = [positions.getX(i), positions.getY(i), positions.getZ(i)];
@@ -24,6 +29,10 @@ export function reduceMeshGeometry(geometry, percentage = 0) {
     let id = lookup.get(key);
     if (id === undefined) { id = vertices.length; lookup.set(key, id); vertices.push({ p, faces: new Set(), locked: false, seam: false, sharpNeighbors: new Set(), version: 0, signature: null }); }
     const v = vertices[id];
+    // A joined hollow midpoint remains a modelling edge even on a flat cap
+    // or when its two sides have identical shading. Protect positions rather
+    // than relying on the normals, and cover every duplicated UV corner.
+    if (protectedIndices.has(i)) { v.locked = true; v.midpoint = true; }
     const signature = uv ? `${base[i * 2]},${base[i * 2 + 1]}` : '';
     if (v.signature !== null && v.signature !== signature) v.seam = true;
     v.signature = signature;
@@ -135,9 +144,11 @@ export function reduceMeshGeometry(geometry, percentage = 0) {
     va.faces.clear(); va.version++; vb.version++;
     for (const fi of vb.faces) for (const id of faces[fi].ids) if (id !== b) offer(id, b);
   }
-  const output = new BufferGeometry(), outP = [], outUV = [], outN = [], outBase = [], keys = [];
+  const output = new BufferGeometry(), outP = [], outUV = [], outN = [], outBase = [], keys = [], protectedMidpointIndices = [];
   for (const f of faces) if (f.active) for (let j = 0; j < 3; j++) {
-    const id = f.ids[j], corner = f.corners[j]; outP.push(...vertices[id].p);
+    const id = f.ids[j], corner = f.corners[j];
+    if (vertices[id].midpoint) protectedMidpointIndices.push(outP.length / 3);
+    outP.push(...vertices[id].p);
     if (uv) { outUV.push(uv.getX(corner), uv.getY(corner)); outBase.push(base[corner * 2], base[corner * 2 + 1]); }
     if (normal) outN.push(normal.getX(corner), normal.getY(corner), normal.getZ(corner));
     keys.push(source.userData.uvKeys?.[corner] ?? `mesh-${corner}`);
@@ -145,7 +156,7 @@ export function reduceMeshGeometry(geometry, percentage = 0) {
   output.setAttribute('position', new Float32BufferAttribute(outP, 3));
   if (uv) output.setAttribute('uv', new Float32BufferAttribute(outUV, 2));
   if (normal) output.setAttribute('normal', new Float32BufferAttribute(outN, 3)); else output.computeVertexNormals();
-  output.userData = { ...geometry.userData, warnings: [...(geometry.userData.warnings ?? [])], baseUVs: new Float64Array(outBase), uvKeys: keys, meshOriginalTriangles: faces.length, meshReducedTriangles: remaining };
+  output.userData = { ...geometry.userData, warnings: [...(geometry.userData.warnings ?? [])], baseUVs: new Float64Array(outBase), uvKeys: keys, protectedMidpointIndices, meshOriginalTriangles: faces.length, meshReducedTriangles: remaining };
   if (remaining > target) output.userData.warnings.push('穴・尖った角・UV の境界を保護するため、メッシュの削減率を安全な範囲に制限しました。');
   output.computeBoundingBox(); output.computeBoundingSphere();
   if (source !== geometry) source.dispose();

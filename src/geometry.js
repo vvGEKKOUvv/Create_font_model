@@ -852,7 +852,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
       edgeDirections.set([key(a), key(b)].sort().join("|"),
         [(b.x - a.x) / length, (b.y - a.y) / length, ringIndex]);
     }
-    const faceDirections = roof.offsetRoof ? [] : roof.faces.map(face => {
+    const faceDirections = roof.faceDirections ?? (roof.offsetRoof ? [] : roof.faces.map(face => {
       for (let i = 0; i < face.length; i++) {
         const a = face[i], b = face[(i + 1) % face.length];
         if (Math.abs(a.time) > EPS || Math.abs(b.time) > EPS) continue;
@@ -860,7 +860,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
         if (direction) return direction;
       }
       return null;
-    });
+    }));
     for (const back of [false, true]) {
       for (const face of roofTriangles) {
         roofDirection = faceDirections[face.faceIndex] ?? null;
@@ -1042,11 +1042,10 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
           const di = roofDirections[cluster[cursor]], dj = roofDirections[j];
           // An unlabelled incident face must not bridge the two sides of a
           // constrained corner ridge during transitive normal clustering.
-          const crossesCornerRidge = dj && typeof dj[2] === "string" && cluster.some(index => {
-            const direction = roofDirections[index];
-            return direction && direction[2] === dj[2] && direction[0] * dj[0] + direction[1] * dj[1] < 0;
-          });
-          const sameSourceSurface = !di || !dj || (di[2] === dj[2] && di[0] * dj[0] + di[1] * dj[1] >= Math.cos(35 * Math.PI / 180));
+          const compatible = (a, b) => !a || !b ||
+            (a[2] === b[2] && a[0] * b[0] + a[1] * b[1] >= Math.cos(35 * Math.PI / 180));
+          const crossesCornerRidge = dj && cluster.some(index => !compatible(roofDirections[index], dj));
+          const sameSourceSurface = compatible(di, dj);
           if (!crossesCornerRidge && sameSourceSurface &&
             originalNormals[i] * originalNormals[k] +
               originalNormals[i + 1] * originalNormals[k + 1] +
@@ -1073,7 +1072,20 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
         normals.setXYZ(i, sx / length, sy / length, sz / length);
     }
   }
+  // Protect the exact shared medial chain independently of shading or UV seams.
+  const protectedMidpointIndices = [];
+  if (roof?.midpointRoof && roofTriangles) {
+    const midpointXY = new Set();
+    for (const face of roof.faces) for (const point of face) {
+      if (point.time === roof.maximumWidth)
+        midpointXY.add(`${Math.fround(point.x)},${Math.fround(-point.y)}`);
+    }
+    const positions = geometry.getAttribute("position");
+    for (let i = 0; i < positions.count; i++)
+      if (midpointXY.has(`${positions.getX(i)},${positions.getY(i)}`)) protectedMidpointIndices.push(i);
+  }
   geometry.userData = {
+    protectedMidpointIndices,
     warnings,
     effectiveBevel: bevel,
     maximumBevelWidth: maximumWidth,

@@ -25,7 +25,13 @@ export function prepareHollowMidpointRoof(outer, wall) {
   if(wall>=source.maximumWidth)return null;
   const span=Math.max(1,...outer.map(p=>Math.hypot(p.x-outer[0].x,p.y-outer[0].y)));
   const tolerance=span*1e-8;
-  const half=wall/2,faces=[],edges=[];
+  const half=wall/2,faces=[],edges=[],faceDirections=[];
+  const edgeKey=p=>`${Math.round(p.x*1e7)},${Math.round(p.y*1e7)}`;
+  const sourceDirections=new Map();
+  outer.forEach((a,i)=>{
+    const b=outer[(i+1)%outer.length],length=Math.hypot(b.x-a.x,b.y-a.y);
+    sourceDirections.set([edgeKey(a),edgeKey(b)].sort().join('|'),[(b.x-a.x)/length,(b.y-a.y)/length,0]);
+  });
   const nodes=new Map();
   const canonical=p=>{
     // Shared fold and cavity vertices must have the same exact distance on
@@ -36,11 +42,23 @@ export function prepareHollowMidpointRoof(outer, wall) {
       if (Math.abs(p.time-critical)<=tolerance) { p={...p,time:critical}; break; }
     const key=`${Math.round(p.x/tolerance)},${Math.round(p.y/tolerance)},${Math.round(p.time/tolerance)}`;if(!nodes.has(key))nodes.set(key,p);return nodes.get(key);};
   for(const raw of source.faces){
+    // A folded face may terminate at a skeleton event before reaching the
+    // cavity contour. Preserve its source provenance even without a zero-time
+    // edge; otherwise normal smoothing can bridge the two sides of the fold.
+    let direction=null;
+    for(let i=0;i<raw.length;i++){
+      const a=raw[i],b=raw[(i+1)%raw.length];
+      if(Math.abs(a.time)>1e-8||Math.abs(b.time)>1e-8)continue;
+      direction=sourceDirections.get([edgeKey(a),edgeKey(b)].sort().join('|'))??direction;
+    }
     const face=cut(raw,wall,false).map(canonical);if(face.length<3)continue;
     for(let i=0;i<face.length;i++){const a=face[i],b=face[(i+1)%face.length];if(Math.abs(a.time-wall)<tolerance&&Math.abs(b.time-wall)<tolerance)edges.push([a,b]);}
     const low=cut(face,half,false).map(canonical),high=cut(face,half,true).map(canonical);
-    if(low.length>=3)faces.push(low);
-    if(high.length>=3)faces.push(high.map(p=>({x:p.x,y:p.y,time:Math.max(0,wall-p.time)})));
+    if(low.length>=3){faces.push(low);faceDirections.push(direction);}
+    if(high.length>=3){
+      faces.push(high.map(p=>({x:p.x,y:p.y,time:Math.max(0,wall-p.time)})));
+      faceDirections.push(direction?[-direction[0],-direction[1],1]:null);
+    }
   }
   const key=p=>`${Math.fround(p.x)},${Math.fround(p.y)}`;
   const adjacency=new Map();
@@ -55,7 +73,7 @@ export function prepareHollowMidpointRoof(outer, wall) {
   if(!holes.length)return null;
   // Folded outer faces keep their original zero-time boundary; inner faces
   // acquire their zero-time boundary at the exact cavity contour.
-  const roof={faces,maximumWidth:half,rings:[outer,...holes],regularization:source.regularization,ridgeTolerance:source.ridgeTolerance,midpointRoof:true};
+  const roof={faces,faceDirections,maximumWidth:half,rings:[outer,...holes],regularization:source.regularization,ridgeTolerance:source.ridgeTolerance,midpointRoof:true};
   try{validateRoofTriangles(triangulateBevelRoof(roof,half,[0,1],t=>t),roof.rings);}catch{return null;}
   if(variants.size>=4)variants.delete(variants.keys().next().value);variants.set(wall,roof);return roof;
 }
