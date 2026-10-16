@@ -139,3 +139,18 @@ test('source references survive save and reject malformed relink metadata', () =
     assert.throws(() => serializeProject(invalid), /プロジェクト/);
   }
 });
+
+test('project preserves a separate referenced path restoration baseline including curves and holes',()=>{
+ const state=fixture();
+ state.objects[0].referenceShape=state.objects[0].shape.clone();
+ state.objects[0].shape.curves[0].v1.x+=5;
+ const serialized=serializeProject(state),loaded=parseProject(serialized);
+ assert.ok(loaded.objects[0].referenceShape instanceof Shape);
+ assert.notEqual(loaded.objects[0].referenceShape,loaded.objects[0].shape);
+ assert.equal(loaded.objects[0].referenceShape.holes.length,1);
+ assert.equal(loaded.objects[0].referenceShape.curves[1].type,'QuadraticBezierCurve');
+ assert.equal(serializeProject(loaded),serialized);
+ const raw=JSON.parse(serialized);
+ raw.state.objects[0].referenceShape.curves[0].type='constructor';
+ assert.throws(()=>parseProject(JSON.stringify(raw)),/不正/);
+});

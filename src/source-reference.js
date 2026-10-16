@@ -1,6 +1,7 @@
 import { Box2, Vector2 } from 'three';
 
 const clone = value => value === undefined ? undefined : structuredClone(value);
+const shapeSignature = shape => JSON.stringify(shape.toJSON(), (key, value) => key === 'uuid' ? undefined : value);
 export function sourceEntryKey(entry) {
   return entry.sourceKey || JSON.stringify([entry.layerName || '', entry.sourceElementId || entry.name || entry.id, entry.sourceShapeIndex || 0]);
 }
@@ -31,8 +32,11 @@ export function createSourceReference(entries, fileName, { groupId = globalThis.
 }
 export function alignReloadEntries(entries, reference) {
   if (!Array.isArray(reference.center) || reference.center.length !== 2 || !reference.center.every(Number.isFinite)) throw new Error('参照元の原点が不正です。');
-  return entries.map(entry => ({ ...entry, shape: translateShape(entry.shape, reference.center), pivot: [0,0,0],
-    sourceReference: { groupId: reference.groupId, fileName: reference.fileName, center: [...reference.center], key: sourceEntryKey(entry) } }));
+  return entries.map(entry => {
+    const shape = translateShape(entry.shape, reference.center);
+    return { ...entry, shape, referenceShape: shape.clone(), pivot: [0,0,0],
+      sourceReference: { groupId: reference.groupId, fileName: reference.fileName, center: [...reference.center], key: sourceEntryKey(entry) } };
+  });
 }
 /** Ambiguous or missing identities are never guessed: the relink screen resolves them. */
 export function planSourceReload(existing, incoming) {
@@ -53,14 +57,24 @@ export function planSourceReload(existing, incoming) {
 export function replaceReferencedPath(object, entry, reference = entry.sourceReference) {
   const settings = clone(object.settings), validSettings = clone(object.validSettings);
   // Shape UUIDs change when parsing the same file; only geometry changes invalidate UV edits.
-  const shapeSignature = shape => JSON.stringify(shape.toJSON(), (key, value) => key === 'uuid' ? undefined : value);
   const changed = shapeSignature(object.shape) !== shapeSignature(entry.shape);
   if (changed && settings) delete settings.uvEdits;
   if (changed && validSettings) delete validSettings.uvEdits;
-  return { ...object, shape: entry.shape.clone(), layerName: entry.layerName || '',
+  return { ...object, shape: entry.shape.clone(), referenceShape: entry.shape.clone(), layerName: entry.layerName || '',
     sourceElementId: entry.sourceElementId, sourceShapeIndex: entry.sourceShapeIndex, sourceKey: entry.sourceKey,
     sourceName: reference.fileName, sourceReference: { ...clone(reference), key: sourceEntryKey(entry) },
     settings, ...(validSettings ? { validSettings } : {}), invalid: false };
+}
+/** Restore only the editable path; object-level modeling and display settings remain intact. */
+export function restoreReferencedPath(object) {
+  if (object.referenceShape?.type !== 'Shape' || typeof object.referenceShape.clone !== 'function') throw new Error('参照元の形状が保存されていません。参照元を再読み込みしてください。');
+  const changed = shapeSignature(object.shape) !== shapeSignature(object.referenceShape);
+  const result = { ...object, shape: object.referenceShape.clone(), invalid: false };
+  for (const key of ['settings', 'validSettings']) if (object[key]) {
+    result[key] = clone(object[key]);
+    if (changed) delete result[key].uvEdits;
+  }
+  return result;
 }
 export function validateRelinkMatches(matches, existing, incoming) {
   const ids = new Set(existing.map(o => o.id)), usedIds = new Set(), usedIndices = new Set();

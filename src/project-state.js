@@ -77,6 +77,7 @@ function validateState(state) {
       }
     }
     validatePath(object.shape, true);
+    if (object.referenceShape !== undefined) validatePath(object.referenceShape, true);
   }
   if (state.selectedIds !== undefined && (!Array.isArray(state.selectedIds) ||
       new Set(state.selectedIds).size !== state.selectedIds.length ||
@@ -105,7 +106,8 @@ function removeRetiredSettings(object) {
   return clean;
 }
 export function serializeProject(state) {
-  const data = { ...state, objects: state.objects.map(object => ({ ...removeRetiredSettings(object), shape: object.shape.toJSON() })) };
+  const data = { ...state, objects: state.objects.map(object => ({ ...removeRetiredSettings(object), shape: object.shape.toJSON(),
+    ...(object.referenceShape ? { referenceShape: object.referenceShape.toJSON() } : {}) })) };
   validateJson(data);
   validateState(data);
   const text = JSON.stringify({ format: FORMAT, version: 2, state: data });
@@ -130,5 +132,6 @@ export function parseProject(text) {
       }
     }
   }
-  return { ...data.state, objects: data.state.objects.map(object => ({ ...removeRetiredSettings(object), shape: new Shape().fromJSON(object.shape) })) };
+  return { ...data.state, objects: data.state.objects.map(object => ({ ...removeRetiredSettings(object), shape: new Shape().fromJSON(object.shape),
+    ...(object.referenceShape ? { referenceShape: new Shape().fromJSON(object.referenceShape) } : {}) })) };
 }

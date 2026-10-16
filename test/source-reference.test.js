@@ -72,3 +72,33 @@ test('reloading unchanged geometry preserves UV edits despite new shape UUIDs',(
  assert.deepEqual(replaced.validSettings,old.validSettings);
  assert.notEqual(replaced.settings.uvEdits,old.settings.uvEdits);
 });
+
+test('reference baseline remains independent of edits and restoration preserves object modeling state',async()=>{
+ const {restoreReferencedPath}=await import('../src/source-reference.js');
+ const [original]=createSourceReference([entry('a')],'source.svg');
+ assert.notEqual(original.referenceShape,original.shape);
+ const signature=shape=>JSON.stringify(shape.toJSON(),(key,value)=>key==='uuid'?undefined:value);
+ const baseline=signature(original.referenceShape);
+ original.shape.curves[0].v1.x+=7;
+ const object={...original,name:'local name',color:'#333333',materialType:'metal',visible:false,settings:{depth:42,bevelSegments:2,uvEdits:{a:[1,2]}},transform:{position:[1,2,3],rotation:[0,1,0],scale:[2,2,2]}};
+ const restored=restoreReferencedPath(object);
+ assert.equal(signature(restored.shape),baseline);
+ assert.equal(signature(object.referenceShape),baseline);
+ for(const key of ['name','color','materialType','visible','transform','sourceReference','id']) assert.deepEqual(restored[key],object[key]);
+ assert.deepEqual(restored.settings,{depth:42,bevelSegments:2});
+ assert.ok(object.settings.uvEdits);
+ assert.notEqual(restored.shape,object.referenceShape);
+ restored.settings.uvEdits={a:[0,0]};
+ assert.deepEqual(restoreReferencedPath(restored).settings.uvEdits,{a:[0,0]});
+ assert.throws(()=>restoreReferencedPath({shape:entry('a').shape}),/参照元を再読み込み/);
+});
+test('reloading establishes a new restoration baseline rather than retaining the previous source',async()=>{
+ const {restoreReferencedPath}=await import('../src/source-reference.js');
+ const [old]=createSourceReference([entry('a')],'source.svg');
+ const [incoming]=alignReloadEntries([entry('a',160)],old.sourceReference);
+ const updated=replaceReferencedPath({...old,settings:{depth:20}},incoming);
+ const expected=updated.shape.getPoint(0).x;
+ updated.shape.curves[0].v1.x+=10;
+ assert.equal(restoreReferencedPath(updated).shape.getPoint(0).x,expected);
+ assert.notEqual(expected,old.shape.getPoint(0).x);
+});

@@ -9,7 +9,7 @@ import { parseSvg, buildMesh, exportObj, applyUvSettings } from "./geometry.js";
 import { defaultProfile } from "./bevel-profile.js";
 import { prepareContours } from "./path-reduction.js";
 import { inspectImportPath, reduceImportPath } from "./import-reduction.js";
-import { createSourceReference, alignReloadEntries, planSourceReload, replaceReferencedPath, validateRelinkMatches } from "./source-reference.js";
+import { createSourceReference, alignReloadEntries, planSourceReload, replaceReferencedPath, restoreReferencedPath, validateRelinkMatches } from "./source-reference.js";
 import { resolveSourceRelink } from "./source-relink-dialog.js";
 import { reorderObjectsByDrop } from "./object-reorder.js";
 import { editSvgPaths, editExistingPaths, editImportPaths } from "./path-editor.js";
@@ -80,8 +80,8 @@ app.innerHTML = `
     <details id="objects-details" class="control-section" open>
       <summary>オブジェクト選択 <span id="object-count">0</span></summary>
       <div id="objects"></div>
-      <button id="edit-path" class="subtle" disabled>選択したパスを編集</button>
-      <button id="source-reload" class="subtle" disabled>参照元を再読み込み</button><input id="source-reload-file" type="file" accept=".svg,image/svg+xml" hidden/>
+      <div class="object-actions path-actions"><button id="edit-path" class="subtle" disabled>パスを編集</button><button id="source-reload" class="subtle" disabled>パスを再読み込み</button></div>
+      <button id="source-restore" class="subtle" disabled title="保存された参照形状へ戻します。以前のプロジェクトは先にパスを再読み込みしてください。">参照形状に戻す</button><input id="source-reload-file" type="file" accept=".svg,image/svg+xml" hidden/>
       <div class="object-actions"><button id="duplicate" class="subtle" disabled>複製</button><button id="delete-object" class="subtle" disabled aria-label="選択したパスを削除">削除</button><button id="reorder-up" class="subtle" disabled>↑ 上へ</button><button id="reorder-down" class="subtle" disabled>↓ 下へ</button></div>
       <label class="export-folder-option"><input id="export-folder" type="checkbox"/> OBJ の保存先を指定</label>
       <p class="export-visibility-note">非表示のオブジェクトは書き出し対象外</p>
@@ -507,6 +507,7 @@ function syncSelectionActions() {
   $("reorder-up").disabled = !objects.length || selected === 0;
   $("reorder-down").disabled = !objects.length || selected === objects.length - 1;
   $("source-reload").disabled = !selectedObject();
+  $("source-restore").disabled = !selectedObjects().some(object => object.referenceShape);
 }
 function list() {
   syncSelectionActions();
@@ -944,6 +945,26 @@ $('source-reload').onclick = async () => {
   $('source-reload-file').click();
 };
 
+$("source-restore").onclick = () => {
+  try {
+    if (!flushPending()) throw new Error("現在の設定を修正してから参照形状へ戻してください。");
+    const selectedPaths = selectedObjects(), targets = selectedPaths.filter(object => object.referenceShape);
+    if (!targets.length) throw new Error("参照元の形状が保存されていません。パスを再読み込みしてください。");
+    const replacements = targets.map(restoreReferencedPath), meshes = makeMeshes(replacements);
+    history.commit(); transformTools.detach();
+    replacements.forEach((replacement, i) => {
+      const index = objects.findIndex(object => object.id === replacement.id), previous = group.children[index];
+      objects[index] = replacement;
+      group.remove(previous); group.add(meshes[i]);
+      group.children.splice(group.children.indexOf(meshes[i]), 1); group.children.splice(index, 0, meshes[i]);
+      disposeWireframe(previous); previous.geometry.dispose(); previous.material.dispose();
+    });
+    uvSelectedKey = null; uvDragKey = null;
+    list(); sync(); transformTools.sync(); refreshMeshInfo(); drawUV(); recordHistory(true);
+    notice(`${targets.length} 個のパスを参照形状に戻しました。${targets.length < selectedPaths.length ? '参照形状のないパスは維持しました。先にパスを再読み込みしてください。' : ''}`);
+  } catch (error) { notice(error.message, true); }
+};
+
 $("edit-path").onclick = async () => {
   const targets = selectedObjects();
   if (!targets.length) return;
@@ -1338,8 +1359,8 @@ function animate() {
   }
 }
 function copyObjectState(object) {
-  const { shape, ...state } = object;
-  return { ...structuredClone(state), shape };
+  const { shape, referenceShape, ...state } = object;
+  return { ...structuredClone(state), shape, ...(referenceShape ? { referenceShape } : {}) };
 }
 function captureHistory() {
   return {
@@ -1356,6 +1377,7 @@ function captureHistory() {
     sourceLabel: $("dropzone").querySelector("strong").textContent,
     fileSequence, objectSequence, view: captureView(),
     shapeSignatures: objects.map(object => object.shape.uuid),
+    referenceSignatures: objects.map(object => object.referenceShape?.uuid ?? null),
   };
 }
 function restoreHistory(snapshot, strict = false) {
@@ -1422,7 +1444,7 @@ history = createHistory({
   restore: restoreHistory,
   fingerprint: (snapshot) =>
     JSON.stringify(snapshot, (key, value) =>
-      ["shape", "selected", "selectedIds", "selectionAnchorId", "validSettings", "invalid", "view", "fileSequence", "objectSequence"].includes(key)
+      ["shape", "referenceShape", "selected", "selectedIds", "selectionAnchorId", "validSettings", "invalid", "view", "fileSequence", "objectSequence"].includes(key)
         ? undefined
         : value,
     ),
