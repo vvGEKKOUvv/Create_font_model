@@ -33,6 +33,8 @@ export function createBevelEditor(host, { getObject, onChange }) {
   function save(p) {
     const o = getObject();
     if (!o) return;
+    if (!Array.isArray(o.settings.innerCurvePoints))
+      o.settings.innerCurvePoints = normalizeProfile(o.settings.curvePoints || defaultProfile());
     o.settings[profileKey()] = normalizeProfile(p);
     onChange();
     sync();

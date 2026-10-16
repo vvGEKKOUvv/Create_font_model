@@ -37,14 +37,16 @@ test("explicit collinear curve controls retain mandatory bevel edges", () => {
   mesh.dispose();
 });
 
-test("independent inner profiles add only their explicit mapped anchors", () => {
+test("independent inner profiles add explicit anchors only to their own samples", () => {
   const mesh = buildMesh(rectangle(true), { depth: 30, bevelSize: 5, bevelWidth: 4,
     bevelContinue: true, bevelSegments: 2, curvePoints: curved,
     innerCurvePoints: [{ x: 0, y: 0 }, { x: .3, y: .6 }, { x: 1, y: 1 }] });
-  const samples = mesh.userData.bevelSamples;
+  const samples = mesh.userData.innerBevelSamples;
   assert.ok(samples.length >= 4);
   assert.ok(samples.every(Number.isFinite));
-  assert.ok(samples.length <= 5, "only one extra mapped inner anchor is necessary");
+  assert.ok(samples.length <= 5, "only one extra inner anchor is necessary");
+  assert.ok(samples.some(t => Math.abs(t - .3) < 1e-8), "inner control retains its own edge level");
+  assert.equal(mesh.userData.bevelSamples.length, 4, "inner anchors do not add outer cuts");
   mesh.dispose();
 });
 

@@ -5,6 +5,7 @@ import { SVGLoader } from "three/addons/loaders/SVGLoader.js";
 
 import { prepareContours } from "./path-reduction.js";
 
+import { triangulateIndependentRoof } from "./independent-roof.js";
 import { independentRoofProfiles } from "./dual-bevel-profile.js";
 
 import { normalizeProfile, evaluateProfile, profileSpanIsStraight, monotonicProfile } from "./bevel-profile.js";
@@ -602,11 +603,8 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
   }
   rings = variant.rings;
   const { box, effectiveWallThickness } = variant;
-  const separateInnerProfile = rings.length > 1 &&
-    Array.isArray(settings.innerCurvePoints) &&
-    JSON.stringify(normalizeProfile(settings.innerCurvePoints)) !==
-      JSON.stringify(Array.isArray(settings.curvePoints) && settings.curvePoints.length
-        ? normalizeProfile(settings.curvePoints) : []);
+  // Surface ownership must not switch algorithms when equal curves diverge.
+  const separateInnerProfile = rings.length > 1;
   const sourceOrientation = Math.sign(area(rings[0]));
   const narrowDenseConvex = explicitWidth && rings.length === 1 &&
     rings[0].length > 512 && requestedBevelWidth <=
@@ -637,7 +635,6 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
     !safeHollowFallback &&
     !narrowDenseConvex &&
     (settings.bevelContinue === true ||
-      separateInnerProfile ||
       (explicitWidth && requestedBevelWidth > variant.maximumBevelWidth + EPS))
   ) {
     try {
@@ -653,7 +650,6 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
     !roof &&
     !safeHollowFallback &&
     (settings.bevelContinue === true ||
-      separateInnerProfile ||
       (explicitWidth && requestedBevelWidth > variant.maximumBevelWidth + EPS))
   ) {
     const offsetRoof = prepareOffsetBevelRoof(
@@ -763,48 +759,29 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
     ? control.every(p => Math.abs(p.x - p.y) < 1e-12) &&
       control.slice(0, -1).every((p, i) => profileSpanIsStraight(p, control[i + 1]))
     : curve === 0;
-  const straightBoth = straight(points) && straight(innerPoints);
-  const resolution = straightBoth ? 1 : 512;
-  const cumulative = [0];
-  let previousOuter = profile(0), previousInner = innerProfile(0);
-  for (let i = 1; i <= resolution; i++) {
-    const outer = profile(i / resolution), inner = innerProfile(i / resolution);
-    const outerLength = Math.hypot(bevelHeight / resolution, bevel * (outer - previousOuter));
-    const innerLength = Math.hypot(bevelHeight / resolution, bevel * (inner - previousInner));
-    cumulative.push(cumulative.at(-1) + (separateInnerProfile ? (outerLength + innerLength) / 2 : outerLength));
-    previousOuter = outer; previousInner = inner;
-  }
-  const samples = [0];
-  for (let j = 1; j <= segments; j++) {
-    if (straightBoth) { samples.push(j / (segments + 1)); continue; }
-    const target = cumulative.at(-1) * j / (segments + 1);
-    let low = 0, high = resolution;
-    while (high - low > 1) {
-      const mid = (low + high) >> 1;
-      if (cumulative[mid] < target) low = mid; else high = mid;
+  function profileSamples(control, evaluate) {
+    const isStraight = straight(control), resolution = isStraight ? 1 : 512;
+    const cumulative = [0]; let previous = evaluate(0);
+    for (let i=1;i<=resolution;i++) {
+      const value = evaluate(i/resolution);
+      cumulative.push(cumulative.at(-1)+Math.hypot(bevelHeight/resolution,bevel*(value-previous)));
+      previous=value;
     }
-    const length = cumulative[high] - cumulative[low];
-    samples.push((low + (length > 0 ? (target - cumulative[low]) / length : 0)) / resolution);
-  }
-  samples.push(1);
-  // The original default middle control edits the curve, but is not an extra
-  // loop. Added controls explicitly request an edge, even at zero loop count.
-  const explicitAnchors = (control) => control.filter((p, i) => i > 0 && i < control.length - 1 &&
-    (p.edge === true || (p.edge !== false && (control.length !== 3 ||
-      Math.abs(p.x - .5) > 1e-8 || Math.abs(p.y - .5) > 1e-8))));
-  const anchors = explicitAnchors(points).map(p => p.x);
-  if (separateInnerProfile) for (const p of explicitAnchors(innerPoints)) {
-    const target = innerProfile(p.x);
-    let low = 0, high = 1;
-    for (let i = 0; i < 32; i++) {
-      const mid = (low + high) / 2;
-      if (profile(mid) < target) low = mid; else high = mid;
+    const result=[0];
+    for(let j=1;j<=segments;j++) {
+      if(isStraight){result.push(j/(segments+1));continue;}
+      const target=cumulative.at(-1)*j/(segments+1);let low=0,high=resolution;
+      while(high-low>1){const mid=(low+high)>>1;if(cumulative[mid]<target)low=mid;else high=mid;}
+      const length=cumulative[high]-cumulative[low];
+      result.push((low+(length>0?(target-cumulative[low])/length:0))/resolution);
     }
-    anchors.push((low + high) / 2);
+    result.push(1);
+    for(const [i,p] of control.entries())if(i>0&&i<control.length-1&&
+      (p.edge===true||(p.edge!==false&&(control.length!==3||Math.abs(p.x-.5)>1e-8||Math.abs(p.y-.5)>1e-8))))
+      if(!result.some(t=>Math.abs(t-p.x)<1e-7))result.push(p.x);
+    return result.sort((a,b)=>a-b);
   }
-  for (const t of anchors)
-    if (!samples.some(value => Math.abs(value - t) < 1e-7)) samples.push(t);
-  samples.sort((a, b) => a - b);
+  const samples=profileSamples(points,profile),innerSamples=profileSamples(innerPoints,innerProfile);
   if ((roof || (safeHollowFallback && separateInnerProfile)) &&
       (!monotonicProfile(points) || !monotonicProfile(innerPoints)))
     throw new Error("内側・外側のベベルカーブは、戻らない形状にしてください。");
@@ -824,6 +801,9 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
         inset: bevel * (1 - profile(samples[i])),
         innerInset: bevel * (1 - innerProfile(samples[i])),
       });
+  const innerLevels = bevel ? innerSamples.map(t => ({z:bevelHeight*t,inset:bevel*(1-innerProfile(t))})) : [{z:0,inset:0}];
+  if(depth-bevelHeight-innerLevels.at(-1).z>EPS) innerLevels.push({z:depth-bevelHeight,inset:0});
+  if(bevel)for(let i=innerSamples.length-2;i>=0;i--)innerLevels.push({z:depth-bevelHeight*innerSamples[i],inset:bevel*(1-innerProfile(innerSamples[i]))});
   const positions = [],
     uvs = [],
     baseUVs = [],
@@ -867,9 +847,19 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
   let roofTriangles = null;
   if (roof && bevel > EPS) {
     try {
-      roofTriangles = roof.offsetRoof
-        ? triangulateOffsetBevelRoof(roof, bevel, samples, profile)
-        : triangulateBevelRoof(roof, bevel, samples, profile);
+      const sourceRoof = roof.medialRoof || roof;
+      if (rings.length > 1 && sourceRoof.faces?.every(face => Array.isArray(face))) {
+        roofTriangles = triangulateIndependentRoof(sourceRoof,rings,bevel,samples,innerSamples,profile,innerProfile,
+          (cuts,evaluate) => triangulateBevelRoof(sourceRoof,bevel,cuts,evaluate));
+      } else {
+        if (roof.offsetRoof && rings.length > 1) {
+          const fixedSamples=Array.from({length:segments+2},(_,i)=>i/(segments+1));
+          roofTriangles=triangulateOffsetBevelRoof(roof,bevel,fixedSamples,t=>t);
+          roofTriangles=independentRoofProfiles(roofTriangles,rings,profile,innerProfile,JSON.stringify([points,innerPoints,curve]));
+        } else roofTriangles = roof.offsetRoof
+          ? triangulateOffsetBevelRoof(roof,bevel,samples,profile)
+          : triangulateBevelRoof(roof,bevel,samples,profile);
+      }
     } catch (error) {
       if (roof.midpointRoof && error.code === "INVALID_BEVEL_TOPOLOGY")
         return buildMesh(shape, settings, true);
@@ -882,12 +872,10 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
       if (roof.offsetRoof && error.code === "INVALID_BEVEL_TOPOLOGY" &&
           rings.length > 1 && !safeHollowFallback)
         return buildMesh(shape, settings, true);
-      throw new Error(error.message);
+      throw error;
     }
   }
   if (roofTriangles) {
-    if (separateInnerProfile)
-      roofTriangles = independentRoofProfiles(roofTriangles, rings, profile, innerProfile, JSON.stringify([points, innerPoints, curve]));
     // Faces grow from oriented source edges. Nearby curve samples may share
     // shading, but opposite edges or a sharp source corner must keep the
     // medial ridge as a crease, even when the bevel is shallow.
@@ -999,12 +987,13 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
           distances.at(-1) + ring[i].distanceTo(ring[(i + 1) % ring.length]),
         );
       const total = distances.at(-1);
-      const layered = levels.map((l) =>
-        offset(ring, ringIndex ? l.innerInset : l.inset, sharp).map(
+      const ringLevels = ringIndex ? innerLevels : levels;
+      const layered = ringLevels.map((l) =>
+        offset(ring, l.inset, sharp).map(
           (p) => new THREE.Vector3(p.x, p.y, l.z),
         ),
       );
-      for (let l = 0; l < levels.length - 1; l++)
+      for (let l = 0; l < ringLevels.length - 1; l++)
         for (let i = 0; i < ring.length; i++) {
           const j = (i + 1) % ring.length,
             u = distances[i] / total,
@@ -1018,10 +1007,10 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
               (2.02 + s * 0.96) / 3,
               (ringIndex + 0.02 + (0.96 * z) / depth) / rings.length,
             );
-          const ua = sideUv(u, levels[l].z),
-            ub = sideUv(v, levels[l].z),
-            uc = sideUv(v, levels[l + 1].z),
-            ud = sideUv(u, levels[l + 1].z);
+          const ua = sideUv(u, ringLevels[l].z),
+            ub = sideUv(v, ringLevels[l].z),
+            uc = sideUv(v, ringLevels[l + 1].z),
+            ud = sideUv(u, ringLevels[l + 1].z);
           triangle(a, b, c, ua, ub, uc);
           triangle(a, c, d, ua, uc, ud);
         }
@@ -1149,6 +1138,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
       : maximumWidth,
     continuedBevel: !!roofTriangles,
     bevelSamples: samples.slice(),
+    innerBevelSamples: innerSamples.slice(),
     effectiveBevelDepth: bevelHeight,
     centralWallDepth: depth - 2 * bevelHeight,
     effectiveWallThickness,

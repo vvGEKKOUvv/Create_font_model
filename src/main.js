@@ -677,6 +677,8 @@ const bevelEditor = createBevelEditor(
       const key = $("curve-side").value === "inner" ? "innerCurvePoints" : "curvePoints";
       let cleared = false;
       for (const target of selectedObjects()) {
+        if (key === "curvePoints" && !Array.isArray(target.settings.innerCurvePoints))
+          target.settings.innerCurvePoints = structuredClone(target.settings.curvePoints || defaultProfile());
         if (target !== o) target.settings[key] = structuredClone(o.settings[key]);
         cleared = clearShapeUV(target) || cleared;
         scheduleRebuild(target);
