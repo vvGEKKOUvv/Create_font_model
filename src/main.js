@@ -1,3 +1,4 @@
+import { PATH_VERTEX_LIMIT, EDITOR_RAW_VERTEX_LIMIT, TOTAL_RAW_VERTEX_LIMIT } from "./path-limits.js";
 import { createPresetPanel } from "./preset-panel.js";
 import { applyPresetToObject } from "./parameter-presets.js";
 import { resolveSelection } from "./object-selection.js";
@@ -26,6 +27,8 @@ const defaults = {
   meshReductionPercentage: 0,
   pathOffset: 0,
   depth: 24,
+  extrusionMirror: true,
+  extrusionCap: true,
   bevelSize: 3,
   bevelWidth: 3,
   bevelContinue: true,
@@ -107,6 +110,8 @@ app.innerHTML = `
     <details class="control-section" open>
       <summary>押し出し <span>EXTRUDE</span></summary>
       ${field("depth", "奥行き", 24, 0.01, 100, 0.1)}
+      <label class="toggle-row"><span>原点を境にミラー</span><input id="extrusionMirror" type="checkbox" checked/><i></i></label>
+      <label class="toggle-row"><span>原点側の面を塞ぐ</span><input id="extrusionCap" type="checkbox" checked/><i></i></label>
     </details>
     <details id="bevel-settings" class="control-section" open>
       <summary>ベベル <span>BEVEL</span></summary>
@@ -639,6 +644,8 @@ function sync() {
     return;
   }
   $("selected-name").textContent = selectedIds.size > 1 ? `${selectedIds.size} 個選択 · ${o.name}` : o.name;
+  o.settings.extrusionMirror ??= true;
+  o.settings.extrusionCap ??= true;
   o.settings.pathOffset ??= 0;
   o.settings.meshReductionPercentage ??= 0;
   const offsetBox = new THREE.Box2().setFromPoints(o.shape.extractPoints(4).shape);
@@ -696,7 +703,7 @@ async function load(text, name, editBeforeImport = false, repairOnProblem = fals
       notice("頂点数が処理上限を超えているため、パス調整エディタを開きます。");
       return load(text, name, true, false);
     }
-    if (oversized.length && !window.confirm(`${name} の ${oversized.length} 個のパスが処理上限（3,000頂点）を超えています。最大 ${Math.max(...oversized.map(data => data.originalCount)).toLocaleString()} 頂点です。形状を可能な限り保って処理可能な頂点数まで削減し、読み込みますか？`)) {
+    if (oversized.length && !window.confirm(`${name} の ${oversized.length} 個のパスが処理上限（6,000頂点）を超えています。最大 ${Math.max(...oversized.map(data => data.originalCount)).toLocaleString()} 頂点です。形状を可能な限り保って処理可能な頂点数まで削減し、読み込みますか？`)) {
       notice("読み込みをキャンセルしました。");
       return;
     }
@@ -820,8 +827,8 @@ async function reloadSourceFile(file, targets = sourceReloadTargets(), handle = 
       try {
         if (current) {
           const counts = current.objects.map(entry => inspectImportPath(entry.shape).originalCount);
-          if (counts.some(count => count > 20000) || counts.reduce((sum, count) => sum + count, 0) > 200000)
-            throw new Error('パス調整エディタの上限 20,000 頂点（全体 200,000 頂点）を超えています。');
+          if (counts.some(count => count > EDITOR_RAW_VERTEX_LIMIT) || counts.reduce((sum, count) => sum + count, 0) > TOTAL_RAW_VERTEX_LIMIT)
+            throw new Error('パス調整エディタの上限 40,000 頂点（全体 200,000 頂点）を超えています。');
           return await editImportPaths(current.objects, file.name, current.warnings);
         }
         return await editSvgPaths(text, file.name);
@@ -833,7 +840,7 @@ async function reloadSourceFile(file, targets = sourceReloadTargets(), handle = 
         if (!window.confirm(`${error.message} 編集可能な頂点数まで削減してパス調整エディタを開きますか？`)) return null;
         const reduced = current.objects.map(entry => inspectImportPath(entry.shape).overBudget
           ? { ...entry, shape: reduceImportPath(entry.shape).shape } : entry);
-        if (reduced.reduce((sum, entry) => sum + inspectImportPath(entry.shape).originalCount, 0) > 200000)
+        if (reduced.reduce((sum, entry) => sum + inspectImportPath(entry.shape).originalCount, 0) > TOTAL_RAW_VERTEX_LIMIT)
           throw new Error('パス調整エディタ全体の上限 200,000 頂点を超えています。SVG を分割してください。');
         return editImportPaths(reduced, file.name, [...current.warnings, '編集可能な頂点数まで削減しました。']);
       }
@@ -1006,6 +1013,7 @@ $("edit-path").onclick = async () => {
 
 function syncBevelLimit() {
   const o = selectedObject();
+  $("extrusionCap").disabled = !o || o.settings.extrusionMirror !== false;
   if (!o) return;
   const widthMaximum = Math.max(
     o.settings.bevelWidth,
@@ -1047,6 +1055,7 @@ Object.keys(defaults).forEach((key) => {
     }
     if (key === "depth" || key === "bevelContinue") syncBevelLimit();
     if (key === "hollow") curveDraw();
+    if (key === "extrusionMirror") $("extrusionCap").disabled = o.settings.extrusionMirror !== false;
     let clearedUV = false;
     for (const target of selectedObjects()) {
       target.settings[key] = o.settings[key];

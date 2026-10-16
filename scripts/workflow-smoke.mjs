@@ -101,7 +101,7 @@ try {
   await expect(page.locator('#path-editor-dialog')).toBeVisible();await expect(page.locator('#path-editor-import')).toBeDisabled();
   await page.locator('#path-editor-close').click();await page.locator('#path-editor-import').click();await expect(page.locator('#object-count')).toHaveText('5');
   // An oversized but otherwise valid drop opens the editor instead of a native confirmation.
-  const circlePoints=Array.from({length:3001},(_,i)=>{const angle=i/3001*Math.PI*2;return `${100+100*Math.cos(angle)},${100+100*Math.sin(angle)}`;}).join(' ');
+  const circlePoints=Array.from({length:6001},(_,i)=>{const angle=i/6001*Math.PI*2;return `${100+100*Math.cos(angle)},${100+100*Math.sin(angle)}`;}).join(' ');
   const oversized=svg(`<polygon points="${circlePoints}"/>`);
   const dialogs=[];const onDialog=async dialog=>{dialogs.push(dialog.type());await dialog.dismiss();};page.on('dialog',onDialog);
   await page.locator('#dropzone').evaluate((el,content)=>{const dt=new DataTransfer();dt.items.add(new File([content],'oversized.svg',{type:'image/svg+xml'}));el.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:dt}));},oversized);

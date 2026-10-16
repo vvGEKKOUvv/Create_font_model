@@ -1,7 +1,7 @@
 import { chromium, expect } from '@playwright/test';
 import { spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 const standalone=process.env.EDITOR_REPAIR_HTML;
 const url=process.env.EDITOR_REPAIR_URL||'http://127.0.0.1:5192';
 const server=standalone||process.env.EDITOR_REPAIR_URL?null:spawn('npm',['run','dev','--','--host','127.0.0.1','--port','5192','--strictPort'],{detached:true,stdio:'pipe'});
@@ -78,8 +78,22 @@ try{
  assert.deepEqual(bowAfter,bowBefore,'Ambiguous split repair keeps original vertices intact');
  assert(await page.locator('.path-editor-issue-edge').count()>0);await expect(page.locator('#path-editor-status')).toContainText(/分割|複数|修復/);
  await page.locator('#path-editor-cancel').click();
+ // Bulk reduction acts on enabled drafts, reports per-path failures, and shares one history step.
+ const circleD=(n,cx)=>'M'+Array.from({length:n},(_,i)=>{const a=i/n*Math.PI*2;return `${cx+20*Math.cos(a)} ${50+20*Math.sin(a)}`;}).join('L')+'Z';
+ await upload('path-editor-file',`<svg xmlns="http://www.w3.org/2000/svg"><path id="bulk-a" d="${circleD(80,30)}"/><path id="bulk-b" d="${circleD(120,90)}"/><path id="bulk-invalid" d="M0 0L20 20L0 20L20 0Z"/><path id="bulk-excluded" d="${circleD(90,150)}"/></svg>`);
+ await expect(page.locator('#path-editor-dialog')).toBeVisible();await expect(page.locator('#path-editor-tolerance')).toHaveValue('0.1');
+ await page.locator('.path-editor-row input[type="checkbox"]').nth(3).uncheck();
+ const outlineState=()=>page.locator('#path-editor-canvas .path-editor-outline').evaluateAll(nodes=>nodes.map(n=>n.getAttribute('d')));
+ const beforeBulk=await outlineState();await page.locator('#path-editor-reduce-all').click();
+ await expect(page.locator('.path-editor-row.reduction-error')).toHaveCount(1);
+ const afterBulk=await outlineState();assert(afterBulk[0].length<beforeBulk[0].length);assert(afterBulk[1].length<beforeBulk[1].length);
+ assert.equal(afterBulk[2],beforeBulk[2],'Invalid path is unchanged on failed bulk reduction');assert.equal(afterBulk[3],beforeBulk[3],'Excluded path is not reduced');
+ await expect(page.locator('.path-editor-row.reduction-error')).toHaveCount(1);await expect(page.locator('.path-editor-row').nth(2)).toHaveClass(/reduction-error/);
+ await page.locator('#path-editor-undo').click();assert.deepEqual(await outlineState(),beforeBulk,'One undo restores all successful bulk reductions');
+ await page.locator('#path-editor-redo').click();assert.deepEqual(await outlineState(),afterBulk,'One redo restores the whole bulk operation');
+ await page.locator('#path-editor-cancel').click();
  // Overflow diagnostics stay editable after the reported crossing has been resolved.
- const overflowCount=3201,theta=2*Math.PI/overflowCount;
+ const overflowCount=6201,theta=2*Math.PI/overflowCount;
  const overflowPoints=Array.from({length:overflowCount},(_,i)=>[100+50*Math.cos(i*theta),100+50*Math.sin(i*theta)]);
  [overflowPoints[1],overflowPoints[2]]=[overflowPoints[2],overflowPoints[1]];
  await openRepair(`M${overflowPoints.map(p=>p.join(' ')).join('L')}Z`);
@@ -93,6 +107,20 @@ try{
  const remainingEditable=await page.locator('#path-editor-canvas circle[data-contour][data-point]').evaluateAll(nodes=>nodes.map(n=>`${n.dataset.contour}:${n.dataset.point}`));
  assert(previousEditable.every(key=>remainingEditable.includes(key)),'Former problem endpoints remain editable after resolving overflow crossing');
  await expect(crossingPoint).toBeVisible();await page.locator('#path-editor-cancel').click();
+ // The mirror switch controls actual exported half geometry, including the optional origin cap.
+ const exported=async()=>{const d=page.waitForEvent('download',download=>download.suggestedFilename().endsWith('.obj'));await page.locator('#export').click();const text=await readFile(await(await d).path(),'utf8');const vertices=text.split('\n').filter(l=>l.startsWith('v ')).map(l=>l.trim().split(/\s+/).slice(1).map(Number));const faces=text.split('\n').filter(l=>l.startsWith('f ')).map(l=>l.trim().split(/\s+/).slice(1).map(v=>vertices[Number(v.split('/')[0])-1]));return {vertices,originFaces:faces.filter(face=>face.every(v=>Math.abs(v[2])<1e-6)).length};};
+ await expect(page.locator('#extrusionMirror')).toBeChecked();await expect(page.locator('#extrusionCap')).toBeDisabled();
+ if(process.env.EDITOR_REPAIR_STATE)await writeFile(process.env.EDITOR_REPAIR_STATE,JSON.stringify({format:'PathFormProject',version:2,state:await saved()}));
+ const mirrorObj=await exported(),zs=mirrorObj.vertices.map(v=>v[2]);assert(Math.abs(Math.min(...zs)+18.5)<1e-5);assert(Math.abs(Math.max(...zs)-18.5)<1e-5);
+ await page.locator('#extrusionMirror').uncheck();await expect(page.locator('#extrusionCap')).toBeEnabled();
+ await page.waitForTimeout(150);assert(!await page.locator('#message').evaluate(el=>el.classList.contains('error')),await page.locator('#message').textContent());
+ const cappedHalf=await exported(),halfZ=cappedHalf.vertices.map(v=>v[2]);assert(Math.abs(Math.min(...halfZ))<1e-6);assert(Math.abs(Math.max(...halfZ)-18.5)<1e-5);assert(cappedHalf.originFaces>0,'Enabled cap closes exported origin plane');
+ await page.locator('#extrusionCap').uncheck();const openHalf=await exported();assert.equal(openHalf.originFaces,0,'Disabled cap leaves exported origin plane open');
+ const halfState=await saved();await page.locator('#project-file').setInputFiles({name:'half.pathform',mimeType:'application/json',buffer:Buffer.from(JSON.stringify({format:'PathFormProject',version:2,state:halfState}))});
+ await expect(page.locator('#extrusionMirror')).not.toBeChecked();await expect(page.locator('#extrusionCap')).not.toBeChecked();
+ await page.locator('#preset-settings').evaluate(el=>el.open=true);await page.locator('#preset-name').fill('Positive open half');await page.locator('#preset-save').click();
+ await page.locator('#extrusionMirror').check();await page.locator('#preset-apply').click();await expect(page.locator('#extrusionMirror')).not.toBeChecked();await expect(page.locator('#extrusionCap')).not.toBeChecked();
+ await page.locator('#undo').click();await expect(page.locator('#extrusionMirror')).toBeChecked();await page.locator('#redo').click();await expect(page.locator('#extrusionMirror')).not.toBeChecked();
  assert.deepEqual(errors,[]);if(standalone)assert.deepEqual(requests,[]);
- console.log('Editor repair checks passed: toolbar labels/layout, persistent reference baseline, edit/restore/undo, latest reloaded baseline, diagnostic markers/focus, conservative repair/undo/refusal, overflow point persistence.');
+ console.log('Editor repair checks passed: toolbar labels/layout, persistent reference baseline, edit/restore/undo, latest reloaded baseline, diagnostic markers/focus, conservative repair/undo/refusal, overflow point persistence, bulk reduction/history, mirrored/half OBJ cap/state/preset.');
 }finally{await browser?.close();if(server?.pid)try{process.kill(-server.pid,'SIGTERM');}catch{}}

@@ -21,7 +21,7 @@ test('editor distinguishes crossings between rings, outside holes and nested hol
   assert.equal(validateDraft(draft(square(),square(3,3,4),square(12,12,4))).valid,true);
 });
 test('diagnostic scan is bounded and vertex overflow still exposes crossing locations',()=>{
-  const ring=contour(Array.from({length:3001},(_,i)=>[Math.cos(i/3001*Math.PI*2),Math.sin(i/3001*Math.PI*2)]));
+  const ring=contour(Array.from({length:6001},(_,i)=>[Math.cos(i/6001*Math.PI*2),Math.sin(i/6001*Math.PI*2)]));
   const overflow=diagnoseDraft(draft(ring));assert(overflow.issues.some(i=>i.type==='vertex-limit'));assert(overflow.comparisonCount<=250001);
   const crossing=diagnoseDraft(draft(contour([[0,0],[20,20],[0,20],[20,0]]),ring));
   assert(crossing.issues.some(i=>i.type==='self-crossing'&&i.edges.length===2));assert(crossing.comparisonCount<=250001);

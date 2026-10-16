@@ -50,10 +50,10 @@ test("editor rejects self intersection, degenerate rings, nonfinite points and v
   assert.equal(validateDraft(draft).valid, false);
   draft.contours = [{ closed: true, points: [{x:0,y:0},{x:Infinity,y:0},{x:2,y:1}] }];
   assert.equal(validateDraft(draft).valid, false);
-  draft.contours = [{ closed: true, points: Array.from({length:3001}, (_,i) => ({x:Math.cos(i/3001*2*Math.PI),y:Math.sin(i/3001*2*Math.PI)})) }];
+  draft.contours = [{ closed: true, points: Array.from({length:6001}, (_,i) => ({x:Math.cos(i/6001*2*Math.PI),y:Math.sin(i/6001*2*Math.PI)})) }];
   assert.equal(validateDraft(draft).valid, false);
   assert.equal(simplifyDraft(draft, .01).valid, true);
-  assert(draft.contours[0].points.length < 3000);
+  assert(draft.contours[0].points.length < 6000);
   draft.contours = initial;
 });
 
@@ -91,8 +91,8 @@ test("editor normalizes tiny duplicate segments without altering original curve 
 });
 
 test("editor rejects excessive sampled curve budget before allocating editable points", () => {
-  const commands = ' C0 10 10 10 10 0'.repeat(840);
-  assert.throws(() => createPathDrafts(svg(`<path fill="none" d="M0 0${commands}"/>`)), /20,000/);
+  const commands = ' C0 10 10 10 10 0'.repeat(1680);
+  assert.throws(() => createPathDrafts(svg(`<path fill="none" d="M0 0${commands}"/>`)), /40,000/);
   const manyPaths = Array.from({length:11},(_,i) => `<path id="p${i}" fill="none" d="M0 0${' C0 10 10 10 10 0'.repeat(800)}"/>`).join('');
   assert.throws(() => createPathDrafts(svg(manyPaths)), /200,000/);
 });

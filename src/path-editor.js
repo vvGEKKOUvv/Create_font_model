@@ -31,7 +31,7 @@ function editDrafts({ drafts, warnings = [] }, fileName, existing = false, sessi
     const dialog = document.createElement('dialog');
     dialog.id = 'path-editor-dialog';
     dialog.className = 'path-editor-dialog';
-    dialog.innerHTML = `<header><div><strong>パス調整エディタ</strong><span class="path-editor-filename"></span></div><button id="path-editor-cancel" type="button">キャンセル</button></header><div class="path-editor-body"><aside><div class="path-editor-actions"><button id="path-editor-undo" type="button">元に戻す</button><button id="path-editor-redo" type="button">やり直す</button></div><div class="path-editor-list" aria-label="読み込むパス"></div><label class="path-editor-field">名前<input id="path-editor-name" type="text"></label><div class="path-editor-actions"><button id="path-editor-close" type="button">輪郭を閉じる</button><button id="path-editor-reset" type="button">編集開始時に戻す</button></div><button id="path-editor-reference-reset" type="button">参照形状に戻す</button><label class="path-editor-field">削減の許容誤差<input id="path-editor-tolerance" type="number" min="0" value="0.5" step="0.1"></label><button id="path-editor-reduce" type="button">頂点を削減</button><div class="path-editor-actions"><button id="path-editor-repair" type="button">輪郭を修復</button><button id="path-editor-focus-issue" type="button">問題箇所を表示</button></div><div class="path-editor-actions"><button id="path-editor-add-point" type="button">辺に頂点を追加</button><button id="path-editor-delete-point" type="button">選択頂点を削除</button></div><p id="path-editor-status" role="status" aria-live="polite"></p></aside><div class="path-editor-preview"><svg id="path-editor-canvas" tabindex="0" role="group" aria-label="パスの頂点編集"></svg><p>頂点をドラッグして移動 · 辺をダブルクリックして追加 · Delで削除 · ホイールで拡大縮小 · Space＋ドラッグ／中ボタンで移動<br>頂点を編集すると輪郭は折れ線になります。</p><div class="path-editor-view-tools"><button id="path-editor-pan" type="button" aria-pressed="false">ビューを移動</button><button id="path-editor-fit" type="button">全体を表示</button></div></div></div><footer><span class="path-editor-summary"></span><button id="path-editor-import" type="button">選択したパスを追加</button></footer>`;
+    dialog.innerHTML = `<header><div><strong>パス調整エディタ</strong><span class="path-editor-filename"></span></div><button id="path-editor-cancel" type="button">キャンセル</button></header><div class="path-editor-body"><aside><div class="path-editor-actions"><button id="path-editor-undo" type="button">元に戻す</button><button id="path-editor-redo" type="button">やり直す</button></div><div class="path-editor-list" aria-label="読み込むパス"></div><label class="path-editor-field">名前<input id="path-editor-name" type="text"></label><div class="path-editor-actions"><button id="path-editor-close" type="button">輪郭を閉じる</button><button id="path-editor-reset" type="button">編集開始時に戻す</button></div><button id="path-editor-reference-reset" type="button">参照形状に戻す</button><label class="path-editor-field">削減の許容誤差<input id="path-editor-tolerance" type="number" min="0" value="0.1" step="0.1"></label><div class="path-editor-actions"><button id="path-editor-reduce" type="button">頂点を削減</button><button id="path-editor-reduce-all" type="button">選択パスを一括削減</button></div><div class="path-editor-actions"><button id="path-editor-repair" type="button">輪郭を修復</button><button id="path-editor-focus-issue" type="button">問題箇所を表示</button></div><div class="path-editor-actions"><button id="path-editor-add-point" type="button">辺に頂点を追加</button><button id="path-editor-delete-point" type="button">選択頂点を削除</button></div><p id="path-editor-status" role="status" aria-live="polite"></p></aside><div class="path-editor-preview"><svg id="path-editor-canvas" tabindex="0" role="group" aria-label="パスの頂点編集"></svg><p>頂点をドラッグして移動 · 辺をダブルクリックして追加 · Delで削除 · ホイールで拡大縮小 · Space＋ドラッグ／中ボタンで移動<br>頂点を編集すると輪郭は折れ線になります。</p><div class="path-editor-view-tools"><button id="path-editor-pan" type="button" aria-pressed="false">ビューを移動</button><button id="path-editor-fit" type="button">全体を表示</button></div></div></div><footer><span class="path-editor-summary"></span><button id="path-editor-import" type="button">選択したパスを追加</button></footer>`;
     dialog.querySelector('.path-editor-filename').textContent = fileName;
     document.body.append(dialog);
     const find = (id) => dialog.querySelector(`#path-editor-${id}`);
@@ -39,9 +39,10 @@ function editDrafts({ drafts, warnings = [] }, fileName, existing = false, sessi
     const canvas = find('canvas'), list = dialog.querySelector('.path-editor-list');
     let active = Math.min(drafts.length-1,Math.max(0,session?.active||0)), selected = session?.selected ? {...session.selected} : null, dragging = null, view = session?.view ? [...session.view] : null, notice = '', finished = false, issueCursor = session?.issueCursor||0;
     let dragFrame = null, pendingPoint = null, dragBefore = null, panning = null, panMode = !!session?.panMode, spaceHeld = false;
+    let bulkReducing=false;
     const history = session?.history || createDraftHistory();
     const problemVertices = session?.problemVertices || new WeakMap();
-    find('tolerance').value = session?.tolerance ?? '0.5';
+    find('tolerance').value = session?.tolerance ?? '0.1';
     find('pan').setAttribute('aria-pressed',String(panMode));
     canvas.classList.toggle('pan-mode',panMode);
     const current = () => drafts[active];
@@ -125,12 +126,14 @@ function editDrafts({ drafts, warnings = [] }, fileName, existing = false, sessi
       }
     }
     function syncStatus() {
-      find('undo').disabled = !history.canUndo || !!dragging; find('redo').disabled = !history.canRedo || !!dragging;
+      find('undo').disabled = !history.canUndo || !!dragging || bulkReducing; find('redo').disabled = !history.canRedo || !!dragging || bulkReducing;
+      find('reduce-all').disabled=bulkReducing||!drafts.some(draft=>draft.enabled);
+      if(bulkReducing){find('import').disabled=true;return;}
       if (dragging) { find('import').disabled=true; find('status').textContent='頂点を移動中… 離すと輪郭を検証します。'; return; }
       const validation = validationOf(current());
       const enabled = drafts.filter(draft => draft.enabled);
       const invalid = enabled.filter(draft => !validationOf(draft).valid);
-      find('status').textContent = `${validation.vertexCount} 頂点${current().contours.some(c => !c.closed) ? ' · 開いた輪郭あり' : ''}${validation.errors.length ? '\n'+validation.errors.join('\n') : ''}${validation.vertexCount>PATH_EDITOR_VERTEX_LIMIT ? '\n頂点を削減してください。交差箇所の赤い辺の端点は調整できます。' : ''}${notice ? '\n'+notice : ''}`;
+      find('status').textContent = `${validation.vertexCount} 頂点${current().contours.some(c => !c.closed) ? ' · 開いた輪郭あり' : ''}${validation.errors.length ? '\n'+validation.errors.join('\n') : ''}${validation.vertexCount>PATH_EDITOR_VERTEX_LIMIT ? '\n頂点を削減してください。交差箇所の赤い辺の端点は調整できます。' : ''}${current().reductionError ? '\n'+current().reductionError : ''}${notice ? '\n'+notice : ''}`;
       find('import').disabled = !enabled.length || invalid.length > 0;
       dialog.querySelector('.path-editor-summary').textContent = `${enabled.length} パスを${existing ? '編集' : '追加'}${invalid.length ? ` · ${invalid.length} パスの調整が必要です` : ''}`;
       find('delete-point').disabled = !selected;
@@ -143,12 +146,13 @@ function editDrafts({ drafts, warnings = [] }, fileName, existing = false, sessi
     function render() {
       list.replaceChildren();
       drafts.forEach((draft,index) => {
-        const row = document.createElement('div'); row.className = `path-editor-row ${active === index ? 'active' : ''}`;
+        const row = document.createElement('div'); row.className = `path-editor-row ${active === index ? 'active' : ''} ${draft.reductionError ? 'reduction-error' : ''}`;
         const check = document.createElement('input'); check.type = 'checkbox'; check.checked = draft.enabled; check.setAttribute('aria-label', `${draft.name} を${existing ? '編集' : '追加'}`);
         check.addEventListener('change', () => { active=index; selected=null; mutate(() => { draft.enabled = check.checked; }); });
         const button = document.createElement('button'); button.type = 'button'; button.className = 'path-editor-select';
         const name = document.createElement('span'); name.textContent = draft.name;
         const layer = document.createElement('small'); layer.textContent = draft.layerName || 'レイヤーなし'; button.append(name,layer);
+        if(draft.reductionError){const error=document.createElement('small');error.className='path-editor-reduction-error';error.textContent=draft.reductionError;button.append(error);}
         button.addEventListener('click', () => { active=index; selected=null; notice=''; render(); }); row.append(check,button); list.append(row);
       });
       find('name').value = current().name;
@@ -231,7 +235,7 @@ function editDrafts({ drafts, warnings = [] }, fileName, existing = false, sessi
     function travel(direction) {
       if (dragging || panning) return;
       const index=history[direction](drafts); if (index===null) return;
-      active=index; selected=null; notice=''; validationCache.delete(current()); render();
+      active=index; selected=null; notice=''; for(const draft of drafts)validationCache.delete(draft); render();
     }
     find('undo').addEventListener('click', () => travel('undo'));
     find('redo').addEventListener('click', () => travel('redo'));
@@ -249,7 +253,41 @@ function editDrafts({ drafts, warnings = [] }, fileName, existing = false, sessi
       view=[minX-pad,minY-pad,width+pad*2,height+pad*2];notice=issue.message;renderCanvas();syncStatus();
     });
     find('reset').addEventListener('click', () => mutate(() => { resetDraft(current()); selected=null; }));
-    find('reduce').addEventListener('click', () => mutate(() => { const tolerance=Number(find('tolerance').value); if(!Number.isFinite(tolerance)||tolerance<0)throw new Error('許容誤差は0以上の数値にしてください。'); const result=simplifyDraft(current(),tolerance); if(!result.applied && tolerance>0) throw new Error(result.errors.join('\n') || '形状を維持したまま削減できませんでした。許容誤差を変更してください。'); selected=null; }));
+    function reduceOne(draft,tolerance){
+      try {
+        const result=simplifyDraft(draft,tolerance);
+        if(!result.valid||(!result.applied&&tolerance>0)){
+          draft.reductionError=result.errors.join('\n')||'形状を維持したまま削減できませんでした。許容誤差を変更してください。';return false;
+        }
+        draft.reductionError='';return true;
+      }catch(error){draft.reductionError=error.message;return false;}
+    }
+    function readTolerance(){
+      const tolerance=Number(find('tolerance').value);
+      if(!Number.isFinite(tolerance)||tolerance<0)throw new Error('許容誤差は0以上の数値にしてください。');return tolerance;
+    }
+    find('reduce').addEventListener('click',()=>mutate(()=>{reduceOne(current(),readTolerance());selected=null;}));
+    find('reduce-all').addEventListener('click',async()=>{
+      if(bulkReducing)return;
+      let tolerance;try{tolerance=readTolerance();}catch(error){notice=error.message;syncStatus();return;}
+      const changes=[],enabled=drafts.map((draft,index)=>({draft,index})).filter(({draft})=>draft.enabled);
+      let successes=0,failures=0;bulkReducing=true;
+      const body=dialog.querySelector('.path-editor-body');body.inert=true;syncStatus();
+      try{
+        for(const {draft,index} of enabled){
+          if(finished)return;
+          const before=snapshotDraft(draft);
+          if(reduceOne(draft,tolerance))successes++;else failures++;
+          changes.push({index,before,after:snapshotDraft(draft)});validationCache.delete(draft);
+          find('status').textContent=`一括削減中… ${successes+failures} / ${enabled.length}`;
+          await new Promise(resolve=>requestAnimationFrame(resolve));
+        }
+        history.recordBatch(changes,active);selected=null;
+        notice=`${successes}パスの削減を確認しました。${failures?` ${failures}パスは削減できませんでした。赤い行を確認してください。`:''}`;
+      }finally{
+        bulkReducing=false;body.inert=false;if(!finished)render();
+      }
+    });
     find('delete-point').addEventListener('click', () => { if(selected) mutate(() => { if(!deleteDraftPoint(current(),selected.ci,selected.pi)) throw new Error('これ以上頂点を削除できません。閉じた輪郭には3頂点以上必要です。'); selected=null; }); });
     find('add-point').addEventListener('click', () => {
       const ci=selected?.ci ?? 0, pi=selected?.pi ?? 0, contour=current().contours[ci];
@@ -260,6 +298,7 @@ function editDrafts({ drafts, warnings = [] }, fileName, existing = false, sessi
     find('cancel').addEventListener('click', () => finish(null));
     dialog.addEventListener('keydown', e => {
       e.stopPropagation();
+      if(bulkReducing&&e.key!=='Escape'){e.preventDefault();return;}
       if (e.target.matches('input,textarea,[contenteditable=true]')) return;
       if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase()==='z' || e.key.toLowerCase()==='y')) { e.preventDefault(); travel(e.key.toLowerCase()==='y' || e.shiftKey ? 'redo' : 'undo'); }
       if (e.code==='Space') { e.preventDefault(); spaceHeld=true; canvas.classList.add('pan-mode'); }

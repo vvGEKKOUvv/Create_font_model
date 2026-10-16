@@ -1,8 +1,9 @@
+import { PATH_VERTEX_LIMIT, EDITOR_RAW_VERTEX_LIMIT } from "./path-limits.js";
 import { Vector2 } from "three";
 
 const cache = new WeakMap();
-const MAX_RAW = 20000;
-const MAX_GEOMETRY = 3000;
+const MAX_RAW = EDITOR_RAW_VERTEX_LIMIT;
+const MAX_GEOMETRY = PATH_VERTEX_LIMIT;
 const sharpCos = Math.cos((35 * Math.PI) / 180);
 const area = (ring) =>
   ring.reduce((sum, p, i) => {
@@ -193,7 +194,7 @@ export function prepareContours(shape, tolerance = 0) {
     const rawCount = raw.reduce((n, ring) => n + ring.length, 0);
     if (rawCount > MAX_RAW)
       throw new Error(
-        "パスの頂点が多すぎます（最大 20,000）。SVG を分割してください。",
+        "パスの頂点が多すぎます（最大 40,000）。SVG を分割してください。",
       );
     const all = raw.flat();
     const bounds = all.reduce(
@@ -256,7 +257,7 @@ export function prepareContours(shape, tolerance = 0) {
   const reducedCount = rings.reduce((n, ring) => n + ring.length, 0);
   if (reducedCount > MAX_GEOMETRY)
     throw new Error(
-      "パスの頂点が多すぎます（処理上限 3,000）。リダクションの許容誤差を増やすか、SVG を分割してください。",
+      "パスの頂点が多すぎます（処理上限 6,000）。リダクションの許容誤差を増やすか、SVG を分割してください。",
     );
   const result = {
     rings,

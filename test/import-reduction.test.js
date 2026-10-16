@@ -6,14 +6,14 @@ import {prepareContours} from "../src/path-reduction.js";
 const circle=(n,r=100)=>Array.from({length:n},(_,i)=>new Vector2(r*Math.cos(i*2*Math.PI/n),r*Math.sin(i*2*Math.PI/n)));
 function shape(points,holes=[]) {const s=new Shape(points);s.closePath();s.holes=holes.map(p=>{const h=new Path(p);h.closePath();return h;});return s;}
 
-test("approved import reduces 5k,25k,100k outlines to processable contours without mutation",()=>{
-  for(const n of [5000,25000,100000]) {
+test("approved import reduces 8k,25k,100k outlines to processable contours without mutation",()=>{
+  for(const n of [8000,25000,100000]) {
     const original=shape(circle(n));
     const curves=original.curves.length;
-    assert.deepEqual(inspectImportPath(original),{overBudget:true,originalCount:n,limit:3000});
+    assert.deepEqual(inspectImportPath(original),{overBudget:true,originalCount:n,limit:6000});
     const result=reduceImportPath(original);
     assert.notEqual(result.shape,original);
-    assert.ok(result.reducedCount<=3000);
+    assert.ok(result.reducedCount<=6000);
     assert.ok(result.reducedCount>100);
     assert.equal(original.curves.length,curves);
     assert.equal(prepareContours(result.shape).reducedCount,result.reducedCount);
@@ -31,13 +31,13 @@ test("approved reduction preserves existing hole and an acute corner",()=>{
   const rings=prepareContours(result.shape).rings;
   assert.equal(rings.length,2);
   assert.ok(rings[0].some(p=>p.distanceTo(vertices[2])<1e-9));
-  assert.ok(result.reducedCount<=3000);
+  assert.ok(result.reducedCount<=6000);
   assert.equal(original.holes[0].curves.length,4000);
 });
 
 test("too many mandatory corners are rejected rather than silently distorted",()=>{
-  const points=Array.from({length:4000},(_,i)=>{
-    const a=i*2*Math.PI/4000,r=i%2?50:100;return new Vector2(r*Math.cos(a),r*Math.sin(a));
+  const points=Array.from({length:8000},(_,i)=>{
+    const a=i*2*Math.PI/8000,r=i%2?50:100;return new Vector2(r*Math.cos(a),r*Math.sin(a));
   });
   assert.throws(()=>reduceImportPath(shape(points)),/削減できません/);
 });
@@ -49,5 +49,5 @@ test("hard import cap and invalid coordinates fail before geometry generation",(
 
 test("small imports do not request reduction and legacy raw limit remains enforced",()=>{
   assert.equal(inspectImportPath(shape(circle(50))).overBudget,false);
-  assert.throws(()=>prepareContours(shape(circle(25000))),/20,000/);
+  assert.throws(()=>prepareContours(shape(circle(50000))),/40,000/);
 });

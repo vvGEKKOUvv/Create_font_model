@@ -32,14 +32,14 @@ test('QA curved bevel loop lengths are equal in physical cross section',()=>{
   geometry.dispose();
 });
 test('QA oversized import inspection does not mutate source; accepted reduction preserves hole',()=>{
-  const s=new Shape();const count=3200;
+  const s=new Shape();const count=6200;
   for(let i=0;i<count;i++){const a=i*2*Math.PI/count;const x=50*Math.cos(a),y=50*Math.sin(a);i?s.lineTo(x,y):s.moveTo(x,y);}s.closePath();
   const hole=new Path();hole.moveTo(-8,-8);hole.lineTo(-8,8);hole.lineTo(8,8);hole.lineTo(8,-8);hole.closePath();s.holes.push(hole);
   const before=JSON.stringify(s.toJSON());
-  const info=inspectImportPath(s);assert.equal(info.overBudget,true);assert.equal(info.limit,3000);
+  const info=inspectImportPath(s);assert.equal(info.overBudget,true);assert.equal(info.limit,6000);
   assert.equal(JSON.stringify(s.toJSON()),before,'inspection/cancel path is read-only');
   const reduced=reduceImportPath(s);
-  assert.ok(reduced.reducedCount<=3000);assert.ok(reduced.reducedCount>=3);assert.equal(reduced.shape.holes.length,1);
+  assert.ok(reduced.reducedCount<=6000);assert.ok(reduced.reducedCount>=3);assert.equal(reduced.shape.holes.length,1);
   assert.equal(JSON.stringify(s.toJSON()),before,'approved reduction creates independent source');
   const g=buildMesh(reduced.shape,{depth:20,bevelSize:0,bevelSegments:0});
   assert.ok(g.attributes.position.count>0);assert.ok([...g.attributes.position.array].every(Number.isFinite));g.dispose();

@@ -1,9 +1,10 @@
+import { PATH_VERTEX_LIMIT, EDITOR_RAW_VERTEX_LIMIT } from "./path-limits.js";
 import { Shape, Path, Vector2, ShapeUtils } from "three";
 import { parseSvg } from "./geometry.js";
 import ClipperLib from "clipper-lib";
 import { clean, simplify } from "./path-reduction.js";
 
-export const PATH_EDITOR_VERTEX_LIMIT = 3000;
+export const PATH_EDITOR_VERTEX_LIMIT = PATH_VERTEX_LIMIT;
 const pointCopy = p => ({ x: p.x, y: p.y });
 const copyContours = contours => contours.map(c => ({ closed: c.closed, points: c.points.map(pointCopy) }));
 function extract(shape) {
@@ -124,7 +125,7 @@ export function validateDraft(draft) {
 /** Explicit conservative normalization. Never silently split objects or consume holes. */
 export function repairDraft(draft) {
   const before=validateDraft(draft),fail=message=>({...before,applied:false,message});
-  if(before.vertexCount>PATH_EDITOR_VERTEX_LIMIT)return fail('修復は3,000頂点以内で行えます。先に頂点を削減してください。');
+  if(before.vertexCount>PATH_EDITOR_VERTEX_LIMIT)return fail('修復は6,000頂点以内で行えます。先に頂点を削減してください。');
   if(draft.contours.some(c=>!c.closed||c.points.some(p=>!Number.isFinite(p.x)||!Number.isFinite(p.y))))return fail('開いた輪郭は先に閉じ、不正な座標を修正してください。');
   if(before.issues.some(i=>['outside-hole','nested-hole','contour-crossing'].includes(i.type)))return fail('穴と外周の交差・入れ子は自動修復しません。赤い箇所の頂点を手動で調整してください。');
   const epsilon=epsilonOf(draft.contours.map(c=>c.points));
@@ -205,7 +206,7 @@ export function simplifyDraft(draft, tolerance) {
   const diagnosis=validateDraft(draft);
   if (diagnosis.issues.some(issue=>!['vertex-limit','complexity'].includes(issue.type))) return {applied:false,...diagnosis,errors:['リダクションは交差の修復には使えません。先に赤い箇所を調整するか「輪郭を修復」を使用してください。',...diagnosis.errors]};
   const original = normalizedRings(draft.contours);
-  if (original.reduce((n, r) => n + r.length, 0) > 20000) return { applied: false, valid: false, errors: ["頂点数が多すぎます。SVG を分割してください（最大 20,000）。"], vertexCount: original.reduce((n, r) => n + r.length, 0) };
+  if (original.reduce((n, r) => n + r.length, 0) > EDITOR_RAW_VERTEX_LIMIT) return { applied: false, valid: false, errors: ["頂点数が多すぎます。SVG を分割してください（最大 40,000）。"], vertexCount: original.reduce((n, r) => n + r.length, 0) };
   for (let attempt = 0; attempt < 7; attempt++) {
     const candidate = original.map(r => simplify(r, tolerance / 2 ** attempt, 2_000_000));
     if (candidate.reduce((n, r) => n + r.length, 0) > PATH_EDITOR_VERTEX_LIMIT || !validateDraft({...draft,contours:candidate.map(points=>({points,closed:true}))}).valid) continue;

@@ -938,15 +938,15 @@ try {
   assert(!/NaN|Infinity/.test(narrow["model.obj"]));
   await expect(page.locator("#geometry-status")).toContainText("壁厚");
   const hugePath =
-    Array.from({ length: 3200 }, (_, i) => {
-      const a = (i * Math.PI * 2) / 3200;
+    Array.from({ length: 6200 }, (_, i) => {
+      const a = (i * Math.PI * 2) / 6200;
       return `${i ? "L" : "M"}${100 + 100 * Math.cos(a)} ${100 + 100 * Math.sin(a)}`;
     }).join(" ") + "Z";
   const beforeOversized = await page.locator("#object-count").textContent();
   const beforeOversizedName = await page.locator("#selected-name").textContent();
-  page.once("dialog",dialog=>{assert.equal(dialog.type(),"confirm");assert.match(dialog.message(),/3,000/);dialog.dismiss();});
+  page.once("dialog",dialog=>{assert.equal(dialog.type(),"confirm");assert.match(dialog.message(),/6,000/);dialog.dismiss();});
   await page.locator("#file").setInputFiles({
-    name: "3200-points.svg",
+    name: "6200-points.svg",
     mimeType: "image/svg+xml",
     buffer: Buffer.from(
       `<svg xmlns="http://www.w3.org/2000/svg"><path id="Huge" d="${hugePath}"/></svg>`,
@@ -957,7 +957,7 @@ try {
   assert.equal(await page.locator("#selected-name").textContent(),beforeOversizedName);
   page.once("dialog",dialog=>dialog.accept());
   await page.locator("#file").setInputFiles({
-    name: "3200-points.svg",
+    name: "6200-points.svg",
     mimeType: "image/svg+xml",
     buffer: Buffer.from(
       `<svg xmlns="http://www.w3.org/2000/svg"><path id="Huge" d="${hugePath}"/></svg>`,
@@ -968,8 +968,8 @@ try {
   await expect(page.locator("#message")).not.toHaveClass(/error/);
   assert.equal(Number(await page.locator("#reductionTolerance").inputValue()),0,"approved reduction changes the source path");
   const hugeImport = (await projectData()).state.objects.at(-1).importReduction;
-  assert.equal(hugeImport.originalCount,3200);
-  assert(hugeImport.reducedCount<=3000);
+  assert.equal(hugeImport.originalCount,6200);
+  assert(hugeImport.reducedCount<=6000);
   await page.locator("#file").setInputFiles({
     name: "tiny.svg",
     mimeType: "image/svg+xml",

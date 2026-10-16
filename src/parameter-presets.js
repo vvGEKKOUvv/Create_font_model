@@ -7,7 +7,7 @@ const record = value => value !== null && typeof value === "object" && !Array.is
 const clone = value => JSON.parse(JSON.stringify(value));
 const defaults = {
   reductionTolerance: 0, meshReductionPercentage: 0, pathOffset: 0,
-  depth: 24, bevelSize: 3, bevelWidth: 3, bevelContinue: true,
+  depth: 24, extrusionMirror: true, extrusionCap: true, bevelSize: 3, bevelWidth: 3, bevelContinue: true,
   bevelSegments: 4, hollow: false, wallThickness: 4,
   uvScaleX: 1, uvScaleY: 1, uvOffsetX: 0, uvOffsetY: 0, uvRotation: 0,
 };

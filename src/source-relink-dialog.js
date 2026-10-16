@@ -1,4 +1,5 @@
 import './source-relink-dialog.css';
+import { matchSourceOriginalNames } from './source-name-links.js';
 
 /** Ask how changed source paths should replace existing objects; cancellation mutates nothing. */
 export function resolveSourceRelink(existing, incoming, plan = {}) {
@@ -7,7 +8,7 @@ export function resolveSourceRelink(existing, incoming, plan = {}) {
     dialog.id = 'source-relink-dialog';
     dialog.className = 'source-relink-dialog';
     dialog.setAttribute('aria-labelledby', 'source-relink-title');
-    dialog.innerHTML = `<header><strong id="source-relink-title">参照パスの再リンク</strong><button id="source-relink-cancel" type="button">キャンセル</button></header><p class="source-relink-warning">レイヤー・パス構造が変わっています。対応するパスを選んでください。リンクしたオブジェクトのパラメータは維持されます。</p><div class="source-relink-columns"><section><h3>読み込み済みのパス → 新しいパス</h3><div class="source-relink-existing"></div></section><section><h3>新しいファイルのパス</h3><p>リンクされていないパスは「追加」を選べます。</p><div class="source-relink-incoming"></div></section></div><footer><span id="source-relink-status" role="status" aria-live="polite"></span><button id="source-relink-apply" type="button">再読み込みを適用</button></footer>`;
+    dialog.innerHTML = `<header><strong id="source-relink-title">参照パスの再リンク</strong><button id="source-relink-cancel" type="button">キャンセル</button></header><p class="source-relink-warning">レイヤー・パス構造が変わっています。対応するパスを選んでください。リンクしたオブジェクトのパラメータは維持されます。</p><div class="source-relink-tools"><button id="source-relink-auto" type="button">読み込み時の名前で自動リンク</button><span id="source-relink-auto-status" role="status" aria-live="polite"></span></div><div class="source-relink-columns"><section><h3>読み込み済みのパス → 新しいパス</h3><div class="source-relink-existing"></div></section><section><h3>新しいファイルのパス</h3><p>リンクされていないパスは「追加」を選べます。</p><div class="source-relink-incoming"></div></section></div><footer><span id="source-relink-status" role="status" aria-live="polite"></span><button id="source-relink-apply" type="button">再読み込みを適用</button></footer>`;
     const existingList = dialog.querySelector('.source-relink-existing');
     const incomingList = dialog.querySelector('.source-relink-incoming');
     const apply = dialog.querySelector('#source-relink-apply');
@@ -50,6 +51,25 @@ export function resolveSourceRelink(existing, incoming, plan = {}) {
       apply.disabled = duplicates;
       status.textContent = duplicates ? '同じ新しいパスに複数のオブジェクトがリンクされています。リンク先を変更してください。' : 'リンクしない既存パスは、削除を選ばない限り維持されます。';
     }
+    dialog.querySelector('#source-relink-auto').addEventListener('click',()=>{
+      const {matches,ambiguousNames}=matchSourceOriginalNames(existing,incoming);
+      const applicable=new Map(matches.map(match=>[String(match.objectId),match]));
+      // Preserve manual unmatched mappings. Resolve conflicts to a fixed point so
+      // skipping one suggestion cannot create a second conflict through its old value.
+      let changed=true;
+      while(changed){
+        changed=false;
+        const reserved=new Set(selects.filter(select=>!applicable.has(select.dataset.objectId)&&select.value.startsWith('incoming:')).map(select=>Number(select.value.slice(9))));
+        for(const [id,match] of applicable)if(reserved.has(match.incomingIndex)){applicable.delete(id);changed=true;}
+      }
+      let linked=0;const conflicts=matches.length-applicable.size;
+      for(const match of applicable.values()){
+        const select=selects.find(select=>select.dataset.objectId===String(match.objectId));
+        if(select){select.value=`incoming:${match.incomingIndex}`;linked++;}
+      }
+      update();
+      dialog.querySelector('#source-relink-auto-status').textContent=`${linked}件を名前でリンクしました。${ambiguousNames.length?` 重複名${ambiguousNames.length}件は手動で選択してください。`:''}${conflicts?` 手動リンクと競合する${conflicts}件は変更しませんでした。`:''}`;
+    });
     let settled = false;
     function finish(value) { if (settled) return; settled = true; dialog.close(); dialog.remove(); resolve(value); }
     dialog.querySelector('#source-relink-cancel').addEventListener('click', () => finish(null));

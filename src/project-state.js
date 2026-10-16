@@ -1,3 +1,4 @@
+import { EDITOR_RAW_VERTEX_LIMIT } from "./path-limits.js";
 import { Shape } from "three";
 import { normalizeProfile } from "./bevel-profile.js";
 
@@ -27,12 +28,12 @@ const curveFields = {
 };
 function validatePath(path, shape = false, budget = { count: 0 }) {
   if (!record(path) || path.type !== (shape ? "Shape" : "Path") || !vector(path.currentPoint, 2) || !Array.isArray(path.curves) || typeof path.autoClose !== "boolean") fail();
-  if (!path.curves.length || (budget.count += path.curves.length) > 20000) fail();
+  if (!path.curves.length || (budget.count += path.curves.length) > EDITOR_RAW_VERTEX_LIMIT) fail();
   for (const curve of path.curves) {
     if (!record(curve) || !Object.hasOwn(curveFields, curve.type)) fail();
     for (const field of curveFields[curve.type]) {
       if (field === "points") {
-        if (!Array.isArray(curve.points) || curve.points.length < 2 || curve.points.length > 20000 || !curve.points.every(p => vector(p, 2))) fail();
+        if (!Array.isArray(curve.points) || curve.points.length < 2 || curve.points.length > EDITOR_RAW_VERTEX_LIMIT || !curve.points.every(p => vector(p, 2))) fail();
       } else if (field.startsWith("v")) {
         if (!vector(curve[field], 2)) fail();
       } else if (typeof curve[field] !== "number" || !Number.isFinite(curve[field])) fail();
@@ -66,7 +67,7 @@ function validateState(state) {
       for (const key of ["bevelSize", "bevelWidth", "wallThickness", "reductionTolerance"]) if (settings[key] !== undefined && !(typeof settings[key] === "number" && settings[key] >= 0)) fail();
       if (settings.meshReductionPercentage !== undefined && !(typeof settings.meshReductionPercentage === "number" && settings.meshReductionPercentage >= 0 && settings.meshReductionPercentage <= 90)) fail();
       for (const key of ["uvScaleX", "uvScaleY", "uvOffsetX", "uvOffsetY", "uvRotation", "offset", "pathOffset"]) if (settings[key] !== undefined && typeof settings[key] !== "number") fail();
-      for (const key of ["bevelContinue", "sharpCorners", "hollow", "hollowCurveSafe", "bevelFullWidth"]) if (settings[key] !== undefined && typeof settings[key] !== "boolean") fail();
+      for (const key of ["extrusionMirror", "extrusionCap", "bevelContinue", "sharpCorners", "hollow", "hollowCurveSafe", "bevelFullWidth"]) if (settings[key] !== undefined && typeof settings[key] !== "boolean") fail();
       if (settings.uvEdits !== undefined && (!record(settings.uvEdits) || !Object.values(settings.uvEdits).every(v => vector(v, 2)))) fail();
       for (const name of ["curvePoints", "innerCurvePoints"]) {
         const points = settings[name];

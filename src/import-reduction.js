@@ -1,8 +1,9 @@
+import { PATH_VERTEX_LIMIT, TOTAL_RAW_VERTEX_LIMIT } from "./path-limits.js";
 import { Shape, Path } from "three";
 import { clean, simplify, valid } from "./path-reduction.js";
 
-const LIMIT = 3000;
-const RAW_LIMIT = 200000;
+const LIMIT = PATH_VERTEX_LIMIT;
+const RAW_LIMIT = TOTAL_RAW_VERTEX_LIMIT;
 const cache = new WeakMap();
 const signedArea = ring => ring.reduce((a,p,i) => {
   const q = ring[(i+1)%ring.length];
@@ -58,7 +59,7 @@ export function reduceImportPath(shape) {
     // Very large errors cannot preserve the outline reliably.
     if (tolerance>=entry.span*.05) break;
   }
-  if (!accepted) throw new Error("穴と尖った角を保ったまま処理上限 3,000 頂点まで削減できませんでした。SVG を分割してください。");
+  if (!accepted) throw new Error("穴と尖った角を保ったまま処理上限 6,000 頂点まで削減できませんでした。SVG を分割してください。");
   const result=new Shape(candidate[0].map(p=>p.clone()));
   result.closePath();
   result.holes=candidate.slice(1).map(r=>{const hole=new Path(r.map(p=>p.clone()));hole.closePath();return hole;});

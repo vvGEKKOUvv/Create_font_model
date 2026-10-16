@@ -1,4 +1,6 @@
+import { PATH_VERTEX_LIMIT, EDITOR_RAW_VERTEX_LIMIT, TOTAL_RAW_VERTEX_LIMIT } from "./path-limits.js";
 import * as THREE from "three";
+import { positiveExtrusionHalf } from "./extrusion-mode.js";
 import { SVGLoader } from "three/addons/loaders/SVGLoader.js";
 
 import { prepareContours } from "./path-reduction.js";
@@ -112,11 +114,11 @@ export function parseSvg(text, { forEditing = false } = {}) {
         pathEstimate++;
         for (const curve of contour.curves) {
           pathEstimate += curve.isLineCurve ? 1 : curve.isEllipseCurve ? 48 : curve.isSplineCurve ? 24 * Math.max(1, curve.points.length) : 24;
-          if (pathEstimate > 20000) throw new Error("パス調整エディタの上限 20,000 頂点を超えています。SVG を分割するか、通常の読み込みでリダクションしてください。");
+          if (pathEstimate > EDITOR_RAW_VERTEX_LIMIT) throw new Error("パス調整エディタの上限 40,000 頂点を超えています。SVG を分割するか、通常の読み込みでリダクションしてください。");
         }
       }
       editorEstimate += pathEstimate;
-      if (editorEstimate > 200000) throw new Error("パス調整エディタ全体の上限 200,000 頂点を超えています。SVG を分割してください。");
+      if (editorEstimate > TOTAL_RAW_VERTEX_LIMIT) throw new Error("パス調整エディタ全体の上限 200,000 頂点を超えています。SVG を分割してください。");
     }
     const unfilled = style.fill === "none";
     const isOpen = (p) => !p.autoClose && p.getPoint(0).distanceTo(p.getPoint(1)) > EPS;
@@ -278,9 +280,9 @@ function preparedShape(shape, tolerance) {
   }
   if (cache.has(tolerance)) return cache.get(tolerance);
   const data = prepareContours(shape, tolerance);
-  if (data.rings.reduce((n, p) => n + p.length, 0) > 3000)
+  if (data.rings.reduce((n, p) => n + p.length, 0) > PATH_VERTEX_LIMIT)
     throw new Error(
-      "輪郭が複雑すぎます。リダクション量を増やしてください（最大 3000 頂点）。",
+      "輪郭が複雑すぎます。リダクション量を増やしてください（最大 6000 頂点）。",
     );
   if (!validRings(data.rings))
     throw new Error("パスが自己交差しています。SVG の輪郭を修正してください。");
@@ -315,6 +317,11 @@ function validRings(rings) {
 
 // The third argument is an internal one-shot recovery, never a saved setting.
 export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
+  if (settings.extrusionMirror === false) {
+    const source = buildMesh(shape, { ...settings, extrusionMirror: true }, safeHollowFallback);
+    try { return positiveExtrusionHalf(source, Math.max(0.01, Number(settings.depth) || 20), { cap: settings.extrusionCap !== false, settings }); }
+    finally { source.dispose(); }
+  }
   const uvEdits = settings.uvEdits ?? {};
   if (typeof uvEdits !== "object" || Array.isArray(uvEdits))
     throw new Error("UV 編集データの形式が不正です。");
@@ -1138,7 +1145,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
     effectiveBevel: bevel,
     maximumBevelWidth: maximumWidth,
     maximumBevelControlWidth: narrowDenseConvex
-      ? Math.max(roof.maximumWidth, Math.min(box.max.x - box.min.x, box.max.y - box.min.y) / 2)
+      ? Math.max(roof?.maximumWidth || 0, Math.min(box.max.x - box.min.x, box.max.y - box.min.y) / 2)
       : maximumWidth,
     continuedBevel: !!roofTriangles,
     bevelSamples: samples.slice(),

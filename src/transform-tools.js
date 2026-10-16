@@ -14,7 +14,7 @@ export function prepareObjectMesh(mesh, object) {
   };
   // Each rebuilt extrusion is centered around its stable local origin. Existing
   // saved pivots still locate the object, without moving its center as depth changes.
-  mesh.geometry.translate(-object.pivot[0], -object.pivot[1], -geometryCenter.z);
+  mesh.geometry.translate(-object.pivot[0], -object.pivot[1], mesh.geometry.userData.extrusionMirror === false ? 0 : -geometryCenter.z);
   apply(mesh, object);
 }
 function apply(mesh, object) {
