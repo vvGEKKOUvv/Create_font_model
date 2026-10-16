@@ -118,7 +118,7 @@ app.innerHTML = `
       ${field("bevelSize", "奥行方向", 3, 0, 12, 0.1)}
       ${field("bevelWidth", "輪郭幅", 3, 0, 100, 0.1)}
       <label class="toggle-row"><span>正面が合流するまで広げる</span><input id="bevelContinue" type="checkbox" checked/><i></i></label>
-      ${field("bevelSegments", "分割数", 4, 0, 16, 1)}
+      ${field("bevelSegments", "区間内の分割数", 4, 0, 16, 1)}
       <p id="geometry-status" class="control-note"></p>
     </details>
     <details id="hollow-settings" class="control-section" open>
@@ -695,6 +695,7 @@ async function load(text, name, editBeforeImport = false, repairOnProblem = fals
   try {
     const parsed = editBeforeImport ? await editSvgPaths(text, name) : parseSvg(text);
     if (!parsed) { notice("読み込みをキャンセルしました。"); return; }
+    if (!parsed.objects.length) { notice("追加するパスがありません。"); return; }
     if (repairOnProblem && !editBeforeImport && parsed.warnings.length) {
       notice("読み込み時に問題が見つかったため、パス調整エディタを開きます。");
       return load(text, name, true, false);
@@ -865,7 +866,7 @@ async function reloadSourceFile(file, targets = sourceReloadTargets(), handle = 
       const entries = parsed.objects;
       const legacy = !targets[0].sourceReference;
       const reference = legacy
-        ? createSourceReference(entries, file.name, {groupId: `source-${THREE.MathUtils.generateUUID()}`})[0].sourceReference
+        ? (entries.length ? createSourceReference(entries, file.name, {groupId: `source-${THREE.MathUtils.generateUUID()}`})[0].sourceReference : {groupId: `source-${THREE.MathUtils.generateUUID()}`,fileName:file.name,center:[0,0]})
         : { ...targets[0].sourceReference, fileName: file.name };
       const incoming = alignReloadEntries(entries, reference);
       const plan = planSourceReload(targets, incoming);
@@ -994,22 +995,29 @@ $("edit-path").onclick = async () => {
       if (entry.shape !== original.shape) delete replacement.settings.uvEdits;
       return replacement;
     });
+    const removed = new Set((edited.removedIds || []).filter(id => targets.some(object => object.id === id)));
     const meshes = makeMeshes(replacements);
+    const replacementMap = new Map(replacements.map(object => [object.id, object]));
+    const oldObjects = objects, oldMeshes = group.children.slice(), activeId = selectedObject()?.id;
+    const previousById = new Map(oldObjects.map((object,index) => [object.id, oldMeshes[index]]));
+    const changedById = new Map(replacements.map((object,index) => [object.id, meshes[index]]));
     history.commit(); transformTools.detach();
-    replacements.forEach((replacement, i) => {
-      const index = objects.findIndex(object => object.id === replacement.id);
-      const previous = group.children[index];
-      objects[index] = replacement;
-      group.remove(previous);
-      group.add(meshes[i]);
-      group.children.splice(group.children.indexOf(meshes[i]), 1);
-      group.children.splice(index, 0, meshes[i]);
-      disposeWireframe(previous);
-      previous.geometry.dispose(); previous.material.dispose();
+    objects = oldObjects.filter(object => !removed.has(object.id)).map(object => replacementMap.get(object.id) || object);
+    group.remove(...oldMeshes);
+    objects.forEach(object => group.add(changedById.get(object.id) || previousById.get(object.id)));
+    oldObjects.forEach((object,index) => {
+      if (!removed.has(object.id) && !replacementMap.has(object.id)) return;
+      const mesh = oldMeshes[index]; disposeWireframe(mesh); mesh.geometry.dispose(); mesh.material.dispose();
     });
+    selectedIds = new Set([...selectedIds].filter(id => objects.some(object => object.id === id)));
+    selected = Math.max(0, objects.findIndex(object => object.id === activeId));
+    if (objects.length && !selectedIds.size) selectedIds.add(objects[selected].id);
+    if (objects.length && !selectedIds.has(objects[selected].id)) selected = objects.findIndex(object => selectedIds.has(object.id));
+    selectionAnchorId = objects[selected]?.id ?? null;
+    if (!objects.length) { $("dropzone").classList.remove("loaded"); $("dropzone").querySelector("strong").textContent = "SVG を追加"; }
     uvSelectedKey = null; uvDragKey = null;
-    list(); sync(); transformTools.sync(); refreshMeshInfo(); recordHistory(true);
-    notice("パスの変更を適用しました。");
+    list(); sync(); transformTools.sync(); refreshMeshInfo(); drawUV(); recordHistory(true);
+    notice(removed.size ? `パスの変更を適用しました（削除 ${removed.size}）。` : "パスの変更を適用しました。");
   } catch (error) { notice(error.message, true); }
 };
 

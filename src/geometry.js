@@ -5,10 +5,11 @@ import { SVGLoader } from "three/addons/loaders/SVGLoader.js";
 
 import { prepareContours } from "./path-reduction.js";
 
-import { triangulateIndependentRoof } from "./independent-roof.js";
-import { independentRoofProfiles } from "./dual-bevel-profile.js";
+import { triangulateIndependentRoof, sourceRoofFromOffsetTriangles } from "./independent-roof.js";
+import { sampleBevelProfile } from "./bevel-profile-samples.js";
+import { sourceFaceOwners } from "./dual-bevel-profile.js";
 
-import { normalizeProfile, evaluateProfile, profileSpanIsStraight, monotonicProfile } from "./bevel-profile.js";
+import { normalizeProfile, evaluateProfile, monotonicProfile } from "./bevel-profile.js";
 import {
   prepareBevelRoof,
   triangulateBevelRoof,
@@ -753,35 +754,9 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
     usePoints
       ? evaluateProfile(points, t)
       : (1 - curve) * t + curve * (1 - Math.cos((t * Math.PI) / 2));
-  // The count means interior loops. Approximate the physical profile length
-  // before selecting cuts; parameter t alone is not uniform on a curved bevel.
-  const straight = control => control.length >= 2
-    ? control.every(p => Math.abs(p.x - p.y) < 1e-12) &&
-      control.slice(0, -1).every((p, i) => profileSpanIsStraight(p, control[i + 1]))
-    : curve === 0;
-  function profileSamples(control, evaluate) {
-    const isStraight = straight(control), resolution = isStraight ? 1 : 512;
-    const cumulative = [0]; let previous = evaluate(0);
-    for (let i=1;i<=resolution;i++) {
-      const value = evaluate(i/resolution);
-      cumulative.push(cumulative.at(-1)+Math.hypot(bevelHeight/resolution,bevel*(value-previous)));
-      previous=value;
-    }
-    const result=[0];
-    for(let j=1;j<=segments;j++) {
-      if(isStraight){result.push(j/(segments+1));continue;}
-      const target=cumulative.at(-1)*j/(segments+1);let low=0,high=resolution;
-      while(high-low>1){const mid=(low+high)>>1;if(cumulative[mid]<target)low=mid;else high=mid;}
-      const length=cumulative[high]-cumulative[low];
-      result.push((low+(length>0?(target-cumulative[low])/length:0))/resolution);
-    }
-    result.push(1);
-    for(const [i,p] of control.entries())if(i>0&&i<control.length-1&&
-      (p.edge===true||(p.edge!==false&&(control.length!==3||Math.abs(p.x-.5)>1e-8||Math.abs(p.y-.5)>1e-8))))
-      if(!result.some(t=>Math.abs(t-p.x)<1e-7))result.push(p.x);
-    return result.sort((a,b)=>a-b);
-  }
-  const samples=profileSamples(points,profile),innerSamples=profileSamples(innerPoints,innerProfile);
+  const sampling = { height: bevelHeight, width: bevel, straightFallback: curve === 0, cacheKey: curve };
+  const samples = sampleBevelProfile(points, profile, segments, sampling);
+  const innerSamples = sampleBevelProfile(innerPoints, innerProfile, segments, sampling);
   if ((roof || (safeHollowFallback && separateInnerProfile)) &&
       (!monotonicProfile(points) || !monotonicProfile(innerPoints)))
     throw new Error("内側・外側のベベルカーブは、戻らない形状にしてください。");
@@ -853,9 +828,10 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
           (cuts,evaluate) => triangulateBevelRoof(sourceRoof,bevel,cuts,evaluate));
       } else {
         if (roof.offsetRoof && rings.length > 1) {
-          const fixedSamples=Array.from({length:segments+2},(_,i)=>i/(segments+1));
-          roofTriangles=triangulateOffsetBevelRoof(roof,bevel,fixedSamples,t=>t);
-          roofTriangles=independentRoofProfiles(roofTriangles,rings,profile,innerProfile,JSON.stringify([points,innerPoints,curve]));
+          const base=triangulateOffsetBevelRoof(roof,bevel,[0,1],t=>t);
+          const fixedRoof=sourceRoofFromOffsetTriangles(base,rings,bevel,sourceFaceOwners(base,rings));
+          roofTriangles=triangulateIndependentRoof(fixedRoof,rings,bevel,samples,innerSamples,profile,innerProfile,
+            (cuts,evaluate)=>triangulateBevelRoof(fixedRoof,bevel,cuts,evaluate));
         } else roofTriangles = roof.offsetRoof
           ? triangulateOffsetBevelRoof(roof,bevel,samples,profile)
           : triangulateBevelRoof(roof,bevel,samples,profile);

@@ -42,7 +42,7 @@ for (const hollow of [false,true]) {
     const bent = buildMesh(shape,{...base,hollow,bevelSegments:12,curvePoints:curved});
     const points = checkMesh(high); checkMesh(low); checkMesh(bent);
     assert.ok(high.attributes.position.count>low.attributes.position.count,'specified interior loops remain even on a planar bevel');
-    assert.equal(high.userData.bevelSamples.length,14);
+    assert.equal(high.userData.bevelSamples.length,27);
     assert.notDeepEqual(bent.attributes.position.array,high.attributes.position.array,'non-collinear profile changes the geometry within the requested budget');
     assert.equal(JSON.stringify(shape.toJSON()),source,'source path remains unchanged');
     for (const [x,y] of [[0,0],[120,18],[240,0],[120,-18]]) assert.ok(points.some(p => Math.hypot(p[0]-x,p[1]+y)<1e-5),'every original corner remains');

@@ -1,6 +1,6 @@
 // Keep original Three.js shapes outside history so undo retains untouched Bézier curves.
 export function snapshotDraft(draft) {
-  return { name: draft.name, enabled: draft.enabled, edited: draft.edited, reductionError: draft.reductionError || "",
+  return { name: draft.name, enabled: draft.enabled, edited: draft.edited, deleted: !!draft.deleted, reductionError: draft.reductionError || "",
     contours: draft.contours.map(c => ({ closed: c.closed, points: c.points.map(p => ({ x: p.x, y: p.y })) })) };
 }
 export function restoreDraft(draft, snapshot) {

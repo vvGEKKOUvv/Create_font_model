@@ -33,7 +33,7 @@ test("explicit collinear curve controls retain mandatory bevel edges", () => {
   controls.splice(1, 0, { x: .25, y: .25, mode: "linear" });
   const mesh = buildMesh(rectangle(), { depth: 30, bevelSize: 5, bevelWidth: 4,
     bevelContinue: true, bevelSegments: 1, curvePoints: controls });
-  assert.deepEqual(mesh.userData.bevelSamples, [0, .25, .5, 1]);
+  assert.deepEqual(mesh.userData.bevelSamples, [0, .125, .25, .375, .5, .75, 1]);
   mesh.dispose();
 });
 
@@ -42,28 +42,29 @@ test("independent inner profiles add explicit anchors only to their own samples"
     bevelContinue: true, bevelSegments: 2, curvePoints: curved,
     innerCurvePoints: [{ x: 0, y: 0 }, { x: .3, y: .6 }, { x: 1, y: 1 }] });
   const samples = mesh.userData.innerBevelSamples;
-  assert.ok(samples.length >= 4);
+  assert.equal(samples.length, 7, "two inner control spans receive two interior cuts each");
   assert.ok(samples.every(Number.isFinite));
-  assert.ok(samples.length <= 5, "only one extra inner anchor is necessary");
+
   assert.ok(samples.some(t => Math.abs(t - .3) < 1e-8), "inner control retains its own edge level");
   assert.equal(mesh.userData.bevelSamples.length, 4, "inner anchors do not add outer cuts");
   mesh.dispose();
 });
 
 
-test("default center and added anchors consume existing divisions before adding edges", () => {
+test("default center and added anchors each delimit independently divided spans", () => {
   for (const divisions of [2, 5, 8]) {
     const mesh = buildMesh(rectangle(), { depth: 30, bevelSize: 5, bevelWidth: 4,
       bevelContinue: false, bevelSegments: divisions, curvePoints: defaultProfile() });
-    assert.equal(mesh.userData.bevelSamples.length, divisions + 2);
-    assert.ok(mesh.userData.bevelSamples.length - 1 <= divisions + 1);
+    assert.equal(mesh.userData.bevelSamples.length, 2 * (divisions + 1) + 1);
+    assert.ok(mesh.userData.bevelSamples.includes(.5));
     mesh.dispose();
   }
   const controls = defaultProfile();
   controls.splice(1, 0, { x: .37, y: .37, mode: "linear" });
   const mesh = buildMesh(rectangle(), { depth: 30, bevelSize: 5, bevelWidth: 4,
     bevelContinue: false, bevelSegments: 2, curvePoints: controls });
-  assert.deepEqual(mesh.userData.bevelSamples, [0, 1 / 3, .37, 2 / 3, 1]);
+  assert.equal(mesh.userData.bevelSamples.length, 10);
+  for (const point of controls) assert.ok(mesh.userData.bevelSamples.includes(point.x));
   mesh.dispose();
 });
 

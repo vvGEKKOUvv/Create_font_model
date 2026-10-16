@@ -156,7 +156,7 @@ export function repairDraft(draft) {
 }
 export function resetReferenceDraft(draft) {
   if(!draft.referenceContours)return {applied:false,...validateDraft(draft)};
-  draft.contours=copyContours(draft.referenceContours);draft.edited=true;
+  draft.contours=copyContours(draft.referenceContours);if(draft.deleted)draft.enabled=true;draft.deleted=false;draft.edited=true;
   return {applied:true,...validateDraft(draft)};
 }
 export function toImportEntry(draft) {
@@ -186,6 +186,27 @@ export function deleteDraftPoint(draft, contourIndex, pointIndex) {
   if (!contour || !Number.isInteger(pointIndex) || pointIndex < 0 || pointIndex >= contour.points.length || contour.points.length <= (contour.closed ? 3 : 2)) return false;
   contour.points.splice(pointIndex, 1); draft.edited = true; return true;
 }
+/** Delete one selection atomically; collapsed holes disappear, collapsed outer removes the path. */
+export function deleteDraftPoints(draft, selections) {
+  const byContour = new Map();
+  for (const {ci, pi} of selections) {
+    const contour=draft.contours[ci];
+    if(!contour || !Number.isInteger(pi) || pi<0 || pi>=contour.points.length) continue;
+    if(!byContour.has(ci))byContour.set(ci,new Set());byContour.get(ci).add(pi);
+  }
+  if(!byContour.size)return {deletedPoints:0,removedContours:0,removedPath:false};
+  const deletedPoints=[...byContour.values()].reduce((n,set)=>n+set.size,0);
+  const outer=draft.contours[0];
+  if(byContour.has(0) && outer.points.length-byContour.get(0).size<=2){
+    const removedContours=draft.contours.length;
+    draft.contours=[];draft.enabled=false;draft.deleted=true;draft.edited=true;
+    return {deletedPoints,removedContours,removedPath:true};
+  }
+  const before=draft.contours.length;
+  draft.contours=draft.contours.map((contour,ci)=>byContour.has(ci)?{...contour,points:contour.points.filter((_,pi)=>!byContour.get(ci).has(pi))}:contour).filter((contour,ci)=>ci===0 || !byContour.has(ci) || contour.points.length>2);
+  draft.edited=true;
+  return {deletedPoints,removedContours:before-draft.contours.length,removedPath:false};
+}
 export function closeDraft(draft) {
   for (const contour of draft.contours) {
     const first = contour.points[0], last = contour.points.at(-1);
@@ -196,7 +217,7 @@ export function closeDraft(draft) {
   return validateDraft(draft);
 }
 export function resetDraft(draft) {
-  draft.contours = copyContours(draft.originalContours); draft.edited = false;
+  draft.contours = copyContours(draft.originalContours); if(draft.deleted)draft.enabled=true; draft.deleted=false; draft.edited = false;
   return validateDraft(draft);
 }
 export function simplifyDraft(draft, tolerance) {

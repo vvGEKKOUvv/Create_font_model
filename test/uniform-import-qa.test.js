@@ -12,8 +12,8 @@ test('QA actual straight bevel layers count interior loops, including zero', () 
   for (const loops of [0,1,2]) {
     const geometry=buildMesh(rectangle(),{...settings,bevelSegments:loops,curvePoints:defaultProfile()});
     const samples=geometry.userData.bevelSamples;
-    assert.equal(samples.length,loops+2);
-    samples.forEach((t,i)=>assert.ok(Math.abs(t-i/(loops+1))<1e-12));
+    assert.equal(samples.length,2*(loops+1)+1);
+    samples.forEach((t,i)=>assert.ok(Math.abs(t-i/(2*(loops+1)))<1e-12));
     const pos=geometry.attributes.position;
     const front=new Set();
     for(let i=0;i<pos.count;i++) if(pos.getZ(i)<=5+1e-6)front.add(+pos.getZ(i).toFixed(5));
@@ -47,7 +47,7 @@ test('QA oversized import inspection does not mutate source; accepted reduction 
 test('QA explicit added curve control creates edge even at zero loops',()=>{
   const curve=[{x:0,y:0,mode:'linear'}, {x:.27,y:.27,mode:'linear',edge:true}, {x:.5,y:.5,mode:'linear',edge:false}, {x:1,y:1,mode:'linear'}];
   const geometry=buildMesh(rectangle(),{...settings,bevelSegments:0,curvePoints:curve});
-  assert.deepEqual(geometry.userData.bevelSamples,[0,.27,1]);
+  assert.deepEqual(geometry.userData.bevelSamples,[0,.27,.5,1]);
   const p=geometry.attributes.position;
   assert.ok(Array.from({length:p.count},(_,i)=>p.getZ(i)).some(z=>Math.abs(z-1.35)<1e-6));geometry.dispose();
 });

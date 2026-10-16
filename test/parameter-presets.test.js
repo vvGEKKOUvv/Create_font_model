@@ -65,7 +65,7 @@ test("reject malformed, duplicate, oversized and prototype-bearing libraries; ig
   assert.equal("futureSetting" in parsePresetLibrary(JSON.stringify(data))[0].settings, false);
 });
 
-test("legacy unflagged middle control round trips without creating a mandatory bevel loop", () => {
+test("legacy unflagged middle control round trips with its mandatory control edge", () => {
   const source = object();
   source.settings.hollow = false;
   source.settings.curvePoints = [0, .5, 1].map(x => ({ x, y: x, mode: "linear" }));
@@ -78,7 +78,7 @@ test("legacy unflagged middle control round trips without creating a mandatory b
   shape.moveTo(0, 0); shape.lineTo(100, 0); shape.lineTo(100, 80); shape.lineTo(0, 80); shape.closePath();
   const before = buildMesh(shape, source.settings), after = buildMesh(shape, applied.settings);
   try {
-    assert.deepEqual(before.userData.bevelSamples, [0, 1]);
+    assert.deepEqual(before.userData.bevelSamples, [0, .5, 1]);
     assert.deepEqual(after.userData.bevelSamples, before.userData.bevelSamples);
     assert.equal(after.attributes.position.count, before.attributes.position.count);
   } finally { before.dispose(); after.dispose(); }

@@ -3,3 +3,5 @@
 .path-editor-issue-edge{stroke:#ff646b;stroke-width:3;fill:none;pointer-events:none}.path-editor-issue-point{stroke:#ffb8bd;stroke-width:2;fill:none;pointer-events:none}.path-editor-dialog #path-editor-repair{border-color:#87614c}.path-editor-dialog #path-editor-reference-reset[hidden]{display:none}
 
 .path-editor-row.reduction-error,.path-editor-row.reduction-error.active{background:#592c32;border:1px solid #a95761}.path-editor-dialog .path-editor-reduction-error{color:#ffd0d4;white-space:normal;overflow-wrap:anywhere;line-height:1.4}.path-editor-dialog #path-editor-reduce-all{font-size:11px}
+.path-editor-marquee { fill: #a8d86822; stroke: #b4e578; stroke-width: 1; pointer-events: none; }
+.path-editor-point.selected { fill: #f7d566; stroke: #fff5b5; }

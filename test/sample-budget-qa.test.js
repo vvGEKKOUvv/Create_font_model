@@ -39,7 +39,7 @@ test('QA: curved Bezier bevel uses only requested uniform levels at low and high
 test('QA: inserted collinear curve vertex remains a mandatory edge within straight roof', () => {
   const points=[0,.37,1].map(x=>({x,y:x,mode:'linear'}));
   const geometry=buildMesh(rectangle(),{depth:30,bevelSize:7,bevelWidth:6,bevelSegments:1,curvePoints:points,bevelContinue:true});
-  assert.deepEqual(geometry.userData.bevelSamples,[0,.37,.5,1]);
+  assert.deepEqual(geometry.userData.bevelSamples,[0,.185,.37,.685,1]);
   const position=geometry.attributes.position;
   assert.ok(Array.from({length:position.count},(_,i)=>position.getZ(i)).some(z=>Math.abs(z-7*.37)<1e-5),'added control has actual mesh edge level');
   closed(geometry);
@@ -59,11 +59,11 @@ test('QA: independent inner curve with endpoint controls adds no hidden approxim
   }
 });
 
-test('QA: explicit controls occupy the division budget before extra intervals are distributed', () => {
+test('QA: each explicit control interval receives its own division budget', () => {
   for (const anchor of [.5,.37]) {
     const points=[0,anchor,1].map(x=>({x,y:x,mode:'bezier',handleMode:'aligned'}));
     const geometry=buildMesh(rectangle(),{depth:30,bevelSize:7,bevelWidth:6,bevelSegments:5,curvePoints:points,bevelContinue:true});
-    assert.ok(geometry.userData.bevelSamples.length<=8,'five loops plus one explicit anchor');
+    assert.equal(geometry.userData.bevelSamples.length,13,'five interior loops in each of two control spans');
     if(anchor!==.5) assert.ok(geometry.userData.bevelSamples.some(t=>Math.abs(t-anchor)<1e-8),'explicit anchor preserved');
     closed(geometry);
   }

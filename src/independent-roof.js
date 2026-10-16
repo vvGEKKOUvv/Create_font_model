@@ -33,3 +33,17 @@ export function triangulateIndependentRoof(roof,rings,width,outerSamples,innerSa
  validateRoofTriangles(triangles,rings);
  if(entries.size>=4)entries.delete(entries.keys().next().value);entries.set(cacheKey,triangles);return triangles;
 }
+
+const fallbackRoofs = new WeakMap();
+/** A coarse validated offset roof also supplies stable planar source faces.
+ * Keeping that partition fixed lets each side add its own control edges. */
+export function sourceRoofFromOffsetTriangles(triangles, rings, width, owners) {
+  let roof = fallbackRoofs.get(triangles);
+  if (!roof) {
+    roof = { rings, maximumWidth: width,
+      faces: triangles.map(face => face.points.map(p => ({x:p.x,y:p.y,time:width*(1-p.height)}))),
+      faceDirections: owners.map(owner => [1,0,owner]) };
+    fallbackRoofs.set(triangles, roof);
+  }
+  return roof;
+}

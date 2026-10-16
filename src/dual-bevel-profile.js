@@ -51,3 +51,19 @@ export function independentRoofProfiles(triangles,rings,outer,inner,profileKey){
  const result=triangles.map((face,f)=>({...face,points:face.points.map(p=>{if(p.height<=0||p.height>=1||ownership.vertexOwners.get(key(p)).size>1)return p;const k=key(p);if(!vertices.has(k))vertices.set(k,invert(ownership.sides[f]?table.b:table.a,p.height));return {...p,height:vertices.get(k)};})}));
  if(cached.size>=8)cached.delete(cached.keys().next().value);cached.set(table.key,result);return result;
 }
+
+const faceSidesCache = new WeakMap();
+/** Stable geometric ownership for a coarse fallback roof, independent of controls. */
+export function sourceFaceOwners(triangles, rings) {
+  let sides = faceSidesCache.get(triangles);
+  if (!sides) {
+    const [outerTree, innerTree] = sourceTrees(rings);
+    sides = triangles.map(face => {
+      const p = face.points.reduce((sum, q) => ({x:sum.x+q.x/3,y:sum.y+q.y/3}), {x:0,y:0});
+      const outer = nearestDistance(p, outerTree);
+      return nearestDistance(p, innerTree, outer) < outer ? 1 : 0;
+    });
+    faceSidesCache.set(triangles, sides);
+  }
+  return sides;
+}

@@ -105,7 +105,7 @@ test("nonuniform hollow bevel bands share cap and body boundaries and export edi
   }
 });
 
-test("curved profile control points share the requested bevel resolution budget", () => {
+test("curved profile control points each delimit the requested bevel resolution", () => {
   const shape = new Shape();
   const count = 128;
   for (let i = 0; i < count; i++) {
@@ -126,10 +126,8 @@ test("curved profile control points share the requested bevel resolution budget"
   };
   const geometry = buildMesh(shape, settings);
   assertClosedFiniteSolid(geometry);
-  assert.ok(
-    geometry.userData.bevelSamples.length <= settings.bevelSegments + 3,
-    `two Bezier spans share eight requested loops plus one explicit anchor (${geometry.attributes.position.count} vertices)`,
-  );
+  assert.equal(geometry.userData.bevelSamples.length, 2 * (settings.bevelSegments + 1) + 1,
+    "each Bezier span has eight interior cuts and every control has an edge");
   const linear = buildMesh(shape, { ...settings, curvePoints: ridgeProfile });
   assert.notDeepEqual(
     Array.from(geometry.attributes.position.array),
@@ -732,7 +730,7 @@ test("multi-vertex profile preserves narrow bends at low bevel resolution", () =
     }
   }
   for (const p of curvePoints) assert.ok(geometry.userData.bevelSamples.includes(p.x), "mandatory control edge preserved");
-  assert.equal(geometry.userData.bevelSamples.length, curvePoints.length + 2, "two requested loops plus explicit controls");
+  assert.equal(geometry.userData.bevelSamples.length, (curvePoints.length - 1) * 3 + 1, "two requested loops in each adjacent control span");
   assert.ok(
     Array.from(geometry.attributes.position.array).every(Number.isFinite),
   );
