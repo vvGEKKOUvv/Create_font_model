@@ -22,6 +22,7 @@ try{
  const field=async(id,value)=>{await page.locator(`#${id}`).fill(String(value));await page.locator(`#${id}`).dispatchEvent('change');await page.waitForTimeout(150);};
  await upload('file',source([['a',50],['b',150],['c',250]]));await expect(page.locator('#object-count')).toHaveText('3');
  await expect(page.locator('#object-name')).toHaveCount(0);
+ const importedOriginalName=(await saved()).objects[0].sourceOriginalName;assert.equal(importedOriginalName,'path-a','Original name reflects source SVG before generated numbering');
  await row(0).click();await field('depth',37);await field('position-x',12);await field('rotation-z',23);await field('scale-y',1.3);
  await page.locator('#color').fill('#aa5533');await page.locator('#color').dispatchEvent('input');await page.locator('#material-type').selectOption('metal');
  await page.locator('[data-object-name="0"]').dblclick();await page.locator('[data-rename-object="0"]').fill('Custom A');await page.locator('[data-rename-object="0"]').press('Enter');
@@ -44,7 +45,10 @@ try{
  const beforeDialog=await saved();await reload(source([['x',50,80],['b',150,65],['d',350,30]]));
  await expect(page.locator('#source-relink-dialog')).toBeVisible();
  assert.deepEqual((await saved()).objects,beforeDialog.objects,'Opening mapping does not alter the project');
- await page.locator('#source-relink-cancel').click();assert.deepEqual((await saved()).objects,beforeDialog.objects,'Cancelling leaves all objects unchanged');
+ await expect(page.locator(`.source-relink-mapping[data-object-id="${initial.objects[0].id}"]`).locator('..').locator('.source-relink-original-name')).toContainText(importedOriginalName);
+ await page.locator('#source-relink-cancel').click();await expect(page.locator('#path-editor-dialog')).toBeVisible();
+ assert.deepEqual((await saved()).objects,beforeDialog.objects,'Returning to editor leaves all objects unchanged');
+ await page.locator('#path-editor-cancel').click();await expect(page.locator('#path-editor-dialog')).not.toBeVisible();
  await reload(source([['x',50,80],['b',150,65],['d',350,30]]));await expect(page.locator('#source-relink-dialog')).toBeVisible();
  const mappings=page.locator('.source-relink-mapping');await expect(mappings).toHaveCount(3);
  await page.locator(`.source-relink-mapping[data-object-id="${initial.objects[0].id}"]`).selectOption('incoming:1');
@@ -54,9 +58,10 @@ try{
  await page.locator(`.source-relink-mapping[data-object-id="${initial.objects[2].id}"]`).selectOption('keep');
  await page.locator('.source-relink-add[data-incoming-index="2"]').check();await page.locator('#source-relink-apply').click();
  await expect(page.locator('#object-count')).toHaveText('4');await expect(page.locator('#source-relink-dialog')).not.toBeVisible();
- const relinked=await saved();assert.equal(relinked.objects[0].name,'Custom A');assert.deepEqual(relinked.objects[0].settings,initial.objects[0].settings);assert.deepEqual(relinked.objects[2].shape,beforeDialog.objects[2].shape,'Keeping unmatched source preserves its shape');
+ const relinked=await saved();assert.equal(relinked.objects[0].name,'Custom A');assert.equal(relinked.objects[0].sourceOriginalName,importedOriginalName,'Manual relink preserves original imported name');assert.deepEqual(relinked.objects[0].settings,initial.objects[0].settings);assert.deepEqual(relinked.objects[2].shape,beforeDialog.objects[2].shape,'Keeping unmatched source preserves its shape');
  await page.locator('#project-file').setInputFiles({name:'linked.pathform',mimeType:'application/json',buffer:Buffer.from(JSON.stringify({format:'PathFormProject',version:2,state:relinked}))});
  assert.deepEqual((await saved()).objects.map(o=>o.sourceReference),relinked.objects.map(o=>o.sourceReference),'Source links survive project save/load');
+ assert.equal((await saved()).objects[0].sourceOriginalName,importedOriginalName,'Original imported name survives project save/load');
  // Declining an extra layer updates linked paths without adding it.
  await row(0).click();await reload(source([['x',50,90],['b',150,66],['d',350,35],['e',400,20]]));
  await expect(page.locator('#source-relink-dialog')).toBeVisible();
@@ -82,9 +87,21 @@ try{
  await page.locator('#path-editor-cancel').click();assert.deepEqual((await saved()).objects,beforeOversized.objects,'Cancelling oversized repair leaves old project intact');
  await reload(dense);await expect(page.locator('#path-editor-dialog')).toBeVisible();
  await page.locator('#path-editor-tolerance').fill('0.5');await page.locator('#path-editor-reduce').click();
- await expect(page.locator('#path-editor-import')).toBeEnabled();await page.locator('#path-editor-import').click();
+ await expect(page.locator('#path-editor-import')).toBeEnabled();
+ await page.locator('#path-editor-tolerance').fill('0.7');
+ await page.locator('#path-editor-canvas circle[data-contour][data-point]').first().click();
+ await page.locator('#path-editor-pan').click();
+ const resumeSnapshot=()=>page.evaluate(()=>({points:[...document.querySelectorAll('#path-editor-canvas circle[data-contour][data-point]')].map(n=>[n.getAttribute('cx'),n.getAttribute('cy'),n.getAttribute('class')]),view:document.querySelector('#path-editor-canvas').getAttribute('viewBox'),tolerance:document.querySelector('#path-editor-tolerance').value,pan:document.querySelector('#path-editor-pan').getAttribute('aria-pressed'),active:[...document.querySelectorAll('.path-editor-row')].findIndex(n=>n.classList.contains('active')),undoDisabled:document.querySelector('#path-editor-undo').disabled,redoDisabled:document.querySelector('#path-editor-redo').disabled}));
+ const preparedResume=await resumeSnapshot();
+ await page.locator('#path-editor-import').click();
  await expect(page.locator('#path-editor-dialog')).not.toBeVisible();await expect(page.locator('#source-relink-dialog')).toBeVisible();
  assert.deepEqual((await saved()).objects,beforeOversized.objects,'Repair and mapping are staged before replacing geometry');
+ await page.locator('#source-relink-cancel').click();await expect(page.locator('#path-editor-dialog')).toBeVisible();
+ assert.deepEqual(await resumeSnapshot(),preparedResume,'Relink cancellation restores exact repaired vertices, selection, view, tolerance, pan and history controls');
+ await page.locator('#path-editor-undo').click();await expect(page.locator('#path-editor-import')).toBeDisabled();
+ await page.locator('#path-editor-redo').click();await expect(page.locator('#path-editor-import')).toBeEnabled();
+ assert.deepEqual((await resumeSnapshot()).points.map(p=>p.slice(0,2)),preparedResume.points.map(p=>p.slice(0,2)),'Resumed undo/redo retains reduction history');
+ await page.locator('#path-editor-import').click();await expect(page.locator('#source-relink-dialog')).toBeVisible();
  await page.locator(`.source-relink-mapping[data-object-id="${initial.objects[0].id}"]`).selectOption('incoming:0');
  await page.locator('#source-relink-apply').click();await expect(page.locator('#object-count')).toHaveText('4');
  const repaired=await saved();

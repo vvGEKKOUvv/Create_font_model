@@ -102,3 +102,21 @@ test('reloading establishes a new restoration baseline rather than retaining the
  assert.equal(restoreReferencedPath(updated).shape.getPoint(0).x,expected);
  assert.notEqual(expected,old.shape.getPoint(0).x);
 });
+
+test('import-time source names survive editor renaming and future source relinking',async()=>{
+ const {DOMParser}=await import('@xmldom/xmldom'); globalThis.DOMParser=DOMParser;
+ const {parseSvg}=await import('../src/geometry.js');
+ const [entry]=parseSvg('<svg xmlns="http://www.w3.org/2000/svg"><path id="original-path" d="M0 0H20V20H0Z"/></svg>').objects;
+ assert.equal(entry.sourceOriginalName,'original-path');
+ const [draft]=createObjectDrafts([entry]); draft.name='edited before import';
+ const edited=toImportEntry(draft);
+ const [imported]=createSourceReference([edited],'original.svg');
+ assert.equal(imported.name,'edited before import'); assert.equal(imported.sourceOriginalName,'original-path');
+ const [newPath]=alignReloadEntries([{...entry,name:'different source name',sourceOriginalName:'different source name'}],imported.sourceReference);
+ const reloaded=replaceReferencedPath({...imported,name:'user local name'},newPath);
+ assert.equal(reloaded.name,'user local name'); assert.equal(reloaded.sourceOriginalName,'original-path');
+ const [postDraft]=createObjectDrafts([reloaded]); postDraft.name='another rename';
+ assert.equal(toImportEntry(postDraft).sourceOriginalName,'original-path');
+ const legacy=replaceReferencedPath({...imported,sourceOriginalName:undefined,sourceElementId:'legacy-source-id'},newPath);
+ assert.equal(legacy.sourceOriginalName,'legacy-source-id');
+});

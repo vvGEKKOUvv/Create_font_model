@@ -16,10 +16,16 @@ export async function editSvgPaths(text, fileName = 'SVG') {
 export async function editImportPaths(objects, fileName = 'SVG', warnings = []) {
   return editDrafts({ drafts: createObjectDrafts(objects), warnings }, fileName);
 }
+/** Reopen a confirmed editor draft after a later step was cancelled. Session stays in memory only. */
+export async function resumeImportPaths(result, fileName = 'SVG') {
+  const session=result?.editorSession;
+  if(session?.drafts?.length) return editDrafts({drafts:session.drafts,warnings:result.warnings||session.warnings||[]},fileName,!!session.existing,session);
+  return editImportPaths(result?.objects||[],fileName,result?.warnings||[]);
+}
 export async function editExistingPaths(objects) {
   return editDrafts({ drafts: createObjectDrafts(objects), warnings: [] }, '選択中のパス', true);
 }
-function editDrafts({ drafts, warnings }, fileName, existing = false) {
+function editDrafts({ drafts, warnings = [] }, fileName, existing = false, session = null) {
   if (!drafts.length) throw new Error('編集できるパスがありません。');
   return new Promise((resolve) => {
     const dialog = document.createElement('dialog');
@@ -31,9 +37,13 @@ function editDrafts({ drafts, warnings }, fileName, existing = false) {
     const find = (id) => dialog.querySelector(`#path-editor-${id}`);
     if (existing) find('import').textContent = '変更を適用';
     const canvas = find('canvas'), list = dialog.querySelector('.path-editor-list');
-    let active = 0, selected = null, dragging = null, view = null, notice = '', finished = false, issueCursor = 0;
-    let dragFrame = null, pendingPoint = null, dragBefore = null, panning = null, panMode = false, spaceHeld = false;
-    const history = createDraftHistory();
+    let active = Math.min(drafts.length-1,Math.max(0,session?.active||0)), selected = session?.selected ? {...session.selected} : null, dragging = null, view = session?.view ? [...session.view] : null, notice = '', finished = false, issueCursor = session?.issueCursor||0;
+    let dragFrame = null, pendingPoint = null, dragBefore = null, panning = null, panMode = !!session?.panMode, spaceHeld = false;
+    const history = session?.history || createDraftHistory();
+    const problemVertices = session?.problemVertices || new WeakMap();
+    find('tolerance').value = session?.tolerance ?? '0.5';
+    find('pan').setAttribute('aria-pressed',String(panMode));
+    canvas.classList.toggle('pan-mode',panMode);
     const current = () => drafts[active];
     const validationCache = new WeakMap();
     const validationOf = draft => {
@@ -43,6 +53,7 @@ function editDrafts({ drafts, warnings }, fileName, existing = false) {
     function finish(value) {
       if (finished) return;
       finished = true;
+      if(value) value.editorSession={drafts,warnings,existing,active,selected:selected?{...selected}:null,view:view?[...view]:null,tolerance:find('tolerance').value,panMode,issueCursor,history,problemVertices};
       if (dragFrame !== null) cancelAnimationFrame(dragFrame);
       dialog.close();
       dialog.remove();
@@ -66,6 +77,19 @@ function editDrafts({ drafts, warnings }, fileName, existing = false) {
       canvas.replaceChildren();
       const pixelScale = canvas.getScreenCTM()?.a || 1;
       const radius = 4.5 / Math.abs(pixelScale);
+      const activeDraft=current();
+      let remembered=problemVertices.get(activeDraft);
+      if(!remembered) {remembered=new Set();problemVertices.set(activeDraft,remembered);}
+      // Remember point objects so fixing an error does not hide its editable endpoints.
+      // Array indices may shift after insertion/deletion; topology replacements discard old objects.
+      const livePoints=new Set(activeDraft.contours.flatMap(contour=>contour.points));
+      for(const p of remembered)if(!livePoints.has(p))remembered.delete(p);
+      for(const issue of validationOf(activeDraft).issues||[])for(const edge of issue.edges||[]) {
+        const contour=activeDraft.contours[edge.contourIndex];if(!contour)continue;
+        const a=contour.points[edge.edgeIndex],b=contour.points[(edge.edgeIndex+1)%contour.points.length];
+        if(a)remembered.add(a);if(b)remembered.add(b);
+      }
+      const selectedPoint=selected&&activeDraft.contours[selected.ci]?.points[selected.pi];if(selectedPoint)remembered.add(selectedPoint);
       drafts.forEach((draft, index) => draft.contours.forEach((contour, ci) => {
         if (!contour.points.length) return;
         const path = svgNode('path', { d: contour.points.map((p,i) => `${i ? 'L' : 'M'}${p.x} ${p.y}`).join(' ') + (contour.closed ? ' Z' : ''), class: `path-editor-outline ${index === active ? 'active' : ''} ${draft.enabled ? '' : 'excluded'}`, 'vector-effect':'non-scaling-stroke', 'data-draft':index, 'data-outline-contour':ci });
@@ -73,10 +97,8 @@ function editDrafts({ drafts, warnings }, fileName, existing = false) {
         canvas.append(path);
         if (index !== active) return;
         const overflow=draft.contours.reduce((count,c)=>count+c.points.length,0)>PATH_EDITOR_VERTEX_LIMIT;
-        const repairVertices=new Set();
-        if(overflow)for(const issue of validationOf(draft).issues||[])for(const edge of issue.edges||[])if(edge.contourIndex===ci){repairVertices.add(edge.edgeIndex);repairVertices.add((edge.edgeIndex+1)%contour.points.length);}
         contour.points.forEach((p, pi) => {
-          if(overflow&&!repairVertices.has(pi))return;
+          if(overflow&&!remembered.has(p))return;
           const node = svgNode('circle', { cx:p.x, cy:p.y, r:radius, 'data-contour':ci, 'data-point':pi, class:`path-editor-point ${selected?.ci === ci && selected?.pi === pi ? 'selected' : ''}` });
           node.addEventListener('pointerdown', e => {
             if (e.button !== 0 || panMode || spaceHeld) return;
@@ -250,6 +272,6 @@ function editDrafts({ drafts, warnings }, fileName, existing = false) {
       if (!enabled.length || enabled.some(draft => !validationOf(draft).valid)) return;
       try { finish({objects:enabled.map(toImportEntry), warnings}); } catch(error) { notice=error.message; syncStatus(); }
     });
-    dialog.showModal(); fit(); render(); canvas.focus();
+    dialog.showModal(); if(!view)fit(); render(); canvas.focus();
   });
 }

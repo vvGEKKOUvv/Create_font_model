@@ -78,6 +78,21 @@ try{
  assert.deepEqual(bowAfter,bowBefore,'Ambiguous split repair keeps original vertices intact');
  assert(await page.locator('.path-editor-issue-edge').count()>0);await expect(page.locator('#path-editor-status')).toContainText(/分割|複数|修復/);
  await page.locator('#path-editor-cancel').click();
+ // Overflow diagnostics stay editable after the reported crossing has been resolved.
+ const overflowCount=3201,theta=2*Math.PI/overflowCount;
+ const overflowPoints=Array.from({length:overflowCount},(_,i)=>[100+50*Math.cos(i*theta),100+50*Math.sin(i*theta)]);
+ [overflowPoints[1],overflowPoints[2]]=[overflowPoints[2],overflowPoints[1]];
+ await openRepair(`M${overflowPoints.map(p=>p.join(' ')).join('L')}Z`);
+ assert(await page.locator('.path-editor-issue-edge').count()>0);await page.locator('#path-editor-focus-issue').click();
+ const previousEditable=await page.locator('#path-editor-canvas circle[data-contour][data-point]').evaluateAll(nodes=>nodes.map(n=>`${n.dataset.contour}:${n.dataset.point}`));
+ const crossingPoint=page.locator('#path-editor-canvas circle[data-contour="0"][data-point="1"]');
+ const crossingBox=await crossingPoint.boundingBox();assert(crossingBox);
+ const target=await page.locator('#path-editor-canvas').evaluate((canvas,p)=>{const point=new DOMPoint(p[0],p[1]).matrixTransform(canvas.getScreenCTM());return {x:point.x,y:point.y};},[100+50*Math.cos(theta/2),100+50*Math.sin(theta/2)]);
+ await page.mouse.move(crossingBox.x+crossingBox.width/2,crossingBox.y+crossingBox.height/2);await page.mouse.down();await page.mouse.move(target.x,target.y,{steps:3});await page.mouse.up();
+ await expect(page.locator('.path-editor-issue-edge')).toHaveCount(0);
+ const remainingEditable=await page.locator('#path-editor-canvas circle[data-contour][data-point]').evaluateAll(nodes=>nodes.map(n=>`${n.dataset.contour}:${n.dataset.point}`));
+ assert(previousEditable.every(key=>remainingEditable.includes(key)),'Former problem endpoints remain editable after resolving overflow crossing');
+ await expect(crossingPoint).toBeVisible();await page.locator('#path-editor-cancel').click();
  assert.deepEqual(errors,[]);if(standalone)assert.deepEqual(requests,[]);
- console.log('Editor repair checks passed: toolbar labels/layout, persistent reference baseline, edit/restore/undo, latest reloaded baseline, diagnostic markers/focus, conservative repair/undo/refusal.');
+ console.log('Editor repair checks passed: toolbar labels/layout, persistent reference baseline, edit/restore/undo, latest reloaded baseline, diagnostic markers/focus, conservative repair/undo/refusal, overflow point persistence.');
 }finally{await browser?.close();if(server?.pid)try{process.kill(-server.pid,'SIGTERM');}catch{}}

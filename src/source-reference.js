@@ -34,7 +34,8 @@ export function alignReloadEntries(entries, reference) {
   if (!Array.isArray(reference.center) || reference.center.length !== 2 || !reference.center.every(Number.isFinite)) throw new Error('参照元の原点が不正です。');
   return entries.map(entry => {
     const shape = translateShape(entry.shape, reference.center);
-    return { ...entry, shape, referenceShape: shape.clone(), pivot: [0,0,0],
+    return { ...entry, sourceOriginalName: entry.sourceOriginalName || entry.name || entry.sourceElementId || entry.id,
+      shape, referenceShape: shape.clone(), pivot: [0,0,0],
       sourceReference: { groupId: reference.groupId, fileName: reference.fileName, center: [...reference.center], key: sourceEntryKey(entry) } };
   });
 }
@@ -61,6 +62,7 @@ export function replaceReferencedPath(object, entry, reference = entry.sourceRef
   if (changed && settings) delete settings.uvEdits;
   if (changed && validSettings) delete validSettings.uvEdits;
   return { ...object, shape: entry.shape.clone(), referenceShape: entry.shape.clone(), layerName: entry.layerName || '',
+    sourceOriginalName: object.sourceOriginalName || object.sourceElementId || object.name,
     sourceElementId: entry.sourceElementId, sourceShapeIndex: entry.sourceShapeIndex, sourceKey: entry.sourceKey,
     sourceName: reference.fileName, sourceReference: { ...clone(reference), key: sourceEntryKey(entry) },
     settings, ...(validSettings ? { validSettings } : {}), invalid: false };

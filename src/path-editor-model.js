@@ -30,6 +30,7 @@ export function createObjectDrafts(objects) {
       catch { return c; } // Invalid outlines remain visible so they can be repaired.
     });
     return { id: entry.id, name: entry.name, layerName: entry.layerName || "", color: entry.color,
+      sourceOriginalName: entry.sourceOriginalName || entry.name,
       ...(entry.sourceKey !== undefined ? { sourceKey: entry.sourceKey, sourceElementId: entry.sourceElementId, sourceShapeIndex: entry.sourceShapeIndex, sourceIdentityAmbiguous: !!entry.sourceIdentityAmbiguous } : {}),
       enabled: true, edited: false, originalShape: entry.shape,
       ...(entry.referenceShape ? { referenceShape: entry.referenceShape, referenceContours: extract(entry.referenceShape) } : {}), contours: copyContours(contours),
@@ -169,6 +170,7 @@ export function toImportEntry(draft) {
     shape.holes = rings.slice(1).map(ring => { const hole = new Path(ring); hole.autoClose = true; return hole; });
   }
   return { id: draft.id, name: draft.name, layerName: draft.layerName, color: draft.color, shape,
+    sourceOriginalName: draft.sourceOriginalName || draft.name,
     ...(draft.sourceKey !== undefined ? { sourceKey: draft.sourceKey, sourceElementId: draft.sourceElementId, sourceShapeIndex: draft.sourceShapeIndex, sourceIdentityAmbiguous: !!draft.sourceIdentityAmbiguous } : {}) };
 }
 export function moveDraftPoint(draft, contourIndex, pointIndex, x, y) {

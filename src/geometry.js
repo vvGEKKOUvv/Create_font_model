@@ -135,7 +135,7 @@ export function parseSvg(text, { forEditing = false } = {}) {
       if (objects.length >= 256) throw new Error("オブジェクト数が多すぎます（最大 256）。SVG を分割してください。");
       const id = `path-${objects.length + 1}`;
       const pathName = path.userData?.node?.getAttribute("id") || id;
-      objects.push({ id, name: pathName,
+      objects.push({ id, name: pathName, sourceOriginalName: pathName,
         sourceElementId, sourceShapeIndex,
         sourceIdentityAmbiguous: !!sourceElementId && sourceIdCounts.get(sourceElementId) > 1,
         sourceKey: JSON.stringify([labels, sourceElementId || `@${sourcePathIndex}`, sourceShapeIndex++]),

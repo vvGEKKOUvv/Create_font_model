@@ -14,25 +14,29 @@ export function resolveSourceRelink(existing, incoming, plan = {}) {
     const status = dialog.querySelector('#source-relink-status');
     const selects = [], checks = [];
     const title = (item, index) => `${item.layerName ? `${item.layerName} / ` : ''}${item.name || `パス ${index + 1}`}`;
+    const incomingTitle = (item, index) => title({ ...item, name: item.sourceOriginalName || item.name }, index);
     const option = (select, value, text) => { const node = document.createElement('option'); node.value = value; node.textContent = text; select.append(node); };
     existing.forEach((item, index) => {
       const row = document.createElement('label'); row.className = 'source-relink-row';
       const name = document.createElement('span'); name.textContent = title(item, index); row.append(name);
+      const originalName = document.createElement('small'); originalName.className = 'source-relink-original-name';
+      originalName.textContent = `読み込み時: ${item.sourceOriginalName || item.sourceElementId || item.name || `パス ${index + 1}`}`;
+      row.append(originalName);
       const select = document.createElement('select'); select.className = 'source-relink-mapping'; select.dataset.objectId = item.id;
       select.setAttribute('aria-label', `${title(item, index)} のリンク先`);
       option(select, 'keep', 'リンクせず現在の形状を維持');
       option(select, 'remove', 'このオブジェクトを削除');
-      incoming.forEach((entry, n) => option(select, `incoming:${n}`, title(entry, n)));
+      incoming.forEach((entry, n) => option(select, `incoming:${n}`, incomingTitle(entry, n)));
       const match = (plan.matches || plan.links || []).find((entry) => entry.objectId === item.id);
       if (match && Number.isInteger(match.incomingIndex) && incoming[match.incomingIndex]) select.value = `incoming:${match.incomingIndex}`;
       row.append(select); existingList.append(row); selects.push(select);
     });
     incoming.forEach((item, index) => {
       const row = document.createElement('label'); row.className = 'source-relink-row source-relink-new-row';
-      const name = document.createElement('span'); name.textContent = title(item, index);
+      const name = document.createElement('span'); name.textContent = incomingTitle(item, index);
       const controls = document.createElement('span'); controls.className = 'source-relink-choice';
       const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.className = 'source-relink-add'; checkbox.dataset.incomingIndex = String(index); checkbox.checked = true;
-      checkbox.setAttribute('aria-label', `${title(item, index)} を追加`);
+      checkbox.setAttribute('aria-label', `${incomingTitle(item, index)} を追加`);
       const description = document.createElement('span');
       controls.append(checkbox, description); row.append(name, controls); incomingList.append(row); checks.push({ checkbox, description });
     });

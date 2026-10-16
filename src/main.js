@@ -12,7 +12,7 @@ import { inspectImportPath, reduceImportPath } from "./import-reduction.js";
 import { createSourceReference, alignReloadEntries, planSourceReload, replaceReferencedPath, restoreReferencedPath, validateRelinkMatches } from "./source-reference.js";
 import { resolveSourceRelink } from "./source-relink-dialog.js";
 import { reorderObjectsByDrop } from "./object-reorder.js";
-import { editSvgPaths, editExistingPaths, editImportPaths } from "./path-editor.js";
+import { editSvgPaths, editExistingPaths, editImportPaths, resumeImportPaths } from "./path-editor.js";
 import { createBevelEditor } from "./bevel-editor.js";
 import { createTransformTools, prepareObjectMesh } from "./transform-tools.js";
 import { createHistory } from "./history.js";
@@ -864,7 +864,12 @@ async function reloadSourceFile(file, targets = sourceReloadTargets(), handle = 
       if (legacy || plan.structureChanged) {
         notice(legacy ? '従来の読み込みには参照情報がないため、対応するパスを確認してください。' : '参照 SVG のレイヤー・パス構造が変わっています。対応するパスを確認してください。');
         decision = await resolveSourceRelink(targets, incoming, plan);
-        if (!decision) { notice('参照 SVG の更新をキャンセルしました。'); return; }
+        if (!decision) {
+          notice('再リンクをキャンセルしました。パスの編集を続けられます。');
+          parsed = await resumeImportPaths(parsed, file.name);
+          if (!parsed) { notice('参照 SVG の更新をキャンセルしました。'); return; }
+          continue;
+        }
       }
       if (!validateRelinkMatches(decision.links, targets, incoming)) throw new Error('再リンクの対応が重複しているか不正です。');
       const targetIds = new Set(targets.map(object => object.id));
