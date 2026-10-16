@@ -13,6 +13,9 @@ const svgNode = (name, attrs = {}) => {
 export async function editSvgPaths(text, fileName = 'SVG') {
   return editDrafts(createPathDrafts(text), fileName);
 }
+export async function editImportPaths(objects, fileName = 'SVG', warnings = []) {
+  return editDrafts({ drafts: createObjectDrafts(objects), warnings }, fileName);
+}
 export async function editExistingPaths(objects) {
   return editDrafts({ drafts: createObjectDrafts(objects), warnings: [] }, '選択中のパス', true);
 }

@@ -12,7 +12,7 @@ import { inspectImportPath, reduceImportPath } from "./import-reduction.js";
 import { createSourceReference, alignReloadEntries, planSourceReload, replaceReferencedPath, validateRelinkMatches } from "./source-reference.js";
 import { resolveSourceRelink } from "./source-relink-dialog.js";
 import { reorderObjectsByDrop } from "./object-reorder.js";
-import { editSvgPaths, editExistingPaths } from "./path-editor.js";
+import { editSvgPaths, editExistingPaths, editImportPaths } from "./path-editor.js";
 import { createBevelEditor } from "./bevel-editor.js";
 import { createTransformTools, prepareObjectMesh } from "./transform-tools.js";
 import { createHistory } from "./history.js";
@@ -811,65 +811,112 @@ async function reloadSourceFile(file, targets = sourceReloadTargets(), handle = 
   try {
     if (!/\.svg$/i.test(file.name) || file.size > 5 * 1024 * 1024) throw new Error('5 MB 以下の参照 SVG を選択してください。');
     if (!flushPending()) throw new Error('現在の設定を修正してから参照 SVG を更新してください。');
-    const parsed = parseSvg(await file.text());
-    const inspections = parsed.objects.map(entry => inspectImportPath(entry.shape));
-    if (inspections.some(info => info.overBudget) && !window.confirm('更新する SVG に 3,000 頂点を超えるパスがあります。処理可能な頂点数まで削減して更新しますか？')) return;
-    const entries = parsed.objects.map((entry, index) => inspections[index].overBudget ? { ...entry, shape: reduceImportPath(entry.shape).shape } : entry);
-    const legacy = !targets[0].sourceReference;
-    const reference = legacy
-      ? createSourceReference(entries, file.name, {groupId: `source-${THREE.MathUtils.generateUUID()}`})[0].sourceReference
-      : { ...targets[0].sourceReference, fileName: file.name };
-    const incoming = alignReloadEntries(entries, reference);
-    const plan = planSourceReload(targets, incoming);
-    let decision = { links: plan.matches, addIndices: [], removeIds: [] };
-    if (legacy || plan.structureChanged) {
-      notice(legacy ? '従来の読み込みには参照情報がないため、対応するパスを確認してください。' : '参照 SVG のレイヤー・パス構造が変わっています。対応するパスを確認してください。');
-      decision = await resolveSourceRelink(targets, incoming, plan);
-      if (!decision) { notice('参照 SVG の更新をキャンセルしました。'); return; }
+    const text = await file.text();
+    let parsed, alreadyEdited = false;
+    // Reload uses the same repair path as importing, before any source links change.
+    async function repair(reason, current = null) {
+      notice(`${reason} パス調整エディタで確認してください。`, true);
+      try {
+        if (current) {
+          const counts = current.objects.map(entry => inspectImportPath(entry.shape).originalCount);
+          if (counts.some(count => count > 20000) || counts.reduce((sum, count) => sum + count, 0) > 200000)
+            throw new Error('パス調整エディタの上限 20,000 頂点（全体 200,000 頂点）を超えています。');
+          return await editImportPaths(current.objects, file.name, current.warnings);
+        }
+        return await editSvgPaths(text, file.name);
+      }
+      catch (error) {
+        // The editor itself has a bounded draft size. Reduce only after consent,
+        // then open the reduced import draft instead of abandoning the reload.
+        if (!/上限.*頂点/.test(error.message) || !current) throw error;
+        if (!window.confirm(`${error.message} 編集可能な頂点数まで削減してパス調整エディタを開きますか？`)) return null;
+        const reduced = current.objects.map(entry => inspectImportPath(entry.shape).overBudget
+          ? { ...entry, shape: reduceImportPath(entry.shape).shape } : entry);
+        if (reduced.reduce((sum, entry) => sum + inspectImportPath(entry.shape).originalCount, 0) > 200000)
+          throw new Error('パス調整エディタ全体の上限 200,000 頂点を超えています。SVG を分割してください。');
+        return editImportPaths(reduced, file.name, [...current.warnings, '編集可能な頂点数まで削減しました。']);
+      }
     }
-    if (!validateRelinkMatches(decision.links, targets, incoming)) throw new Error('再リンクの対応が重複しているか不正です。');
-    const targetIds = new Set(targets.map(object => object.id));
-    if (targets.some(object => !objects.includes(object))) throw new Error('更新対象が変更されました。もう一度更新してください。');
-    const linkedIds = new Set(decision.links.map(link => link.objectId));
-    const usedIndices = new Set(decision.links.map(link => link.incomingIndex));
-    const removedIds = new Set(decision.removeIds);
-    if ([...removedIds].some(id => !targetIds.has(id) || linkedIds.has(id)) || new Set(decision.addIndices).size !== decision.addIndices.length || decision.addIndices.some(index => !Number.isInteger(index) || index < 0 || index >= incoming.length || usedIndices.has(index))) throw new Error('追加・削除するパスの指定が不正です。');
-    if (!flushPending()) throw new Error('現在の設定を修正してから参照 SVG を更新してください。');
-    const replacements = decision.links.map(link => replaceReferencedPath(objects.find(object => object.id === link.objectId), incoming[link.incomingIndex], reference));
-    let nextSequence = objectSequence;
-    const additions = decision.addIndices.map(index => {
-      const entry = incoming[index];
-      return { ...entry, id: `reload-${THREE.MathUtils.generateUUID()}`, name: `${entry.name || 'パス'} ${String(++nextSequence).padStart(3,'0')}`,
-        sourceName: file.name, visible: true, invalid: false, color: '#b0b0b0', settings: initialSettings(entry.shape),
-        transform: { position: group.position.clone().negate().toArray(), rotation: [0,0,0], scale: [1,1,1] } };
-    });
-    if (!replacements.length && !additions.length && !removedIds.size) { notice('更新するパスが選択されていません。'); return; }
-    // Build every changed mesh before replacing any live object.
-    const changed = [...replacements, ...additions], meshes = makeMeshes(changed);
-    const replacementMap = new Map(replacements.map(object => [object.id, object]));
-    const meshMap = new Map(changed.map((object, index) => [object.id, meshes[index]]));
-    const oldObjects = objects, oldMeshes = group.children.slice();
-    const activeId = selectedObject()?.id;
-    history.commit(); transformTools.detach();
-    objects = oldObjects.filter(object => !removedIds.has(object.id)).map(object => replacementMap.get(object.id) || object).concat(additions);
-    group.remove(...oldMeshes);
-    const previousMeshById = new Map(oldObjects.map((object, index) => [object.id, oldMeshes[index]]));
-    objects.forEach(object => group.add(meshMap.get(object.id) || previousMeshById.get(object.id)));
-    oldObjects.forEach((object,index) => {
-      if (!removedIds.has(object.id) && !replacementMap.has(object.id)) return;
-      const mesh = oldMeshes[index]; disposeWireframe(mesh); mesh.geometry.dispose(); mesh.material.dispose();
-    });
-    objectSequence = nextSequence;
-    if (handle) sourceFileHandles.set(reference.groupId,handle);
-    selected = Math.max(0, objects.findIndex(object => object.id === activeId));
-    selectedIds = new Set([...selectedIds].filter(id => objects.some(object => object.id === id)));
-    if (objects.length && !selectedIds.size) selectedIds.add(objects[selected].id);
-    if (objects.length && !selectedIds.has(objects[selected].id)) selected = objects.findIndex(object => selectedIds.has(object.id));
-    selectionAnchorId = objects[selected]?.id ?? null;
-    uvSelectedKey = null; uvDragKey = null;
-    if (!objects.length) { $('dropzone').classList.remove('loaded'); $('dropzone').querySelector('strong').textContent = 'SVG を追加'; }
-    list(); sync(); transformTools.sync(); refreshMeshInfo(); drawUV(); recordHistory(true);
-    notice(`参照 SVG を更新しました（更新 ${replacements.length}・追加 ${additions.length}・削除 ${removedIds.size}）。${parsed.warnings.length ? ' ' + parsed.warnings.join(' / ') : ''}`);
+    try { parsed = parseSvg(text); }
+    catch (error) { parsed = await repair(error.message); alreadyEdited = true; }
+    if (!parsed) { notice('参照 SVG の更新をキャンセルしました。'); return; }
+    let needsRepair = !alreadyEdited && parsed.warnings.length > 0;
+    try { if (!alreadyEdited) needsRepair ||= parsed.objects.some(entry => inspectImportPath(entry.shape).overBudget); }
+    catch { needsRepair = true; }
+    if (needsRepair) {
+      // Prefer the original SVG draft so open contours remain editable.
+      try {
+        notice('頂点数や輪郭に問題があるため、パス調整エディタを開きます。');
+        parsed = await editSvgPaths(text, file.name);
+      } catch (error) { parsed = await repair(error.message, parsed); }
+      if (!parsed) { notice('参照 SVG の更新をキャンセルしました。'); return; }
+    }
+    for (;;) {
+      const entries = parsed.objects;
+      const legacy = !targets[0].sourceReference;
+      const reference = legacy
+        ? createSourceReference(entries, file.name, {groupId: `source-${THREE.MathUtils.generateUUID()}`})[0].sourceReference
+        : { ...targets[0].sourceReference, fileName: file.name };
+      const incoming = alignReloadEntries(entries, reference);
+      const plan = planSourceReload(targets, incoming);
+      let decision = { links: plan.matches, addIndices: [], removeIds: [] };
+      if (legacy || plan.structureChanged) {
+        notice(legacy ? '従来の読み込みには参照情報がないため、対応するパスを確認してください。' : '参照 SVG のレイヤー・パス構造が変わっています。対応するパスを確認してください。');
+        decision = await resolveSourceRelink(targets, incoming, plan);
+        if (!decision) { notice('参照 SVG の更新をキャンセルしました。'); return; }
+      }
+      if (!validateRelinkMatches(decision.links, targets, incoming)) throw new Error('再リンクの対応が重複しているか不正です。');
+      const targetIds = new Set(targets.map(object => object.id));
+      if (targets.some(object => !objects.includes(object))) throw new Error('更新対象が変更されました。もう一度更新してください。');
+      const linkedIds = new Set(decision.links.map(link => link.objectId));
+      const usedIndices = new Set(decision.links.map(link => link.incomingIndex));
+      const removedIds = new Set(decision.removeIds);
+      if ([...removedIds].some(id => !targetIds.has(id) || linkedIds.has(id)) || new Set(decision.addIndices).size !== decision.addIndices.length || decision.addIndices.some(index => !Number.isInteger(index) || index < 0 || index >= incoming.length || usedIndices.has(index))) throw new Error('追加・削除するパスの指定が不正です。');
+      if (!flushPending()) throw new Error('現在の設定を修正してから参照 SVG を更新してください。');
+      const replacements = decision.links.map(link => replaceReferencedPath(objects.find(object => object.id === link.objectId), incoming[link.incomingIndex], reference));
+      let nextSequence = objectSequence;
+      const additions = decision.addIndices.map(index => {
+        const entry = incoming[index];
+        return { ...entry, id: `reload-${THREE.MathUtils.generateUUID()}`, name: `${entry.name || 'パス'} ${String(++nextSequence).padStart(3,'0')}`,
+          sourceName: file.name, visible: true, invalid: false, color: '#b0b0b0', settings: initialSettings(entry.shape),
+          transform: { position: group.position.clone().negate().toArray(), rotation: [0,0,0], scale: [1,1,1] } };
+      });
+      if (!replacements.length && !additions.length && !removedIds.size) { notice('更新するパスが選択されていません。'); return; }
+      // Build every changed mesh before replacing any live object.
+      const changed = [...replacements, ...additions];
+      let meshes;
+      try { meshes = makeMeshes(changed); }
+      catch (error) {
+        parsed = await repair(error.message, parsed);
+        if (!parsed) { notice('参照 SVG の更新をキャンセルしました。'); return; }
+        continue;
+      }
+      const replacementMap = new Map(replacements.map(object => [object.id, object]));
+      const meshMap = new Map(changed.map((object, index) => [object.id, meshes[index]]));
+      const oldObjects = objects, oldMeshes = group.children.slice();
+      const activeId = selectedObject()?.id;
+      history.commit(); transformTools.detach();
+      objects = oldObjects.filter(object => !removedIds.has(object.id)).map(object => replacementMap.get(object.id) || object).concat(additions);
+      group.remove(...oldMeshes);
+      const previousMeshById = new Map(oldObjects.map((object, index) => [object.id, oldMeshes[index]]));
+      objects.forEach(object => group.add(meshMap.get(object.id) || previousMeshById.get(object.id)));
+      oldObjects.forEach((object,index) => {
+        if (!removedIds.has(object.id) && !replacementMap.has(object.id)) return;
+        const mesh = oldMeshes[index]; disposeWireframe(mesh); mesh.geometry.dispose(); mesh.material.dispose();
+      });
+      objectSequence = nextSequence;
+      if (handle) sourceFileHandles.set(reference.groupId,handle);
+      selected = Math.max(0, objects.findIndex(object => object.id === activeId));
+      selectedIds = new Set([...selectedIds].filter(id => objects.some(object => object.id === id)));
+      if (objects.length && !selectedIds.size) selectedIds.add(objects[selected].id);
+      if (objects.length && !selectedIds.has(objects[selected].id)) selected = objects.findIndex(object => selectedIds.has(object.id));
+      selectionAnchorId = objects[selected]?.id ?? null;
+      uvSelectedKey = null; uvDragKey = null;
+      if (!objects.length) { $('dropzone').classList.remove('loaded'); $('dropzone').querySelector('strong').textContent = 'SVG を追加'; }
+      list(); sync(); transformTools.sync(); refreshMeshInfo(); drawUV(); recordHistory(true);
+      notice(`参照 SVG を更新しました（更新 ${replacements.length}・追加 ${additions.length}・削除 ${removedIds.size}）。${parsed.warnings.length ? ' ' + parsed.warnings.join(' / ') : ''}`);
+      return;
+    }
   } catch (error) { notice(error.message,true); }
   finally { sourceReloadBusy = false; sourceReloadContext = null; }
 }

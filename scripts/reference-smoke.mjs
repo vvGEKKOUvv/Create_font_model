@@ -72,6 +72,39 @@ try{
  await page.locator('#undo').click();await expect(page.locator('#object-count')).toHaveText('4');
  const restoredRemoval=await saved();assert.deepEqual(restoredRemoval.objects,beforeRemoval.objects,'Undo restores explicitly removed source and unchanged project');
  assert.deepEqual(restoredRemoval.selectedIds,beforeRemoval.selectedIds,'Undo restores original multi-selection');
+ // Oversized referenced paths enter repair before mapping; neither cancellation mutates the scene.
+ await row(0).click();const beforeOversized=await saved();
+ const densePoints=Array.from({length:3201},(_,i)=>{const a=i/3201*Math.PI*2;return `${100+50*Math.cos(a)} ${100+50*Math.sin(a)}`;});
+ const dense=`<svg xmlns="http://www.w3.org/2000/svg"><g id="renamed-layer"><path id="dense-replacement" d="M${densePoints.join('L')}Z"/></g></svg>`;
+ await reload(dense);await expect(page.locator('#path-editor-dialog')).toBeVisible();
+ await expect(page.locator('#path-editor-import')).toBeDisabled();
+ assert.deepEqual((await saved()).objects,beforeOversized.objects,'Oversized reload leaves old meshes and parameters intact while repair opens');
+ await page.locator('#path-editor-cancel').click();assert.deepEqual((await saved()).objects,beforeOversized.objects,'Cancelling oversized repair leaves old project intact');
+ await reload(dense);await expect(page.locator('#path-editor-dialog')).toBeVisible();
+ await page.locator('#path-editor-tolerance').fill('0.5');await page.locator('#path-editor-reduce').click();
+ await expect(page.locator('#path-editor-import')).toBeEnabled();await page.locator('#path-editor-import').click();
+ await expect(page.locator('#path-editor-dialog')).not.toBeVisible();await expect(page.locator('#source-relink-dialog')).toBeVisible();
+ assert.deepEqual((await saved()).objects,beforeOversized.objects,'Repair and mapping are staged before replacing geometry');
+ await page.locator(`.source-relink-mapping[data-object-id="${initial.objects[0].id}"]`).selectOption('incoming:0');
+ await page.locator('#source-relink-apply').click();await expect(page.locator('#object-count')).toHaveText('4');
+ const repaired=await saved();
+ assert.notDeepEqual(repaired.objects[0].shape,beforeOversized.objects[0].shape,'Reduced source replaces original mesh');
+ for(const key of ['id','name','settings','color','materialType','transform'])assert.deepEqual(repaired.objects[0][key],beforeOversized.objects[0][key],`Oversized repair preserves ${key}`);
+ assert(repaired.objects[0].shape.curves.length<3000,'Oversized source is reduced to the supported range');
+ await page.locator('#undo').click();assert.deepEqual((await saved()).objects,beforeOversized.objects,'Undo restores all objects after repaired source update');
+ // Above the editor's raw budget, explicit consent reduces before opening an editable draft.
+ const budgetState=await saved(), consent=[];
+ const budgetPoints=Array.from({length:20020},(_,i)=>{const a=i/20020*Math.PI*2;return `${100+50*Math.cos(a)} ${100+50*Math.sin(a)}`;});
+ const budgetSvg=`<svg xmlns="http://www.w3.org/2000/svg"><path id="over-editor-budget" d="M${budgetPoints.join('L')}Z"/></svg>`;
+ const acceptReduction=async dialog=>{consent.push({type:dialog.type(),message:dialog.message()});await dialog.accept();};
+ page.on('dialog',acceptReduction);
+ await reload(budgetSvg);await expect(page.locator('#path-editor-dialog')).toBeVisible({timeout:30000});
+ page.off('dialog',acceptReduction);assert(consent.some(d=>d.type==='confirm'&&d.message.includes('削減')),'Raw-budget reduction asks consent');
+ await expect(page.locator('#path-editor-import')).toBeEnabled();
+ const budgetVertexCount=await page.locator('#path-editor-canvas circle[data-contour][data-point]').count();
+ assert(budgetVertexCount>=3&&budgetVertexCount<3000,'Consent opens reduced, editable vertices');
+ await page.locator('#path-editor-cancel').click();
+ assert.deepEqual((await saved()).objects,budgetState.objects,'Cancelling pre-reduced editor does not mutate source scene');
  assert.deepEqual(errors,[]);if(standalone)assert.deepEqual(requests,[]);
- console.log('Reference browser checks passed: inline rename, selected-block drag reorder/undo, source identity reload, parameter preservation, relink cancel/manual mapping/new path, project persistence.');
+ console.log('Reference browser checks passed: inline rename, selected-block drag reorder/undo, source identity reload, parameter preservation, relink cancel/manual mapping/new path, project persistence, oversized source repair/cancel/relink/undo, editor-budget consent.');
 }finally{await browser?.close();if(server?.pid)try{process.kill(-server.pid,'SIGTERM');}catch{}}
