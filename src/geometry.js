@@ -422,7 +422,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
         for (let i = 0; i < values.length; i += 2) {
           const slot=slots.getX(i/2);
           const u=slot===0 ? .02+.96*(positions.getX(i/2)-projection.min.x)/projectionWidth : values[i];
-          const v=slot===0 ? .02+.96*(-positions.getY(i/2)-projection.min.y)/projectionHeight : (values[i+1]+index)/children.length;
+          const v=slot===0 ? .02+.96*(projection.max.y+positions.getY(i/2))/projectionHeight : (values[i+1]+index)/children.length;
           base.push(u, v);
           keys.push(surfaceUvKey(child.getAttribute("surfaceSlot").getX(i/2),u,v));
         }
@@ -841,7 +841,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
     surfaceSlots.push(surfaceSlot);
     roofDirections.push(roofDirection);
     const u = surfaceSlot === 0 ? .02 + .96 * (p.x - box.min.x) / width : (uv.x * 3 - 2);
-    const v = surfaceSlot === 0 ? .02 + .96 * (p.y - box.min.y) / height : uv.y;
+    const v = surfaceSlot === 0 ? .02 + .96 * (box.max.y - p.y) / height : uv.y;
     // Old caps occupied adjacent thirds. Resolve both copies through the old
     // front key so a legacy back edit cannot separate their shared island.
     legacyUVKeys.push(surfaceSlot === 0 ? `${(u/3).toFixed(6)},${v.toFixed(6)}` : `${uv.x.toFixed(6)},${uv.y.toFixed(6)}`);
