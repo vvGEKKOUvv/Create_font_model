@@ -350,9 +350,14 @@ try {
     initialNames.length,
     "Imported object names are unique",
   );
+  async function renameSelected(value) {
+    const label=page.locator('.object-row.active [data-object-name]').first();
+    await label.dblclick();
+    const input=label.locator('[data-rename-object]');
+    await input.fill(value); await input.press('Enter');
+  }
   const renamedObject = "Custom sculpture";
-  await page.locator("#object-name").fill(renamedObject);
-  await page.locator("#object-name").dispatchEvent("change");
+  await renameSelected(renamedObject);
   await expect(page.locator("#selected-name")).toHaveText(renamedObject);
   assert.match((await exported())["model.obj"], /o Custom_sculpture/);
   await page.locator("#undo").click();
@@ -1202,7 +1207,7 @@ try {
     await download.saveAs(path);
     return JSON.parse(await readFile(path, "utf8"));
   }
-  await editField("object-name", "Saved sculpture");
+  await renameSelected("Saved sculpture");
   await editField("position-x", 7);
   await editField("rotation-y", 24);
   await editField("scale-z", 1.5);
@@ -1233,7 +1238,7 @@ try {
   await expect(page.locator("#object-count")).toHaveText("2");
   await page.locator("#redo").click();
   await expect(page.locator("#object-count")).toHaveText("3");
-  await editField("object-name", "Changed copy");
+  await renameSelected("Changed copy");
   await page.locator("#fit").click();
   await page.locator("#project-file").setInputFiles({name:"saved.pathform", mimeType:"application/json", buffer:Buffer.from(JSON.stringify(saved))});
   await expect(page.locator("#object-count")).toHaveText("2");
@@ -1384,7 +1389,7 @@ try {
   await page.locator("#file").setInputFiles({name:"delete.svg",mimeType:"image/svg+xml",buffer:Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><path id="Keep" d="M0 0H30V30H0Z"/><path id="Delete" d="M50 0H80V30H50Z"/></svg>')});
   await expect(page.locator("#object-count")).toHaveText("2");
   await page.locator('[data-object="1"]').click();
-  await editField("object-name", "Delete me");
+  await renameSelected("Delete me");
   await editField("position-x", 13);
   await editField("rotation-y", 17);
   await editField("scale-z", 1.4);

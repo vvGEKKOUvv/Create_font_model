@@ -83,6 +83,11 @@ export function parseSvg(text, { forEditing = false } = {}) {
   if (data.paths.length > 512)
     throw new Error("パス数が多すぎます（最大 512）。SVG を分割してください。");
   let editorEstimate = 0;
+  const sourceIdCounts = new Map();
+  for (const path of data.paths) {
+    const sourceId = path.userData?.node?.getAttribute("id");
+    if (sourceId) sourceIdCounts.set(sourceId, (sourceIdCounts.get(sourceId) || 0) + 1);
+  }
   for (const path of data.paths) {
     const style = path.userData?.style || {};
     let hidden = style.display === "none" || style.visibility === "hidden";
@@ -123,11 +128,17 @@ export function parseSvg(text, { forEditing = false } = {}) {
       }
     }
     const layerName = labels.join(" / ").slice(0, 240);
+    const sourceElementId = path.userData?.node?.getAttribute("id") || "";
+    const sourcePathIndex = data.paths.indexOf(path);
+    let sourceShapeIndex = 0;
     const addObject = (shape, editorContours) => {
       if (objects.length >= 256) throw new Error("オブジェクト数が多すぎます（最大 256）。SVG を分割してください。");
       const id = `path-${objects.length + 1}`;
       const pathName = path.userData?.node?.getAttribute("id") || id;
       objects.push({ id, name: pathName,
+        sourceElementId, sourceShapeIndex,
+        sourceIdentityAmbiguous: !!sourceElementId && sourceIdCounts.get(sourceElementId) > 1,
+        sourceKey: JSON.stringify([labels, sourceElementId || `@${sourcePathIndex}`, sourceShapeIndex++]),
         layerName, shape, color: `#${path.color.getHexString()}`,
         ...(editorContours ? { editorContours } : {}) });
     };

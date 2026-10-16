@@ -13,7 +13,8 @@
     "test:path-editor": "node scripts/path-editor-smoke.mjs",
     "test:workflow": "node scripts/workflow-smoke.mjs",
     "test:editor-history": "node scripts/editor-history-smoke.mjs",
-    "test:presets": "node scripts/preset-smoke.mjs"
+    "test:presets": "node scripts/preset-smoke.mjs",
+    "test:reference": "node scripts/reference-smoke.mjs"
   },
   "dependencies": {
     "cdt2d": "1.0.0",

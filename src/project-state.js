@@ -52,6 +52,11 @@ function validateState(state) {
   for (const object of state.objects) {
     if (!record(object) || typeof object.id !== "string" || ids.has(object.id) || typeof object.name !== "string" || object.name.length > 1000 || !/^#[\da-f]{6}$/i.test(object.color) || !record(object.settings)) fail();
     if (object.materialType !== undefined && !["standard", "metal"].includes(object.materialType)) fail();
+    if (object.sourceReference !== undefined) {
+      const reference = object.sourceReference;
+      if (!record(reference) || !vector(reference.center, 2) ||
+          !["groupId", "fileName", "key"].every(key => typeof reference[key] === "string" && reference[key].length > 0 && reference[key].length <= 4096)) fail();
+    }
     ids.add(object.id);
     if (object.visible !== undefined && typeof object.visible !== "boolean") fail();
     if (object.pivot !== undefined && !vector(object.pivot, 3)) fail();

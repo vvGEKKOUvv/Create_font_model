@@ -127,3 +127,15 @@ test('project rejects stale, repeated or mismatched selection IDs', () => {
     {selectionAnchorId:'missing'},
   ]) assert.throws(() => serializeProject({...fixture(), ...fields}), /プロジェクト/);
 });
+
+
+test('source references survive save and reject malformed relink metadata', () => {
+  const state = fixture();
+  state.objects[0].sourceReference = { groupId: 'svg-group-1', fileName: 'original.svg', key: '["layer","path",0]', center: [15, 30] };
+  assert.deepEqual(parseProject(serializeProject(state)).objects[0].sourceReference, state.objects[0].sourceReference);
+  for (const bad of [{ center: [0] }, { groupId: '' }, { key: 3 }, { fileName: null }]) {
+    const invalid = fixture();
+    invalid.objects[0].sourceReference = { ...state.objects[0].sourceReference, ...bad };
+    assert.throws(() => serializeProject(invalid), /プロジェクト/);
+  }
+});

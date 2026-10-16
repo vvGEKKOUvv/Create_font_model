@@ -52,7 +52,7 @@ try {
   await expect(page.locator('#path-editor-dialog')).not.toBeVisible();
   await expect(page.locator('#object-count')).toHaveText('1');
   // Cancel must leave both scene object count and the old object name untouched.
-  const oldName = await page.locator('#object-name').inputValue();
+  const oldName = await page.locator('#selected-name').textContent();
   const saveState = async () => {
     const download = page.waitForEvent('download');
     await page.locator('#project-save').click();
@@ -65,7 +65,7 @@ try {
   await page.keyboard.press('w'); await page.keyboard.press('e'); await page.keyboard.press('r');
   await page.locator('#path-editor-cancel').click();
   await expect(page.locator('#object-count')).toHaveText('1');
-  await expect(page.locator('#object-name')).toHaveValue(oldName);
+  await expect(page.locator('#selected-name')).toHaveText(oldName);
   const afterCancel = await saveState();
   assert.deepEqual(afterCancel.objects, beforeCancel.objects, 'Modal shortcuts and cancel cannot alter the existing project');
   assert.equal(afterCancel.view.transformMode, beforeCancel.view.transformMode);

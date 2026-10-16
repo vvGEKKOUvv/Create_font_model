@@ -1,0 +1,77 @@
+import { chromium, expect } from '@playwright/test';
+import { spawn } from 'node:child_process';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+const standalone=process.env.REFERENCE_HTML;
+const url=process.env.REFERENCE_URL||'http://127.0.0.1:5191';
+const server=standalone||process.env.REFERENCE_URL?null:spawn('npm',['run','dev','--','--host','127.0.0.1','--port','5191','--strictPort'],{detached:true,stdio:'pipe'});
+let output='',browser;
+server?.stdout.on('data',x=>output+=x);server?.stderr.on('data',x=>output+=x);
+const source=(spec)=>`<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" viewBox="0 0 500 250">${spec.map(([id,x,w=40])=>`<g id="layer-${id}" inkscape:groupmode="layer" inkscape:label="Layer ${id}"><path id="path-${id}" d="M${x} 40h${w}v40h-${w}Z"/></g>`).join('')}</svg>`;
+try{
+ if(server)await expect.poll(async()=>{if(server.exitCode!==null)throw Error(output);try{return(await fetch(url)).ok;}catch{return false;}},{timeout:15000}).toBe(true);
+ browser=await chromium.launch({...process.env.CHROMIUM_PATH?{executablePath:process.env.CHROMIUM_PATH}:{},args:['--no-sandbox','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader']});
+ const page=await browser.newPage({viewport:{width:1500,height:1100}});
+ const errors=[],requests=[];page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>requests.push(r.url()));
+ await page.addInitScript(()=>{window.showOpenFilePicker=undefined;window.showSaveFilePicker=undefined;});
+ if(standalone)await page.setContent(await readFile(standalone,'utf8'),{waitUntil:'load'});else await page.goto(url);
+ await page.evaluate(()=>{window.showOpenFilePicker=undefined;window.showSaveFilePicker=undefined;});
+ const upload=async(id,content,name='linked.svg')=>page.locator(`#${id}`).setInputFiles({name,mimeType:'image/svg+xml',buffer:Buffer.from(content)});
+ const saved=async()=>{const d=page.waitForEvent('download');await page.locator('#project-save').evaluate(el=>el.click());return JSON.parse(await readFile(await(await d).path(),'utf8')).state;};
+ const row=i=>page.locator(`[data-object="${i}"]`);
+ const field=async(id,value)=>{await page.locator(`#${id}`).fill(String(value));await page.locator(`#${id}`).dispatchEvent('change');await page.waitForTimeout(150);};
+ await upload('file',source([['a',50],['b',150],['c',250]]));await expect(page.locator('#object-count')).toHaveText('3');
+ await expect(page.locator('#object-name')).toHaveCount(0);
+ await row(0).click();await field('depth',37);await field('position-x',12);await field('rotation-z',23);await field('scale-y',1.3);
+ await page.locator('#color').fill('#aa5533');await page.locator('#color').dispatchEvent('input');await page.locator('#material-type').selectOption('metal');
+ await page.locator('[data-object-name="0"]').dblclick();await page.locator('[data-rename-object="0"]').fill('Custom A');await page.locator('[data-rename-object="0"]').press('Enter');
+ let initial=await saved();assert(initial.objects.every(o=>o.sourceReference),'Imported paths carry source links');
+ // A real drag/drop moves the selected block and remains undoable.
+ await row(0).click();await row(1).click({modifiers:['Control']});
+ await page.evaluate(()=>{const rows=[...document.querySelectorAll('[data-object]')];const dt=new DataTransfer();rows[0].dispatchEvent(new DragEvent('dragstart',{bubbles:true,cancelable:true,dataTransfer:dt}));const r=rows[2].getBoundingClientRect();rows[2].dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:dt,clientY:r.bottom-1}));rows[2].dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:dt,clientY:r.bottom-1}));rows[0].dispatchEvent(new DragEvent('dragend',{bubbles:true,dataTransfer:dt}));});
+ let moved=await saved();assert.deepEqual(moved.objects.map(o=>o.id),[initial.objects[2].id,initial.objects[0].id,initial.objects[1].id]);
+ assert.deepEqual(new Set(moved.selectedIds),new Set(initial.objects.slice(0,2).map(o=>o.id)));
+ await page.locator('#undo').click();assert.deepEqual((await saved()).objects.map(o=>o.id),initial.objects.map(o=>o.id));
+ await row(0).click();initial=await saved();
+ const reload=async(content)=>{await page.locator('#source-reload').click();await upload('source-reload-file',content);};
+ await reload(source([['c',250,55],['a',50,70],['b',150,60]]));
+ await expect(page.locator('#source-relink-dialog')).not.toBeVisible();
+ await expect.poll(async()=>JSON.stringify((await saved()).objects[0].shape)).not.toBe(JSON.stringify(initial.objects[0].shape));
+ let updated=await saved();
+ for(let i=0;i<3;i++)for(const key of ['id','name','settings','color','materialType','transform'])assert.deepEqual(updated.objects[i][key],initial.objects[i][key],`Reload preserves ${key}`);
+ await page.locator('#undo').click();assert.deepEqual((await saved()).objects.map(o=>o.shape),initial.objects.map(o=>o.shape),'Reload is one undo operation');await page.locator('#redo').click();
+ // A changed layer structure must require a concrete mapping before mutation.
+ const beforeDialog=await saved();await reload(source([['x',50,80],['b',150,65],['d',350,30]]));
+ await expect(page.locator('#source-relink-dialog')).toBeVisible();
+ assert.deepEqual((await saved()).objects,beforeDialog.objects,'Opening mapping does not alter the project');
+ await page.locator('#source-relink-cancel').click();assert.deepEqual((await saved()).objects,beforeDialog.objects,'Cancelling leaves all objects unchanged');
+ await reload(source([['x',50,80],['b',150,65],['d',350,30]]));await expect(page.locator('#source-relink-dialog')).toBeVisible();
+ const mappings=page.locator('.source-relink-mapping');await expect(mappings).toHaveCount(3);
+ await page.locator(`.source-relink-mapping[data-object-id="${initial.objects[0].id}"]`).selectOption('incoming:1');
+ await expect(page.locator('#source-relink-apply')).toBeDisabled();
+ await page.locator(`.source-relink-mapping[data-object-id="${initial.objects[0].id}"]`).selectOption('incoming:0');
+ await page.locator(`.source-relink-mapping[data-object-id="${initial.objects[1].id}"]`).selectOption('incoming:1');
+ await page.locator(`.source-relink-mapping[data-object-id="${initial.objects[2].id}"]`).selectOption('keep');
+ await page.locator('.source-relink-add[data-incoming-index="2"]').check();await page.locator('#source-relink-apply').click();
+ await expect(page.locator('#object-count')).toHaveText('4');await expect(page.locator('#source-relink-dialog')).not.toBeVisible();
+ const relinked=await saved();assert.equal(relinked.objects[0].name,'Custom A');assert.deepEqual(relinked.objects[0].settings,initial.objects[0].settings);assert.deepEqual(relinked.objects[2].shape,beforeDialog.objects[2].shape,'Keeping unmatched source preserves its shape');
+ await page.locator('#project-file').setInputFiles({name:'linked.pathform',mimeType:'application/json',buffer:Buffer.from(JSON.stringify({format:'PathFormProject',version:2,state:relinked}))});
+ assert.deepEqual((await saved()).objects.map(o=>o.sourceReference),relinked.objects.map(o=>o.sourceReference),'Source links survive project save/load');
+ // Declining an extra layer updates linked paths without adding it.
+ await row(0).click();await reload(source([['x',50,90],['b',150,66],['d',350,35],['e',400,20]]));
+ await expect(page.locator('#source-relink-dialog')).toBeVisible();
+ await page.locator('.source-relink-add[data-incoming-index="3"]').uncheck();
+ await page.locator('#source-relink-apply').click();await expect(page.locator('#object-count')).toHaveText('4');
+ // Removing an unmatched source is explicit and undoable, including selection state.
+ await row(0).click();await row(2).click({modifiers:['Control']});const beforeRemoval=await saved();
+ await reload(source([['x',50,95],['b',150,67],['d',350,36]]));await expect(page.locator('#source-relink-dialog')).toBeVisible();
+ await page.locator(`.source-relink-mapping[data-object-id="${initial.objects[2].id}"]`).selectOption('remove');
+ await page.locator('#source-relink-apply').click();await expect(page.locator('#object-count')).toHaveText('3');
+ const removedState=await saved();assert(!removedState.objects.some(o=>o.id===initial.objects[2].id));
+ assert.deepEqual(removedState.selectedIds,[initial.objects[0].id],'Removing the active source preserves another selected object');
+ await page.locator('#undo').click();await expect(page.locator('#object-count')).toHaveText('4');
+ const restoredRemoval=await saved();assert.deepEqual(restoredRemoval.objects,beforeRemoval.objects,'Undo restores explicitly removed source and unchanged project');
+ assert.deepEqual(restoredRemoval.selectedIds,beforeRemoval.selectedIds,'Undo restores original multi-selection');
+ assert.deepEqual(errors,[]);if(standalone)assert.deepEqual(requests,[]);
+ console.log('Reference browser checks passed: inline rename, selected-block drag reorder/undo, source identity reload, parameter preservation, relink cancel/manual mapping/new path, project persistence.');
+}finally{await browser?.close();if(server?.pid)try{process.kill(-server.pid,'SIGTERM');}catch{}}

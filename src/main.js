@@ -9,7 +9,9 @@ import { parseSvg, buildMesh, exportObj, applyUvSettings } from "./geometry.js";
 import { defaultProfile } from "./bevel-profile.js";
 import { prepareContours } from "./path-reduction.js";
 import { inspectImportPath, reduceImportPath } from "./import-reduction.js";
-import { centerImportedPaths } from "./import-origin.js";
+import { createSourceReference, alignReloadEntries, planSourceReload, replaceReferencedPath, validateRelinkMatches } from "./source-reference.js";
+import { resolveSourceRelink } from "./source-relink-dialog.js";
+import { reorderObjectsByDrop } from "./object-reorder.js";
 import { editSvgPaths, editExistingPaths } from "./path-editor.js";
 import { createBevelEditor } from "./bevel-editor.js";
 import { createTransformTools, prepareObjectMesh } from "./transform-tools.js";
@@ -78,8 +80,8 @@ app.innerHTML = `
     <details id="objects-details" class="control-section" open>
       <summary>オブジェクト選択 <span id="object-count">0</span></summary>
       <div id="objects"></div>
-      <label class="rename-row"><span>名前</span><input id="object-name" type="text" maxlength="120" aria-label="オブジェクト名" placeholder="選択オブジェクトの名前"/></label>
       <button id="edit-path" class="subtle" disabled>選択したパスを編集</button>
+      <button id="source-reload" class="subtle" disabled>参照元を再読み込み</button><input id="source-reload-file" type="file" accept=".svg,image/svg+xml" hidden/>
       <div class="object-actions"><button id="duplicate" class="subtle" disabled>複製</button><button id="delete-object" class="subtle" disabled aria-label="選択したパスを削除">削除</button><button id="reorder-up" class="subtle" disabled>↑ 上へ</button><button id="reorder-down" class="subtle" disabled>↓ 下へ</button></div>
       <label class="export-folder-option"><input id="export-folder" type="checkbox"/> OBJ の保存先を指定</label>
       <p class="export-visibility-note">非表示のオブジェクトは書き出し対象外</p>
@@ -504,17 +506,50 @@ function syncSelectionActions() {
   $("apply-reduction").disabled = !selectedObject();
   $("reorder-up").disabled = !objects.length || selected === 0;
   $("reorder-down").disabled = !objects.length || selected === objects.length - 1;
-  $("object-name").disabled = !selectedObject();
+  $("source-reload").disabled = !selectedObject();
 }
 function list() {
   syncSelectionActions();
   $("object-count").textContent = objects.length;
   $("objects").innerHTML = objects
-    .map((o, i) => `<div class="object-entry ${o.visible === false ? "object-hidden" : ""}">
+    .map((o, i) => `<div class="object-entry ${o.visible === false ? "object-hidden" : ""}" draggable="true" data-reorder-id="${escapeHTML(o.id)}">
       <button class="object-row ${selectedIds.has(o.id) ? "active" : ""}" data-object="${i}" aria-pressed="${selectedIds.has(o.id)}"><i style="background:${safeColor(o.color)}"></i><span data-object-name="${i}" title="ダブルクリックで名前を変更">${escapeHTML(o.name)}</span><small title="${escapeHTML([o.layerName, o.sourceName].filter(Boolean).join(" / "))}">${escapeHTML([o.layerName, o.sourceName].filter(Boolean).join(" / "))}</small></button>
       <button class="object-visibility" data-visibility="${i}" aria-label="${escapeHTML(o.name)}を${o.visible === false ? "表示" : "非表示"}" aria-pressed="${o.visible !== false}" title="${o.visible === false ? "表示する" : "非表示にする"}">${o.visible === false ? "○" : "◉"}</button>
     </div>`)
     .join("");
+  document.querySelectorAll("[data-reorder-id]").forEach(row => {
+    row.ondragstart = event => {
+      if (event.target.closest("input")) { event.preventDefault(); return; }
+      const index = objects.findIndex(object => object.id === row.dataset.reorderId);
+      if (!selectedIds.has(row.dataset.reorderId)) selectObject(index);
+      flushPending();
+      event.dataTransfer.setData("application/x-pathform-objects", JSON.stringify([...selectedIds]));
+      event.dataTransfer.effectAllowed = "move";
+    };
+    row.ondragover = event => {
+      if (!Array.from(event.dataTransfer.types).includes("application/x-pathform-objects")) return;
+      event.preventDefault(); event.dataTransfer.dropEffect = "move";
+      const after = event.clientY >= row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2;
+      row.classList.toggle("drop-before", !after); row.classList.toggle("drop-after", after);
+    };
+    row.ondragleave = row.ondragend = () => row.classList.remove("drop-before", "drop-after");
+    row.ondrop = event => {
+      const data = event.dataTransfer.getData("application/x-pathform-objects"); if (!data) return;
+      event.preventDefault(); event.stopPropagation();
+      row.classList.remove("drop-before", "drop-after");
+      try {
+        const ids = JSON.parse(data); if (!Array.isArray(ids)) return;
+        const after = event.clientY >= row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2;
+        const next = reorderObjectsByDrop(objects, ids, row.dataset.reorderId, after);
+        if (next.every((object, index) => object === objects[index])) return;
+        flushPending(); history.commit();
+        const activeId = objects[selected]?.id, meshes = new Map(group.children.map(mesh => [mesh.userData.objectId, mesh]));
+        objects = next; group.children.splice(0, group.children.length, ...objects.map(object => meshes.get(object.id)));
+        selected = Math.max(0, objects.findIndex(object => object.id === activeId));
+        list(); sync(); transformTools.sync(); drawUV(); recordHistory(true);
+      } catch (error) { notice(error.message, true); }
+    };
+  });
   document.querySelectorAll("[data-visibility]").forEach((button) => {
     button.onclick = () => {
       flushPending();
@@ -598,13 +633,11 @@ function sync() {
   const o = selectedObject();
   if (!o) {
     $("selected-name").textContent = "オブジェクトを選択";
-    $("object-name").value = "";
     curveDraw();
     updateGeometryInfo();
     return;
   }
   $("selected-name").textContent = selectedIds.size > 1 ? `${selectedIds.size} 個選択 · ${o.name}` : o.name;
-  $("object-name").value = o.name;
   o.settings.pathOffset ??= 0;
   o.settings.meshReductionPercentage ??= 0;
   const offsetBox = new THREE.Box2().setFromPoints(o.shape.extractPoints(4).shape);
@@ -676,7 +709,7 @@ async function load(text, name, editBeforeImport = false, repairOnProblem = fals
     });
     if (!objects.length) group.position.set(0, 0, 0);
     const source = ++fileSequence;
-    const next = centerImportedPaths(entries).map((o, i) => ({
+    const next = createSourceReference(entries, name, {groupId: `source-${THREE.MathUtils.generateUUID()}`}).map((o, i) => ({
       ...o,
       id: `file-${source}-${o.id}`,
       sourceName: name,
@@ -759,6 +792,109 @@ $("dropzone").ondrop = (e) => {
   e.preventDefault();
   $("dropzone").classList.remove("dragging");
   enqueueFiles(e.dataTransfer.files, false, true);
+};
+
+// Browser file handles stay in memory; project files store only safe source identities.
+const sourceFileHandles = new Map();
+let sourceReloadContext = null;
+let sourceReloadBusy = false;
+function sourceReloadTargets() {
+  const active = selectedObject();
+  if (!active) return [];
+  if (active.sourceReference) return objects.filter(object => object.sourceReference?.groupId === active.sourceReference.groupId);
+  const prefix = active.id.match(/^file-\d+-/)?.[0];
+  return objects.filter(object => !object.sourceReference && (prefix ? object.id.startsWith(prefix) : object.sourceName === active.sourceName));
+}
+async function reloadSourceFile(file, targets = sourceReloadTargets(), handle = null) {
+  if (!file || !targets.length || sourceReloadBusy) return;
+  sourceReloadBusy = true;
+  try {
+    if (!/\.svg$/i.test(file.name) || file.size > 5 * 1024 * 1024) throw new Error('5 MB 以下の参照 SVG を選択してください。');
+    if (!flushPending()) throw new Error('現在の設定を修正してから参照 SVG を更新してください。');
+    const parsed = parseSvg(await file.text());
+    const inspections = parsed.objects.map(entry => inspectImportPath(entry.shape));
+    if (inspections.some(info => info.overBudget) && !window.confirm('更新する SVG に 3,000 頂点を超えるパスがあります。処理可能な頂点数まで削減して更新しますか？')) return;
+    const entries = parsed.objects.map((entry, index) => inspections[index].overBudget ? { ...entry, shape: reduceImportPath(entry.shape).shape } : entry);
+    const legacy = !targets[0].sourceReference;
+    const reference = legacy
+      ? createSourceReference(entries, file.name, {groupId: `source-${THREE.MathUtils.generateUUID()}`})[0].sourceReference
+      : { ...targets[0].sourceReference, fileName: file.name };
+    const incoming = alignReloadEntries(entries, reference);
+    const plan = planSourceReload(targets, incoming);
+    let decision = { links: plan.matches, addIndices: [], removeIds: [] };
+    if (legacy || plan.structureChanged) {
+      notice(legacy ? '従来の読み込みには参照情報がないため、対応するパスを確認してください。' : '参照 SVG のレイヤー・パス構造が変わっています。対応するパスを確認してください。');
+      decision = await resolveSourceRelink(targets, incoming, plan);
+      if (!decision) { notice('参照 SVG の更新をキャンセルしました。'); return; }
+    }
+    if (!validateRelinkMatches(decision.links, targets, incoming)) throw new Error('再リンクの対応が重複しているか不正です。');
+    const targetIds = new Set(targets.map(object => object.id));
+    if (targets.some(object => !objects.includes(object))) throw new Error('更新対象が変更されました。もう一度更新してください。');
+    const linkedIds = new Set(decision.links.map(link => link.objectId));
+    const usedIndices = new Set(decision.links.map(link => link.incomingIndex));
+    const removedIds = new Set(decision.removeIds);
+    if ([...removedIds].some(id => !targetIds.has(id) || linkedIds.has(id)) || new Set(decision.addIndices).size !== decision.addIndices.length || decision.addIndices.some(index => !Number.isInteger(index) || index < 0 || index >= incoming.length || usedIndices.has(index))) throw new Error('追加・削除するパスの指定が不正です。');
+    if (!flushPending()) throw new Error('現在の設定を修正してから参照 SVG を更新してください。');
+    const replacements = decision.links.map(link => replaceReferencedPath(objects.find(object => object.id === link.objectId), incoming[link.incomingIndex], reference));
+    let nextSequence = objectSequence;
+    const additions = decision.addIndices.map(index => {
+      const entry = incoming[index];
+      return { ...entry, id: `reload-${THREE.MathUtils.generateUUID()}`, name: `${entry.name || 'パス'} ${String(++nextSequence).padStart(3,'0')}`,
+        sourceName: file.name, visible: true, invalid: false, color: '#b0b0b0', settings: initialSettings(entry.shape),
+        transform: { position: group.position.clone().negate().toArray(), rotation: [0,0,0], scale: [1,1,1] } };
+    });
+    if (!replacements.length && !additions.length && !removedIds.size) { notice('更新するパスが選択されていません。'); return; }
+    // Build every changed mesh before replacing any live object.
+    const changed = [...replacements, ...additions], meshes = makeMeshes(changed);
+    const replacementMap = new Map(replacements.map(object => [object.id, object]));
+    const meshMap = new Map(changed.map((object, index) => [object.id, meshes[index]]));
+    const oldObjects = objects, oldMeshes = group.children.slice();
+    const activeId = selectedObject()?.id;
+    history.commit(); transformTools.detach();
+    objects = oldObjects.filter(object => !removedIds.has(object.id)).map(object => replacementMap.get(object.id) || object).concat(additions);
+    group.remove(...oldMeshes);
+    const previousMeshById = new Map(oldObjects.map((object, index) => [object.id, oldMeshes[index]]));
+    objects.forEach(object => group.add(meshMap.get(object.id) || previousMeshById.get(object.id)));
+    oldObjects.forEach((object,index) => {
+      if (!removedIds.has(object.id) && !replacementMap.has(object.id)) return;
+      const mesh = oldMeshes[index]; disposeWireframe(mesh); mesh.geometry.dispose(); mesh.material.dispose();
+    });
+    objectSequence = nextSequence;
+    if (handle) sourceFileHandles.set(reference.groupId,handle);
+    selected = Math.max(0, objects.findIndex(object => object.id === activeId));
+    selectedIds = new Set([...selectedIds].filter(id => objects.some(object => object.id === id)));
+    if (objects.length && !selectedIds.size) selectedIds.add(objects[selected].id);
+    if (objects.length && !selectedIds.has(objects[selected].id)) selected = objects.findIndex(object => selectedIds.has(object.id));
+    selectionAnchorId = objects[selected]?.id ?? null;
+    uvSelectedKey = null; uvDragKey = null;
+    if (!objects.length) { $('dropzone').classList.remove('loaded'); $('dropzone').querySelector('strong').textContent = 'SVG を追加'; }
+    list(); sync(); transformTools.sync(); refreshMeshInfo(); drawUV(); recordHistory(true);
+    notice(`参照 SVG を更新しました（更新 ${replacements.length}・追加 ${additions.length}・削除 ${removedIds.size}）。${parsed.warnings.length ? ' ' + parsed.warnings.join(' / ') : ''}`);
+  } catch (error) { notice(error.message,true); }
+  finally { sourceReloadBusy = false; sourceReloadContext = null; }
+}
+$('source-reload-file').onchange = async event => {
+  const file = event.target.files[0]; event.target.value = '';
+  await reloadSourceFile(file,sourceReloadContext || sourceReloadTargets());
+};
+$('source-reload').onclick = async () => {
+  if (sourceReloadBusy) return;
+  sourceReloadContext = sourceReloadTargets();
+  if (!sourceReloadContext.length) return;
+  const groupId = sourceReloadContext[0].sourceReference?.groupId;
+  const cachedHandle = groupId && sourceFileHandles.get(groupId);
+  const remembered = cachedHandle?.name === sourceReloadContext[0].sourceReference?.fileName ? cachedHandle : null;
+  if (remembered) {
+    try { await reloadSourceFile(await remembered.getFile(),sourceReloadContext,remembered); return; }
+    catch { sourceFileHandles.delete(groupId); }
+  }
+  if (typeof window.showOpenFilePicker === 'function') {
+    try {
+      const [handle] = await window.showOpenFilePicker({multiple:false,types:[{description:'SVG',accept:{'image/svg+xml':['.svg']}}]});
+      await reloadSourceFile(await handle.getFile(),sourceReloadContext,handle); return;
+    } catch (error) { if (error.name === 'AbortError') { sourceReloadContext = null; return; } }
+  }
+  $('source-reload-file').click();
 };
 
 $("edit-path").onclick = async () => {
@@ -884,19 +1020,6 @@ $("wireframe").onchange = () =>
     applyDisplayStyle(mesh, objects[index]),
   );
 $("wireframe-mode").onchange = $("wireframe").onchange;
-$("object-name").onchange = () => {
-  const object = selectedObject();
-  if (!object) return;
-  const name = $("object-name").value.trim();
-  if (!name) {
-    $("object-name").value = object.name;
-    return;
-  }
-  object.name = name;
-  recordHistory(true);
-  list();
-  sync();
-};
 $("fit").onclick = fit;
 $("reset").onclick = () => {
   const targets = selectedObjects();
@@ -1241,8 +1364,6 @@ function restoreHistory(snapshot, strict = false) {
   refreshMeshInfo();
   if (!objects.length) {
     $("selected-name").textContent = "オブジェクトを選択";
-    $("object-name").value = "";
-    $("object-name").disabled = true;
   }
   if (snapshot.view) restoreView(snapshot.view);
   if (Number.isInteger(snapshot.fileSequence)) fileSequence = Math.max(fileSequence, snapshot.fileSequence);
