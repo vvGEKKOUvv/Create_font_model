@@ -36,6 +36,8 @@ function settingsFrom(input) {
     }
     result[key] = value;
   }
+  result.frontUVFit = input.frontUVFit === undefined ? "stretch" : input.frontUVFit;
+  if (!["stretch", "contain"].includes(result.frontUVFit)) fail();
   for (const region of ["frontUV", "sideUV"]) {
     const source = input[region] === undefined ? input : input[region];
     if (!record(source)) fail();

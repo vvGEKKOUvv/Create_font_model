@@ -21,9 +21,29 @@ function uvTransform(settings,region) {
 export function transformSurfaceUv(slot,u,v,settings={}) {
   const t=uvTransform(settings,surfaceRegion(slot));return [(u*t.c-v*t.s)*t.sx+t.x,(u*t.s+v*t.c)*t.sy+t.y];
 }
+// A centered projection uses the same scale on both axes in contain mode.
+// Re-map the existing base coordinates instead of rebuilding any mesh data.
+function fitFrontUv(geometry,settings) {
+  const mode=settings.frontUVFit??'stretch';
+  if(mode!=='stretch'&&mode!=='contain')throw new Error('正面 UV の配置方式が不正です。');
+  const previous=geometry.userData.frontUVFit??'stretch';
+  if(mode===previous)return;
+  const aspect=geometry.userData.frontUVAspect??[1,1],base=geometry.userData.baseUVs;
+  const slots=geometry.getAttribute('surfaceSlot'),keys=geometry.userData.uvKeys;
+  for(let i=0;i<base.length/2;i++)if(slots?.getX(i)!==1){
+    for(let axis=0;axis<2;axis++){
+      const factor=Math.max(Number.EPSILON,aspect[axis]);
+      const stretch=.5+(base[i*2+axis]-.5)/(previous==='contain'?factor:1);
+      base[i*2+axis]=.5+(stretch-.5)*(mode==='contain'?factor:1);
+    }
+    if(keys)keys[i]=surfaceUvKey(0,base[i*2],base[i*2+1]);
+  }
+  geometry.userData.frontUVFit=mode;
+}
 export function applySurfaceUvSettings(geometry,settings={}) {
   const uv=geometry.getAttribute('uv'),base=geometry.userData.baseUVs,keys=geometry.userData.uvKeys,slots=geometry.getAttribute('surfaceSlot');
   if(!base||base.length!==uv.count*2)throw new Error('UV 元データがありません。');
+  fitFrontUv(geometry,settings);
   const edits=settings.uvEdits??{};
   if(!edits||typeof edits!=='object'||Array.isArray(edits))throw new Error('UV 編集データの形式が不正です。');
   for(const point of Object.values(edits))if(!Array.isArray(point)||point.length!==2||!point.every(Number.isFinite))throw new Error('UV 編集座標には有限の数値を指定してください。');

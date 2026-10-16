@@ -131,3 +131,20 @@ test('presets retain independent surface materials and UV transforms while legac
     const bad = structuredClone(preset); change(bad); assert.throws(() => validatePreset(bad));
   }
 });
+
+test('front UV fit survives preset roundtrip and changes invalidate prior UV corrections', () => {
+  const source = object();
+  assert.equal(createPreset('Legacy fit', source).settings.frontUVFit, 'stretch');
+  source.settings.frontUVFit = 'contain';
+  const [preset] = parsePresetLibrary(serializePresetLibrary([createPreset('Aspect fit', source)]));
+  assert.equal(preset.settings.frontUVFit, 'contain');
+  const unchanged = applyPresetToObject(source, preset);
+  assert.deepEqual(unchanged.settings.uvEdits, source.settings.uvEdits);
+  preset.settings.frontUVFit = 'stretch';
+  const changed = applyPresetToObject(source, preset);
+  assert.equal(changed.settings.frontUVFit, 'stretch');
+  assert.equal(changed.settings.uvEdits, undefined);
+  for (const frontUVFit of ['invalid', 1, null]) {
+    assert.throws(() => validatePreset({...preset, settings:{...preset.settings, frontUVFit}}));
+  }
+});

@@ -75,6 +75,7 @@ function validateState(state) {
       for (const key of ["bevelSize", "bevelWidth", "wallThickness", "reductionTolerance"]) if (settings[key] !== undefined && !(typeof settings[key] === "number" && settings[key] >= 0)) fail();
       if (settings.meshReductionPercentage !== undefined && !(typeof settings.meshReductionPercentage === "number" && settings.meshReductionPercentage >= 0 && settings.meshReductionPercentage <= 90)) fail();
       for (const key of ["uvScaleX", "uvScaleY", "uvOffsetX", "uvOffsetY", "uvRotation", "offset", "pathOffset"]) if (settings[key] !== undefined && typeof settings[key] !== "number") fail();
+      if (settings.frontUVFit !== undefined && !["stretch", "contain"].includes(settings.frontUVFit)) fail();
       for (const key of ["extrusionMirror", "extrusionCap", "bevelContinue", "sharpCorners", "hollow", "hollowCurveSafe", "bevelFullWidth"]) if (settings[key] !== undefined && typeof settings[key] !== "boolean") fail();
       for (const region of ["frontUV", "sideUV"]) if (settings[region] !== undefined) {
         if (!record(settings[region])) fail();

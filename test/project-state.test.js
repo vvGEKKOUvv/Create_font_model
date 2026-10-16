@@ -190,3 +190,21 @@ test('retired clay project materials migrate without losing opacity or regional 
     assert.throws(() => parseProject(JSON.stringify(raw)), /プロジェクト/);
   }
 });
+
+test('project preserves front UV fit modes and validates saved fallback settings', () => {
+  for (const frontUVFit of ['stretch', 'contain']) {
+    const state = fixture();
+    state.objects[0].settings.frontUVFit = frontUVFit;
+    state.objects[0].validSettings = structuredClone(state.objects[0].settings);
+    const loaded = parseProject(serializeProject(state));
+    assert.equal(loaded.objects[0].settings.frontUVFit, frontUVFit);
+    assert.equal(loaded.objects[0].validSettings.frontUVFit, frontUVFit);
+    for (const settingsKey of ['settings', 'validSettings']) {
+      const raw = JSON.parse(serializeProject(state));
+      raw.state.objects[0][settingsKey].frontUVFit = 'invalid';
+      assert.throws(() => parseProject(JSON.stringify(raw)), /プロジェクト/);
+    }
+  }
+  assert.equal(parseProject(serializeProject(fixture())).objects[0].settings.frontUVFit, undefined,
+    'legacy projects remain valid without a fit setting');
+});

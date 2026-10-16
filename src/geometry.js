@@ -442,6 +442,8 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
         originalCount: prepared.originalCount, reducedCount: prepared.reducedCount,
         hollowComponentCount: children.length,
         uvKeys: keys, baseUVs: new Float64Array(base),
+        frontUVAspect: [projectionWidth/Math.max(projectionWidth,projectionHeight),projectionHeight/Math.max(projectionWidth,projectionHeight)],
+        frontUVFit: "stretch",
       };
       geometry.userData.legacyUVKeys=keys.map((key,i)=>`${((base[i*2]+(key.startsWith('side:')?2:0))/3).toFixed(6)},${base[i*2+1].toFixed(6)}`);
       assignSurfaceGroups(geometry);
@@ -617,15 +619,29 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
   // Roofs invert distance to height and cannot represent several heights at
   // one inset. Returning curves instead sweep corresponding contour vertices
   // in axial order. Their conservative width keeps every layer valid.
-  const returns = (controls) => {
-    if (!Array.isArray(controls) || controls.length < 2) return false;
-    try { return !monotonicProfile(normalizeProfile(controls)); }
-    catch { return false; } // The normal profile parser reports invalid input.
+  const profileMode = (controls) => {
+    if (!Array.isArray(controls) || controls.length < 2) return null;
+    try {
+      const points = normalizeProfile(controls);
+      if (!monotonicProfile(points)) return "returning";
+      // A distance-to-height roof has no unique inverse on a plateau. Near
+      // plateaus and near-vertical spans also become numerically ill-conditioned:
+      // preserve their actual axial contour with the corresponding-vertex sweep.
+      for (let i = 1; i < points.length; i++) {
+        const dx = points[i].x - points[i - 1].x;
+        const dy = points[i].y - points[i - 1].y;
+        if (dy <= dx * 1e-5 || dx < 1e-6) return "extreme";
+      }
+      return null;
+    } catch { return null; } // The normal profile parser reports invalid input.
   };
-  const returningProfile = returns(settings.curvePoints) ||
-    (separateInnerProfile && returns(settings.innerCurvePoints));
-  if (returningProfile)
-    warnings.push("折り返すベベルカーブは断面押し出しで再現し、輪郭の交差を避けるため輪郭幅を安全な範囲に制限します。");
+  const outerMode = profileMode(settings.curvePoints);
+  const innerMode = separateInnerProfile ? profileMode(settings.innerCurvePoints) : null;
+  const sweepProfile = !!(outerMode || innerMode);
+  if (sweepProfile)
+    warnings.push(outerMode === "returning" || innerMode === "returning"
+      ? "折り返すベベルカーブは断面押し出しで再現し、輪郭の交差を避けるため輪郭幅を安全な範囲に制限します。"
+      : "水平・急勾配のベベルカーブを保つため断面押し出しで生成し、輪郭幅を安全な範囲に制限します。");
   const sourceOrientation = Math.sign(area(rings[0]));
   const narrowDenseConvex = explicitWidth && rings.length === 1 &&
     rings[0].length > 512 && requestedBevelWidth <=
@@ -642,7 +658,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
   let roof = null;
   let roofFailure = null;
   if (settings.hollow && effectiveWallThickness > 0 &&
-      Number(settings.bevelSize) > 0 && !safeHollowFallback && !returningProfile) {
+      Number(settings.bevelSize) > 0 && !safeHollowFallback && !sweepProfile) {
     try {
       roof = variant.hollowMidpointRoof ?? prepareHollowMidpointRoof(rings[0], effectiveWallThickness);
       if (roof) {
@@ -654,7 +670,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
     Number(settings.bevelSize) > 0 &&
     !roof &&
     !safeHollowFallback &&
-    !returningProfile &&
+    !sweepProfile &&
     !narrowDenseConvex &&
     (settings.bevelContinue === true ||
       (explicitWidth && requestedBevelWidth > variant.maximumBevelWidth + EPS))
@@ -671,7 +687,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
     Number(settings.bevelSize) > 0 &&
     !roof &&
     !safeHollowFallback &&
-    !returningProfile &&
+    !sweepProfile &&
     (settings.bevelContinue === true ||
       (explicitWidth && requestedBevelWidth > variant.maximumBevelWidth + EPS))
   ) {
@@ -779,6 +795,17 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
   const sampling = { height: bevelHeight, width: bevel, straightFallback: curve === 0, cacheKey: curve };
   const samples = sampleBevelProfile(points, profile, segments, sampling);
   const innerSamples = sampleBevelProfile(innerPoints, innerProfile, segments, sampling);
+  if (sweepProfile && bevel > EPS && bevelHeight > EPS) {
+    // Float32 positions are centered after generation. Distinct profile levels
+    // closer than one output precision unit collapse into zero-area strips.
+    // Keep the user's curve intact and let the UI retain the last valid mesh,
+    // instead of silently exporting a torn/degenerate replacement.
+    const axialFloor = Math.max(depth * 2 ** -22, EPS);
+    for (const values of [samples, innerSamples])
+      for (let i = 1; i < values.length; i++)
+        if ((values[i] - values[i - 1]) * bevelHeight < axialFloor)
+          throw new Error("ベベルカーブの頂点・分割線が奥行方向で近すぎます。近い頂点やハンドルを離すか、分割数を減らしてください。直前の有効なモデルを維持します。");
+  }
   const levels = bevel
     ? samples.map((t) => ({
         z: bevelHeight * t,
@@ -1138,6 +1165,8 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
     reducedCount: prepared.reducedCount,
     uvKeys, legacyUVKeys,
     baseUVs: new Float64Array(baseUVs),
+    frontUVAspect: [width/Math.max(width,height),height/Math.max(width,height)],
+    frontUVFit: "stretch",
   };
   assignSurfaceGroups(geometry);
   applySurfaceUvSettings(geometry,settings);

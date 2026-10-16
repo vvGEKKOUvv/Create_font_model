@@ -72,6 +72,7 @@ export function positiveExtrusionHalf(source, depth, { cap = true, settings = {}
       for(const [x,y] of capPoints){minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y);}
       const vertex=id=>{
         const [x,y]=capPoints[id],base=[.02+.96*(x-minX)/Math.max(1e-7,maxX-minX),.02+.96*(maxY-y)/Math.max(1e-7,maxY-minY)];
+        if(source.userData.frontUVFit==='contain')for(let axis=0;axis<2;axis++)base[axis]=.5+(base[axis]-.5)*(source.userData.frontUVAspect?.[axis]??1);
         const edited=settings.uvEdits?.[surfaceUvKey(0,...base)]||settings.uvEdits?.[`${(base[0]/3).toFixed(6)},${base[1].toFixed(6)}`]||settings.uvEdits?.[`${base[0].toFixed(6)},${base[1].toFixed(6)}`]||base;
         return {p:[x,y,plane],n:[0,0,-1],base,slot:0,uv:transformSurfaceUv(0,...edited,settings),protected:false};
       };

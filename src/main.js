@@ -141,6 +141,7 @@ app.innerHTML = `
     <details id="uv-settings" class="control-section" open>
       <summary>UV 設定 <span>UV MAP</span></summary>
       <label class="material-select"><span>UV 対象</span><select id="uv-region"><option value="front">正面・背面・ベベル</option><option value="side">側面</option></select></label>
+      <label class="material-select"><span>正面 UV</span><select id="front-uv-fit"><option value="stretch">領域いっぱいに広げる</option><option value="contain">縦横比を保持</option></select></label>
       <div class="uv-tools"><label><input type="checkbox" id="uv-edit-mode"/> UV 頂点編集</label><button id="uv-clear" class="subtle">UV 修正をクリア ↺</button><span>頂点をドラッグ · 同じ UV 座標をまとめて編集</span></div>
       <div class="uv-inputs">
         ${field("uvScaleX", "スケール U", 1, 0.01, 20, 0.1, false)}
@@ -258,6 +259,8 @@ function syncSurfaceControls(object = selectedObject()) {
   $("color").value=safeColor(material.color); $("color-value").textContent=material.color.toUpperCase();
   $("opacity").value=(1-material.opacity)*100;
   document.querySelector('[data-range="opacity"]').value=$("opacity").value;
+  $("front-uv-fit").value=object.settings.frontUVFit || "stretch";
+  $("front-uv-fit").disabled=$("uv-region").value === "side";
   const uv=surfaceUV(object);
   for(const key of uvFields) $(key).value=uv[key];
 }
@@ -1144,6 +1147,17 @@ function changeSurfaceMaterial(key,value) {
 }
 $("material-region").onchange=()=>{history.commit();syncSurfaceControls();};
 $("uv-region").onchange=()=>{history.commit();uvSelectedKey=null;uvDragKey=null;syncSurfaceControls();drawUV();};
+$("front-uv-fit").onchange=()=>{
+  history.commit();
+  for(const object of selectedObjects()) {
+    object.settings.frontUVFit=$("front-uv-fit").value;
+    object.settings.uvEdits=Object.fromEntries(Object.entries(object.settings.uvEdits || {}).filter(([key])=>
+      key.startsWith("side:") || (!key.startsWith("front:") && Number(key.split(",")[0])>=2/3)));
+    updateUV(object);
+  }
+  uvSelectedKey=null;uvDragKey=null;drawUV();recordHistory(true);
+};
+
 $("color").oninput=()=>{changeSurfaceMaterial("color",$("color").value);$("color-value").textContent=$("color").value.toUpperCase();};
 $("material-type").onchange=()=>{changeSurfaceMaterial("type",$("material-type").value);recordHistory(true);};
 $("opacity").oninput=()=>{const value=Math.max(0,Math.min(100,Number($("opacity").value)||0));changeSurfaceMaterial("opacity",1-value/100);document.querySelector('[data-range="opacity"]').value=value;};
