@@ -1,3 +1,4 @@
+import { EDITOR_PREVIEW_VERTEX_LIMIT } from "./path-limits.js";
 import './path-editor.css';
 import { snapshotDraft, createDraftHistory } from './path-editor-history.js';
 import { PATH_EDITOR_VERTEX_LIMIT, createPathDrafts, createObjectDrafts, validateDraft, toImportEntry, simplifyDraft, repairDraft, resetReferenceDraft, closeDraft, resetDraft, moveDraftPoint, deleteDraftPoint, addDraftPoint } from './path-editor-model.js';
@@ -94,10 +95,20 @@ function editDrafts({ drafts, warnings = [] }, fileName, existing = false, sessi
       drafts.forEach((draft, index) => draft.contours.forEach((contour, ci) => {
         if (!contour.points.length) return;
         const path = svgNode('path', { d: contour.points.map((p,i) => `${i ? 'L' : 'M'}${p.x} ${p.y}`).join(' ') + (contour.closed ? ' Z' : ''), class: `path-editor-outline ${index === active ? 'active' : ''} ${draft.enabled ? '' : 'excluded'}`, 'vector-effect':'non-scaling-stroke', 'data-draft':index, 'data-outline-contour':ci });
-        path.addEventListener('click', () => { if (panMode || spaceHeld) return; active = index; selected = null; render(); });
+        path.addEventListener('click', event => {
+          if (panMode || spaceHeld) return;
+          active = index; selected = null;
+          const location = point(event), edge = location && nearest(location);
+          if (edge) {
+            const target = current().contours[edge.ci], points = problemVertices.get(current()) || new Set();
+            points.add(target.points[edge.pi]); points.add(target.points[(edge.pi+1)%target.points.length]);
+            problemVertices.set(current(), points); selected = {ci:edge.ci,pi:edge.pi};
+          }
+          render();
+        });
         canvas.append(path);
         if (index !== active) return;
-        const overflow=draft.contours.reduce((count,c)=>count+c.points.length,0)>PATH_EDITOR_VERTEX_LIMIT;
+        const overflow=draft.contours.reduce((count,c)=>count+c.points.length,0)>EDITOR_PREVIEW_VERTEX_LIMIT;
         contour.points.forEach((p, pi) => {
           if(overflow&&!remembered.has(p))return;
           const node = svgNode('circle', { cx:p.x, cy:p.y, r:radius, 'data-contour':ci, 'data-point':pi, class:`path-editor-point ${selected?.ci === ci && selected?.pi === pi ? 'selected' : ''}` });
@@ -133,7 +144,7 @@ function editDrafts({ drafts, warnings = [] }, fileName, existing = false, sessi
       const validation = validationOf(current());
       const enabled = drafts.filter(draft => draft.enabled);
       const invalid = enabled.filter(draft => !validationOf(draft).valid);
-      find('status').textContent = `${validation.vertexCount} 頂点${current().contours.some(c => !c.closed) ? ' · 開いた輪郭あり' : ''}${validation.errors.length ? '\n'+validation.errors.join('\n') : ''}${validation.vertexCount>PATH_EDITOR_VERTEX_LIMIT ? '\n頂点を削減してください。交差箇所の赤い辺の端点は調整できます。' : ''}${current().reductionError ? '\n'+current().reductionError : ''}${notice ? '\n'+notice : ''}`;
+      find('status').textContent = `${validation.vertexCount > EDITOR_PREVIEW_VERTEX_LIMIT ? '辺をクリックすると、その近くの頂点を編集できます。\n' : ''}${validation.vertexCount} 頂点${current().contours.some(c => !c.closed) ? ' · 開いた輪郭あり' : ''}${validation.errors.length ? '\n'+validation.errors.join('\n') : ''}${validation.vertexCount>PATH_EDITOR_VERTEX_LIMIT ? '\n頂点を削減してください。交差箇所の赤い辺の端点は調整できます。' : ''}${current().reductionError ? '\n'+current().reductionError : ''}${notice ? '\n'+notice : ''}`;
       find('import').disabled = !enabled.length || invalid.length > 0;
       dialog.querySelector('.path-editor-summary').textContent = `${enabled.length} パスを${existing ? '編集' : '追加'}${invalid.length ? ` · ${invalid.length} パスの調整が必要です` : ''}`;
       find('delete-point').disabled = !selected;

@@ -118,8 +118,12 @@ try{
  await reload(budgetSvg);await expect(page.locator('#path-editor-dialog')).toBeVisible({timeout:30000});
  page.off('dialog',acceptReduction);assert(consent.some(d=>d.type==='confirm'&&d.message.includes('削減')),'Raw-budget reduction asks consent');
  await expect(page.locator('#path-editor-import')).toBeEnabled();
- const budgetVertexCount=await page.locator('#path-editor-canvas circle[data-contour][data-point]').count();
- assert(budgetVertexCount>=3&&budgetVertexCount<6000,'Consent opens reduced, editable vertices');
+ const budgetStatus=await page.locator('#path-editor-status').textContent();
+ const budgetVertexCount=Number(budgetStatus.match(/([\d,]+) 頂点/)[1].replaceAll(',',''));
+ assert(budgetVertexCount>=3&&budgetVertexCount<=6000,'Consent opens a reduced draft within the mesh budget');
+ const nearEdge=await page.locator('#path-editor-canvas .path-editor-outline').first().evaluate(node=>{const p=node.getPointAtLength(0);const screen=new DOMPoint(p.x,p.y).matrixTransform(node.getScreenCTM());return{x:screen.x,y:screen.y};});
+ await page.mouse.click(nearEdge.x,nearEdge.y);
+ await expect.poll(()=>page.locator('#path-editor-canvas circle[data-contour][data-point]').count()).toBeGreaterThan(0);
  await page.locator('#path-editor-cancel').click();
  assert.deepEqual((await saved()).objects,budgetState.objects,'Cancelling pre-reduced editor does not mutate source scene');
  // Automatic matching uses retained original names and leaves duplicate names unresolved.

@@ -1,4 +1,4 @@
-import { PATH_VERTEX_LIMIT, EDITOR_RAW_VERTEX_LIMIT, TOTAL_RAW_VERTEX_LIMIT } from "./path-limits.js";
+import { PATH_VERTEX_LIMIT, EDITOR_RAW_VERTEX_LIMIT, TOTAL_RAW_VERTEX_LIMIT, EDITOR_PREVIEW_VERTEX_LIMIT } from "./path-limits.js";
 import { createPresetPanel } from "./preset-panel.js";
 import { applyPresetToObject } from "./parameter-presets.js";
 import { resolveSelection } from "./object-selection.js";
@@ -699,8 +699,8 @@ async function load(text, name, editBeforeImport = false, repairOnProblem = fals
     }
     const inspections = parsed.objects.map(o => inspectImportPath(o.shape));
     const oversized = inspections.filter(data => data.overBudget);
-    if (repairOnProblem && !editBeforeImport && oversized.length) {
-      notice("頂点数が処理上限を超えているため、パス調整エディタを開きます。");
+    if (repairOnProblem && !editBeforeImport && inspections.some(data => data.originalCount > EDITOR_PREVIEW_VERTEX_LIMIT)) {
+      notice("頂点数が多いため、3D生成の前にパス調整エディタを開きます。");
       return load(text, name, true, false);
     }
     if (oversized.length && !window.confirm(`${name} の ${oversized.length} 個のパスが処理上限（6,000頂点）を超えています。最大 ${Math.max(...oversized.map(data => data.originalCount)).toLocaleString()} 頂点です。形状を可能な限り保って処理可能な頂点数まで削減し、読み込みますか？`)) {
@@ -849,7 +849,7 @@ async function reloadSourceFile(file, targets = sourceReloadTargets(), handle = 
     catch (error) { parsed = await repair(error.message); alreadyEdited = true; }
     if (!parsed) { notice('参照 SVG の更新をキャンセルしました。'); return; }
     let needsRepair = !alreadyEdited && parsed.warnings.length > 0;
-    try { if (!alreadyEdited) needsRepair ||= parsed.objects.some(entry => inspectImportPath(entry.shape).overBudget); }
+    try { if (!alreadyEdited) needsRepair ||= parsed.objects.some(entry => inspectImportPath(entry.shape).originalCount > EDITOR_PREVIEW_VERTEX_LIMIT); }
     catch { needsRepair = true; }
     if (needsRepair) {
       // Prefer the original SVG draft so open contours remain editable.
