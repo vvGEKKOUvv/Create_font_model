@@ -69,15 +69,20 @@ try {
        window.__sceneSnapshot = {
          environmentId: scene.environment?.uuid,
          environmentPreset,
-         objects: group.children.map(mesh => ({
-           metalness: mesh.material.metalness,
-           roughness: mesh.material.roughness,
+         objects: group.children.map(mesh => {
+           const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+           const material = materials[0];
+           if (materials.some(m => m.wireframe !== material.wireframe || m.colorWrite !== material.colorWrite))
+             throw new Error("Surface material wireframe modes must remain synchronized");
+           return ({
+           metalness: material.metalness,
+           roughness: material.roughness,
            geometryId: mesh.geometry.uuid,
            triangleCount: mesh.geometry.attributes.position.count / 3,
            bevelSamples: mesh.geometry.userData.bevelSamples,
            localZ: [mesh.geometry.boundingBox.min.z, mesh.geometry.boundingBox.max.z],
-           wireframe: mesh.material.wireframe,
-           colorWrite: mesh.material.colorWrite,
+           wireframe: material.wireframe,
+           colorWrite: material.colorWrite,
            occluder: Boolean(mesh.userData.wireframeOccluder?.visible),
            occluderGeometry: mesh.userData.wireframeOccluder?.geometry.uuid,
            visible: mesh.visible,
@@ -90,7 +95,7 @@ try {
            matrix: mesh.matrixWorld.toArray(),
            depth: mesh.geometry.boundingBox.max.z - mesh.geometry.boundingBox.min.z,
            point: new THREE.Vector3().fromBufferAttribute(mesh.geometry.attributes.position, 0).applyMatrix4(mesh.matrixWorld).toArray()
-         })),
+         }); }),
          camera: camera.matrixWorld.toArray(),
          orbitEnabled: controls.enabled,
          dampingFactor: controls.dampingFactor,
@@ -388,7 +393,7 @@ try {
   assert.match(first["model.obj"], /o Ring/);
   assert.match(first["model.obj"], /o Arrow/);
   assert.match(first["model.obj"], /mtllib model\.mtl/);
-  assert.equal((first["model.mtl"].match(/newmtl /g) || []).length, 2);
+  assert.equal((first["model.mtl"].match(/newmtl /g) || []).length, 4);
   const beforeUV = await page.evaluate(() =>
     window.__sceneSnapshot.objects.map((o) => o.geometryId),
   );
@@ -578,7 +583,7 @@ try {
     beforeColor,
     "Color changes reuse mesh geometry",
   );
-  assert.match(colored["model.mtl"], /newmtl material_2\nKd 1 0 0/);
+  assert.match(colored["model.mtl"], /newmtl material_2_front\nKd 1 0 0/);
   const curve = page.locator(".curve-display svg");
   assert(
     (await page.locator("#curve").count()) === 0,
@@ -1017,7 +1022,7 @@ try {
     "Repeated same-name path IDs preserve earlier objects",
   );
   const repeatedExport = await exported();
-  assert.equal((repeatedExport["model.mtl"].match(/newmtl /g) || []).length, 8);
+  assert.equal((repeatedExport["model.mtl"].match(/newmtl /g) || []).length, 16);
   // Regression: axial slider at its maximum plus lateral slider at exactly
   // its displayed maximum previously disabled the hollow-wall protection.
   await page.locator("#hollow").check();

@@ -20,7 +20,8 @@ try {
  await page.locator('#file').setInputFiles({name:'preset.svg',mimeType:'image/svg+xml',buffer:Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0H80V80H0Z"/><path d="M100 0H180V80H100Z"/><path d="M200 0H280V80H200Z"/></svg>')});await expect(page.locator('#object-count')).toHaveText('3');
  let state=await saved();
  const custom=state.objects[0];Object.assign(custom.settings,{depth:28,bevelSize:2,bevelWidth:3,bevelSegments:2,hollow:false,uvScaleX:1.7,uvScaleY:0.8,uvOffsetX:0.2,uvOffsetY:-0.1,uvRotation:22,uvEdits:{'0,0':[0.11,0.22]}});
- custom.settings.curvePoints[1].y=0.001;custom.settings.curvePoints[0].out.y=0;custom.settings.innerCurvePoints[1].y=0.35;for(const key of ['curvePoints','innerCurvePoints'])custom.settings[key]=normalizeProfile(custom.settings[key]);custom.validSettings=structuredClone(custom.settings);custom.color='#886633';custom.materialType='metal';custom.name='Preset source';
+ delete custom.settings.frontUV;delete custom.settings.sideUV;
+ custom.settings.curvePoints[1].y=0.001;custom.settings.curvePoints[0].out.y=0;custom.settings.innerCurvePoints[1].y=0.35;for(const key of ['curvePoints','innerCurvePoints'])custom.settings[key]=normalizeProfile(custom.settings[key]);custom.validSettings=structuredClone(custom.settings);custom.color='#886633';custom.materialType='metal';delete custom.surfaceMaterials;custom.name='Preset source';
  for(let i=0;i<3;i++){state.objects[i].transform={position:[i*3,i*2,i],rotation:[0,0,i*0.1],scale:[1+i*0.1,1,1]};}
  state.objects[1].settings.uvEdits={'0,0':[0.3,0.4]};state.objects[1].validSettings=structuredClone(state.objects[1].settings);
  state.selected=0;state.selectedIds=[custom.id];state.selectionAnchorId=custom.id;await load(state);state=await saved();
@@ -34,7 +35,7 @@ try {
  for(let i=1;i<3;i++){
   const expected=structuredClone(state.objects[0].settings);delete expected.uvEdits;const actual=structuredClone(after.objects[i].settings);delete actual.uvEdits;assert.deepEqual(precise(actual),precise(expected),'Preset transfers all reusable geometry, curves and UV parameters');
   assert.deepEqual(after.objects[i].settings.uvEdits??{}, {},'Applying changed parameters discards topology-specific UV corrections');
-  assert.equal(after.objects[i].color,custom.color);assert.equal(after.objects[i].materialType,'metal');
+  assert.equal(after.objects[i].color,custom.color);assert.equal(after.objects[i].materialType,'metal');assert.deepEqual(after.objects[i].surfaceMaterials,state.objects[0].surfaceMaterials,'Preset transfers both explicit surface materials');
   for(const key of ['id','name','shape','pivot','transform','visible'])assert.deepEqual(after.objects[i][key],before.objects[i][key],`Apply preserves ${key}`);
  }
  assert.deepEqual(after.objects[0],before.objects[0],'Unselected model remains untouched');

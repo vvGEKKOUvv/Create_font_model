@@ -52,7 +52,15 @@ function validateState(state) {
   const ids = new Set();
   for (const object of state.objects) {
     if (!record(object) || typeof object.id !== "string" || ids.has(object.id) || typeof object.name !== "string" || object.name.length > 1000 || !/^#[\da-f]{6}$/i.test(object.color) || !record(object.settings)) fail();
-    if (object.materialType !== undefined && !["standard", "metal"].includes(object.materialType)) fail();
+    if (object.materialType !== undefined && !["standard", "metal", "clay"].includes(object.materialType)) fail();
+    if (object.opacity !== undefined && !(typeof object.opacity === "number" && object.opacity >= 0 && object.opacity <= 1)) fail();
+    if (object.surfaceMaterials !== undefined) {
+      if (!record(object.surfaceMaterials)) fail();
+      for (const region of ["front", "side"]) {
+        const material = object.surfaceMaterials[region];
+        if (!record(material) || !/^#[\da-f]{6}$/i.test(material.color) || !["standard", "metal", "clay"].includes(material.type) || !(typeof material.opacity === "number" && material.opacity >= 0 && material.opacity <= 1)) fail();
+      }
+    }
     if (object.sourceReference !== undefined) {
       const reference = object.sourceReference;
       if (!record(reference) || !vector(reference.center, 2) ||
@@ -68,6 +76,13 @@ function validateState(state) {
       if (settings.meshReductionPercentage !== undefined && !(typeof settings.meshReductionPercentage === "number" && settings.meshReductionPercentage >= 0 && settings.meshReductionPercentage <= 90)) fail();
       for (const key of ["uvScaleX", "uvScaleY", "uvOffsetX", "uvOffsetY", "uvRotation", "offset", "pathOffset"]) if (settings[key] !== undefined && typeof settings[key] !== "number") fail();
       for (const key of ["extrusionMirror", "extrusionCap", "bevelContinue", "sharpCorners", "hollow", "hollowCurveSafe", "bevelFullWidth"]) if (settings[key] !== undefined && typeof settings[key] !== "boolean") fail();
+      for (const region of ["frontUV", "sideUV"]) if (settings[region] !== undefined) {
+        if (!record(settings[region])) fail();
+        for (const key of ["uvScaleX", "uvScaleY", "uvOffsetX", "uvOffsetY", "uvRotation"]) {
+          const value = settings[region][key];
+          if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || (key.startsWith("uvScale") && value <= 0))) fail();
+        }
+      }
       if (settings.uvEdits !== undefined && (!record(settings.uvEdits) || !Object.values(settings.uvEdits).every(v => vector(v, 2)))) fail();
       for (const name of ["curvePoints", "innerCurvePoints"]) {
         const points = settings[name];
@@ -94,6 +109,7 @@ function validateState(state) {
     if (!(typeof state.view.zoom === "number" && state.view.zoom > 0)) fail();
     for (const key of ["wireframe", "uvEditMode", "transformSpace"]) if (typeof state.view[key] !== "boolean") fail();
     for (const [key, choices] of [["wireframeMode", ["lines", "hidden", "overlay"]], ["tab", ["3d", "uv"]], ["transformMode", ["translate", "rotate", "scale"]]]) if (!choices.includes(state.view[key])) fail();
+    for (const key of ["materialRegion", "uvRegion"]) if (state.view[key] !== undefined && !["front", "side"].includes(state.view[key])) fail();
     if (state.view.curveSide !== undefined && !["outer", "inner"].includes(state.view.curveSide)) fail();
     if (!Array.isArray(state.view.sections) || state.view.sections.length > 100 || !state.view.sections.every(v => typeof v === "boolean")) fail();
   }

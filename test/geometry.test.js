@@ -443,10 +443,10 @@ test("OBJ faces reference valid vertex, UV, and normal indices across objects", 
   const count = (prefix) =>
     lines.filter((line) => line.startsWith(prefix)).length;
   const limits = [count("v "), count("vt "), count("vn ")];
-  assert.equal(count("usemtl "), 2);
+  assert.equal(count("usemtl "), 4, "front and side material references for both objects");
   assert.equal(
     mtl.split("\n").filter((line) => line.startsWith("newmtl ")).length,
-    2,
+    4,
   );
   const positions = geometry.getAttribute("position");
   const uniquePositions = new Set(Array.from({ length: positions.count }, (_, i) =>
@@ -621,7 +621,7 @@ test("custom profile changes sampled inset and invalid profile warns", () => {
   );
 });
 
-test("UV atlas separates caps, outer side, and hole side", () => {
+test("front and back UV projections overlap while outer and hole wall islands remain separate", () => {
   const g = buildMesh(rectangleWithHole(), { depth: 5 });
   const p = g.attributes.position,
     uv = g.attributes.uv,
@@ -649,16 +649,11 @@ test("UV atlas separates caps, outer side, and hole side", () => {
     boxes.set(kind, box);
   }
   assert.equal(boxes.size, 4);
-  const bounds = Array.from(boxes.values());
-  for (let i = 0; i < bounds.length; i++)
-    for (let j = i + 1; j < bounds.length; j++) {
-      const a = bounds[i],
-        b = bounds[j];
-      assert.ok(
-        a[2] < b[0] || b[2] < a[0] || a[3] < b[1] || b[3] < a[1],
-        "UV islands do not overlap",
-      );
-    }
+  assert.deepEqual(boxes.get("bottom"),boxes.get("top"),"front and back share the same projected island");
+  const a=boxes.get("outer"),b=boxes.get("hole");
+  assert.ok(a[2]<b[0]||b[2]<a[0]||a[3]<b[1]||b[3]<a[1],"wall islands do not overlap within their own material region");
+  for(const box of boxes.values())assert.ok(box.every(value=>value>=0&&value<=1),"each region uses its own 0..1 UV space");
+
 });
 
 test("UV vertex edits affect matching keys only and precede transforms", () => {
@@ -1439,7 +1434,7 @@ test("OBJ preserves Unicode names and disambiguates renamed objects after saniti
     "彫刻_001_3",
   ]);
   assert.equal(new Set(names).size, 4);
-  assert.equal((mtl.match(/^newmtl /gm) || []).length, 4);
+  assert.equal((mtl.match(/^newmtl /gm) || []).length, 8);
 });
 
 function fineCurvedBumpOutline() {

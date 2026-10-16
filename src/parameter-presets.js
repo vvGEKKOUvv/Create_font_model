@@ -36,6 +36,16 @@ function settingsFrom(input) {
     }
     result[key] = value;
   }
+  for (const region of ["frontUV", "sideUV"]) {
+    const source = input[region] === undefined ? input : input[region];
+    if (!record(source)) fail();
+    result[region] = {};
+    for (const key of ["uvScaleX", "uvScaleY", "uvOffsetX", "uvOffsetY", "uvRotation"]) {
+      const value = source[key] === undefined ? result[key] : source[key];
+      if (typeof value !== "number" || !Number.isFinite(value) || Math.abs(value) > 1e9 || (key.startsWith("uvScale") && value <= 0)) fail();
+      result[region][key] = value;
+    }
+  }
   for (const key of ["curvePoints", "innerCurvePoints"]) {
     const points = input[key] ?? (key === "innerCurvePoints" ? input.curvePoints : undefined) ?? defaultProfile();
     if (!Array.isArray(points) || points.length < 2 || points.length > 16) fail();
@@ -49,16 +59,28 @@ function settingsFrom(input) {
   }
   return result;
 }
+function materialFrom(input) {
+  if (!record(input) || typeof input.color !== "string" || !/^#[a-f\d]{6}$/i.test(input.color) || !["standard", "metal", "clay"].includes(input.type) || typeof input.opacity !== "number" || !Number.isFinite(input.opacity) || input.opacity < 0 || input.opacity > 1) fail();
+  return {color:input.color.toLowerCase(),type:input.type,opacity:input.opacity};
+}
 export function validatePreset(input) {
   checkJson(input);
   if (!record(input) || typeof input.id !== "string" || !input.id.length || input.id.length > 120 || typeof input.name !== "string" || !input.name.trim() || input.name.trim().length > 120) fail();
-  if (typeof input.color !== "string" || !/^#[a-f\d]{6}$/i.test(input.color) || !["standard", "metal"].includes(input.materialType)) fail();
-  return { id: input.id, name: input.name.trim(), settings: settingsFrom(input.settings), color: input.color.toLowerCase(), materialType: input.materialType };
+  if (typeof input.color !== "string" || !/^#[a-f\d]{6}$/i.test(input.color) || !["standard", "metal", "clay"].includes(input.materialType)) fail();
+  if (input.opacity !== undefined && (typeof input.opacity !== "number" || !Number.isFinite(input.opacity) || input.opacity < 0 || input.opacity > 1)) fail();
+  const fallback = {color:input.color,type:input.materialType,opacity:input.opacity ?? 1};
+  if (input.surfaceMaterials !== undefined && !record(input.surfaceMaterials)) fail();
+  const surfaceMaterials = {
+    front: materialFrom(input.surfaceMaterials?.front ?? fallback),
+    side: materialFrom(input.surfaceMaterials?.side ?? fallback),
+  };
+  if (input.surfaceMaterials !== undefined && (!input.surfaceMaterials.front || !input.surfaceMaterials.side)) fail();
+  return { id: input.id, name: input.name.trim(), settings: settingsFrom(input.settings), color: surfaceMaterials.front.color, materialType: surfaceMaterials.front.type, opacity:surfaceMaterials.front.opacity, surfaceMaterials };
 }
 export function createPreset(name, object) {
   if (!record(object)) fail();
   return validatePreset({ id: globalThis.crypto?.randomUUID?.() ?? `preset-${Date.now()}-${Math.random().toString(36).slice(2)}`, name,
-    settings: object.settings, color: object.color ?? "#999999", materialType: object.materialType ?? "standard" });
+    settings: object.settings, color: object.color ?? "#999999", materialType: object.materialType ?? "standard", opacity:object.opacity ?? 1, ...(object.surfaceMaterials ? {surfaceMaterials:object.surfaceMaterials} : {}) });
 }
 function validateLibrary(presets) {
   if (!Array.isArray(presets) || presets.length > 100) fail();
@@ -91,11 +113,11 @@ function sameProfileValue(a, b) {
 }
 function sameSettings(a, b) {
   return Object.keys(b).every(key => key === "curvePoints" || key === "innerCurvePoints"
-    ? sameProfileValue(a[key], b[key]) : a[key] === b[key]);
+    ? sameProfileValue(a[key], b[key]) : ["frontUV", "sideUV"].includes(key) ? JSON.stringify(a[key]) === JSON.stringify(b[key]) : a[key] === b[key]);
 }
 export function applyPresetToObject(object, input) {
   const preset = validatePreset(input);
   const settings = { ...object.settings, ...clone(preset.settings) };
   if (!sameSettings(settingsFrom(object.settings), preset.settings)) delete settings.uvEdits;
-  return { ...object, settings, color: preset.color, materialType: preset.materialType };
+  return { ...object, settings, color: preset.color, materialType: preset.materialType, opacity:preset.opacity, surfaceMaterials:clone(preset.surfaceMaterials) };
 }

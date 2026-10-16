@@ -96,3 +96,31 @@ test("reapplying custom aligned profile preserves UV edits despite subprecision 
   assert.equal(applyPresetToObject(source, preset).settings.uvEdits, undefined,
     "non-profile settings remain exact even for tiny changes");
 });
+
+test('presets retain independent surface materials and UV transforms while legacy materials migrate', () => {
+  const source = object();
+  source.surfaceMaterials = {front:{color:'#778899',type:'clay',opacity:.65},side:{color:'#112233',type:'metal',opacity:.2}};
+  source.settings.frontUV = {uvScaleX:2,uvScaleY:1,uvOffsetX:0,uvOffsetY:.3,uvRotation:45};
+  source.settings.sideUV = {uvScaleX:1,uvScaleY:3,uvOffsetX:.2,uvOffsetY:0,uvRotation:10};
+  const preset = createPreset('Clay',source);
+  assert.equal(preset.color,'#778899'); assert.equal(preset.materialType,'clay'); assert.equal(preset.opacity,.65);
+  const [loaded] = parsePresetLibrary(serializePresetLibrary([preset]));
+  const applied = applyPresetToObject(source,loaded);
+  assert.deepEqual(applied.surfaceMaterials,source.surfaceMaterials);
+  assert.deepEqual(applied.settings.frontUV,source.settings.frontUV);
+  assert.deepEqual(applied.settings.sideUV,source.settings.sideUV);
+  assert.deepEqual(applied.settings.uvEdits,source.settings.uvEdits,'unchanged regional transforms retain UV edits');
+  applied.surfaceMaterials.side.opacity = .9;
+  assert.equal(preset.surfaceMaterials.side.opacity,.2);
+  const legacy = createPreset('Legacy',object());
+  assert.deepEqual(legacy.surfaceMaterials.front,{color:'#aabbcc',type:'metal',opacity:1});
+  assert.deepEqual(legacy.surfaceMaterials.side,legacy.surfaceMaterials.front);
+  for (const change of [
+    d => d.surfaceMaterials.front.opacity = -1,
+    d => d.surfaceMaterials.side.type = 'invalid',
+    d => d.settings.sideUV.uvScaleX = 0,
+    d => d.settings.frontUV.uvOffsetY = Infinity,
+  ]) {
+    const bad = structuredClone(preset); change(bad); assert.throws(() => validatePreset(bad));
+  }
+});

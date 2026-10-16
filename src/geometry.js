@@ -1,5 +1,6 @@
 import { PATH_VERTEX_LIMIT, EDITOR_RAW_VERTEX_LIMIT, TOTAL_RAW_VERTEX_LIMIT } from "./path-limits.js";
 import * as THREE from "three";
+import { assignSurfaceGroups, surfaceUvKey, applySurfaceUvSettings } from "./surface-geometry.js";
 import { positiveExtrusionHalf } from "./extrusion-mode.js";
 import { SVGLoader } from "three/addons/loaders/SVGLoader.js";
 
@@ -405,7 +406,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
         children.push(buildMesh(compound.shapes[index], componentSettings, safeHollowFallback));
       }
       const geometry = new THREE.BufferGeometry();
-      for (const name of ["position", "normal", "uv"]) {
+      for (const name of ["position", "normal", "uv", "surfaceSlot"]) {
         const arrays = children.map(child => child.getAttribute(name));
         const data = new Float32Array(arrays.reduce((n, attribute) => n + attribute.array.length, 0));
         let cursor = 0;
@@ -413,12 +414,17 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
         geometry.setAttribute(name, new THREE.BufferAttribute(data, arrays[0].itemSize));
       }
       const base = [], keys = [];
+      const projection = new THREE.Box2().setFromPoints(rings.flat());
+      const projectionWidth = Math.max(EPS,projection.max.x-projection.min.x), projectionHeight = Math.max(EPS,projection.max.y-projection.min.y);
       children.forEach((child, index) => {
         const values = child.userData.baseUVs;
+        const slots=child.getAttribute('surfaceSlot'),positions=child.getAttribute('position');
         for (let i = 0; i < values.length; i += 2) {
-          const u = (values[i] + index) / children.length, v = values[i + 1];
+          const slot=slots.getX(i/2);
+          const u=slot===0 ? .02+.96*(positions.getX(i/2)-projection.min.x)/projectionWidth : values[i];
+          const v=slot===0 ? .02+.96*(-positions.getY(i/2)-projection.min.y)/projectionHeight : (values[i+1]+index)/children.length;
           base.push(u, v);
-          keys.push(`${u.toFixed(6)},${v.toFixed(6)}`);
+          keys.push(surfaceUvKey(child.getAttribute("surfaceSlot").getX(i/2),u,v));
         }
       });
       const min = key => Math.min(...children.map(child => child.userData[key]));
@@ -437,6 +443,8 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
         hollowComponentCount: children.length,
         uvKeys: keys, baseUVs: new Float64Array(base),
       };
+      geometry.userData.legacyUVKeys=keys.map((key,i)=>`${((base[i*2]+(key.startsWith('side:')?2:0))/3).toFixed(6)},${base[i*2+1].toFixed(6)}`);
+      assignSurfaceGroups(geometry);
       applyUvSettings(geometry, settings);
       return geometry;
     } finally { for (const child of children) child.dispose(); }
@@ -783,34 +791,24 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
     uvs = [],
     baseUVs = [],
     surfaceGroups = [],
+    surfaceSlots = [],
     roofDirections = [];
   let roofDirection = null;
   let surfaceGroup = 0;
-  const scale = Math.max(0.0001, Number(settings.uvScale) || 1);
-  const scaleX = Number.isFinite(Number(settings.uvScaleX))
-    ? Math.max(0.0001, Number(settings.uvScaleX))
-    : scale;
-  const scaleY = Number.isFinite(Number(settings.uvScaleY))
-    ? Math.max(0.0001, Number(settings.uvScaleY))
-    : scale;
-  const angle = ((Number(settings.uvRotation) || 0) * Math.PI) / 180;
-  const cos = Math.cos(angle),
-    sin = Math.sin(angle);
-  const uvKeys = [];
+  let surfaceSlot = 0;
+  const uvKeys = [], legacyUVKeys = [];
   const add = (p, uv) => {
     positions.push(p.x, -p.y, p.z);
     surfaceGroups.push(surfaceGroup);
+    surfaceSlots.push(surfaceSlot);
     roofDirections.push(roofDirection);
-    const key = `${uv.x.toFixed(6)},${uv.y.toFixed(6)}`;
-    uvKeys.push(key);
-    baseUVs.push(uv.x, uv.y);
-    const edited = Object.hasOwn(uvEdits, key) ? uvEdits[key] : null;
-    const u = edited ? edited[0] : uv.x;
-    const v = edited ? edited[1] : uv.y;
-    uvs.push(
-      (u * cos - v * sin) * scaleX + (Number(settings.uvOffsetX) || 0),
-      (u * sin + v * cos) * scaleY + (Number(settings.uvOffsetY) || 0),
-    );
+    const u = surfaceSlot === 0 ? .02 + .96 * (p.x - box.min.x) / width : (uv.x * 3 - 2);
+    const v = surfaceSlot === 0 ? .02 + .96 * (p.y - box.min.y) / height : uv.y;
+    // Old caps occupied adjacent thirds. Resolve both copies through the old
+    // front key so a legacy back edit cannot separate their shared island.
+    legacyUVKeys.push(surfaceSlot === 0 ? `${(u/3).toFixed(6)},${v.toFixed(6)}` : `${uv.x.toFixed(6)},${uv.y.toFixed(6)}`);
+    uvKeys.push(surfaceUvKey(surfaceSlot,u,v));
+    baseUVs.push(u,v); uvs.push(u,v);
   };
   const triangle = (a, b, c, ua, ub, uc) => {
     add(a, ua);
@@ -907,9 +905,13 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
       }
     }
     roofDirection = null;
+    surfaceSlot = 1;
     if (depth - 2 * bevelHeight > EPS) {
       for (let r = 0; r < rings.length; r++) {
         surfaceGroup = r + roof.faces.length + 2;
+        const distances = [0];
+        for (let i=0;i<rings[r].length;i++) distances.push(distances.at(-1)+rings[r][i].distanceTo(rings[r][(i+1)%rings[r].length]));
+        const wallUv = (i,z) => new THREE.Vector2((2.02+.96*distances[i]/distances.at(-1))/3,(r+.02+.96*z/depth)/rings.length);
         for (let i = 0; i < rings[r].length; i++) {
           const a = rings[r][i],
             b = rings[r][(i + 1) % rings[r].length];
@@ -920,10 +922,10 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
             new THREE.Vector3(a.x, a.y, depth - bevelHeight),
           ];
           const uv = [
-            new THREE.Vector2(2 / 3, i / rings[r].length),
-            new THREE.Vector2(1, i / rings[r].length),
-            new THREE.Vector2(1, (i + 1) / rings[r].length),
-            new THREE.Vector2(2 / 3, (i + 1) / rings[r].length),
+            wallUv(i,bevelHeight),
+            wallUv(i+1,bevelHeight),
+            wallUv(i+1,depth-bevelHeight),
+            wallUv(i,depth-bevelHeight),
           ];
           triangle(p[0], p[1], p[2], uv[0], uv[1], uv[2]);
           triangle(p[0], p[2], p[3], uv[0], uv[2], uv[3]);
@@ -971,6 +973,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
       );
       for (let l = 0; l < ringLevels.length - 1; l++)
         for (let i = 0; i < ring.length; i++) {
+          surfaceSlot = Math.abs(ringLevels[l].inset) < EPS && Math.abs(ringLevels[l+1].inset) < EPS ? 1 : 0;
           const j = (i + 1) % ring.length,
             u = distances[i] / total,
             v = distances[i + 1] / total;
@@ -998,6 +1001,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
     new THREE.Float32BufferAttribute(positions, 3),
   );
   geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setAttribute("surfaceSlot", new THREE.Float32BufferAttribute(surfaceSlots, 1));
   geometry.computeVertexNormals();
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
@@ -1121,64 +1125,16 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
     effectivePathOffset: shifted.effectivePathOffset,
     originalCount: prepared.originalCount,
     reducedCount: prepared.reducedCount,
-    uvKeys,
+    uvKeys, legacyUVKeys,
     baseUVs: new Float64Array(baseUVs),
   };
+  assignSurfaceGroups(geometry);
+  applySurfaceUvSettings(geometry,settings);
   return geometry;
 }
 
 export function applyUvSettings(geometry, settings = {}) {
-  const uv = geometry.getAttribute("uv"),
-    base = geometry.userData.baseUVs,
-    keys = geometry.userData.uvKeys;
-  if (!base || base.length !== uv.count * 2)
-    throw new Error("UV 元データがありません。");
-  const edits = settings.uvEdits ?? {};
-  if (typeof edits !== "object" || Array.isArray(edits))
-    throw new Error("UV 編集データの形式が不正です。");
-  for (const point of Object.values(edits))
-    if (
-      !Array.isArray(point) ||
-      point.length !== 2 ||
-      !point.every(Number.isFinite)
-    )
-      throw new Error("UV 編集座標には有限の数値を指定してください。");
-  for (const field of [
-    "uvScale",
-    "uvScaleX",
-    "uvScaleY",
-    "uvOffsetX",
-    "uvOffsetY",
-    "uvRotation",
-  ])
-    if (
-      settings[field] !== undefined &&
-      !Number.isFinite(Number(settings[field]))
-    )
-      throw new Error(`${field} に有限の数値を指定してください。`);
-  const scale = Math.max(0.0001, Number(settings.uvScale) || 1),
-    sx =
-      settings.uvScaleX === undefined
-        ? scale
-        : Math.max(0.0001, Number(settings.uvScaleX)),
-    sy =
-      settings.uvScaleY === undefined
-        ? scale
-        : Math.max(0.0001, Number(settings.uvScaleY));
-  const angle = ((Number(settings.uvRotation) || 0) * Math.PI) / 180,
-    c = Math.cos(angle),
-    s = Math.sin(angle);
-  for (let i = 0; i < uv.count; i++) {
-    const edited = Object.hasOwn(edits, keys[i]) ? edits[keys[i]] : null;
-    const u = edited ? edited[0] : base[i * 2],
-      v = edited ? edited[1] : base[i * 2 + 1];
-    uv.setXY(
-      i,
-      (u * c - v * s) * sx + (Number(settings.uvOffsetX) || 0),
-      (u * s + v * c) * sy + (Number(settings.uvOffsetY) || 0),
-    );
-  }
-  uv.needsUpdate = true;
+  return applySurfaceUvSettings(geometry,settings);
 }
 
 export function exportObj(items) {
@@ -1201,8 +1157,8 @@ export function exportObj(items) {
       suffix = 2;
     while (names.has(name)) name = `${rawName}_${suffix++}`;
     names.add(name);
-    const material = `material_${index + 1}`,
-      color = new THREE.Color(item.color || "#ffffff");
+    const material = slot => `material_${index + 1}_${slot === 1 ? 'side' : 'front'}`;
+    const slotAttribute = geometry.getAttribute('surfaceSlot');
     const matrix = item.matrix || new THREE.Matrix4();
     if (
       !matrix.elements.every(Number.isFinite) ||
@@ -1215,7 +1171,7 @@ export function exportObj(items) {
     const point = new THREE.Vector3(),
       normal = new THREE.Vector3();
     const positionIds = new Map(), cornerPositions = [];
-    obj.push(`o ${name}`, `usemtl ${material}`);
+    obj.push(`o ${name}`);
     for (let i = 0; i < p.count; i++) {
       point.fromBufferAttribute(p, i).applyMatrix4(matrix);
       const key = `${point.x} ${point.y} ${point.z}`;
@@ -1233,19 +1189,28 @@ export function exportObj(items) {
         .applyNormalMatrix(normalMatrix);
       obj.push(`vn ${normal.x} ${normal.y} ${normal.z}`);
     }
-    for (let i = 0; i < p.count; i += 3)
-      obj.push(
-        `f ${(matrix.determinant() < 0 ? [i, i + 2, i + 1] : [i, i + 1, i + 2]).map(corner => `${cornerPositions[corner]}/${attributeBase + corner}/${attributeBase + corner}`).join(" ")}`,
-      );
-    mtl.push(
-      `newmtl ${material}`,
-      `Kd ${color.r} ${color.g} ${color.b}`,
-      "Ka 0 0 0",
-      "Ks 0.15 0.15 0.15",
-      "Ns 30",
-      "d 1",
-      "",
-    );
+    let activeMaterial = null;
+    for (let i = 0; i < p.count; i += 3) {
+      let slot = slotAttribute?.getX(i) === 1 ? 1 : 0;
+      if (!slotAttribute) {
+        const group = geometry.groups.find(group => i >= group.start && i < group.start + group.count);
+        slot = group?.materialIndex === 1 ? 1 : 0;
+      }
+      const nextMaterial = material(slot);
+      if (activeMaterial !== nextMaterial) { obj.push(`usemtl ${nextMaterial}`); activeMaterial = nextMaterial; }
+      obj.push(`f ${(matrix.determinant() < 0 ? [i, i + 2, i + 1] : [i, i + 1, i + 2]).map(corner => `${cornerPositions[corner]}/${attributeBase + corner}/${attributeBase + corner}`).join(" ")}`);
+    }
+    for (const slot of [0,1]) {
+      const region = slot === 1 ? 'side' : 'front', surface = item.surfaceMaterials?.[region] || {};
+      const color = new THREE.Color(surface.color || item.color || '#ffffff');
+      const type = surface.type || item.materialType || 'standard';
+      const opacity = THREE.MathUtils.clamp(Number.isFinite(Number(surface.opacity ?? item.opacity)) ? Number(surface.opacity ?? item.opacity) : type === 'transparent' ? .45 : 1, 0, 1);
+      const specular = type === 'clay' ? 0 : type === 'metal' ? .8 : .15;
+      mtl.push(`newmtl ${material(slot)}`,`Kd ${color.r} ${color.g} ${color.b}`,'Ka 0 0 0',
+        `Ks ${specular} ${specular} ${specular}`,`Ns ${type === 'metal' ? 200 : type === 'clay' ? 10 : 30}`,
+        `d ${opacity}`,`illum ${type === 'transparent' || opacity < 1 ? 4 : 2}`,
+        ...(type === 'transparent' ? ['Ni 1.45'] : []),'');
+    }
     positionBase += positionIds.size;
     attributeBase += p.count;
     if (geometry !== item.geometry) geometry.dispose();

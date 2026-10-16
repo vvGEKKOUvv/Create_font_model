@@ -1,4 +1,5 @@
 import { BufferGeometry, Float32BufferAttribute } from 'three';
+import { assignSurfaceGroups } from './surface-geometry.js';
 
 // Input remains owned by the caller. Zero returns it unchanged; a positive
 // amount returns a separate geometry, even when constraints prevent collapse.
@@ -12,6 +13,7 @@ export function reduceMeshGeometry(geometry, percentage = 0) {
     source.userData = { ...geometry.userData };
     if (geometry.userData.baseUVs) source.userData.baseUVs = Float64Array.from(Array.from(geometry.index.array).flatMap(i => [geometry.userData.baseUVs[i * 2], geometry.userData.baseUVs[i * 2 + 1]]));
     if (geometry.userData.uvKeys) source.userData.uvKeys = Array.from(geometry.index.array, i => geometry.userData.uvKeys[i]);
+    if (geometry.userData.legacyUVKeys) source.userData.legacyUVKeys = Array.from(geometry.index.array, i => geometry.userData.legacyUVKeys[i]);
     if (geometry.userData.protectedMidpointIndices) {
       const protectedIndices = new Set(geometry.userData.protectedMidpointIndices);
       source.userData.protectedMidpointIndices = Array.from(geometry.index.array, (index, corner) => protectedIndices.has(index) ? corner : -1).filter(corner => corner >= 0);
@@ -19,6 +21,7 @@ export function reduceMeshGeometry(geometry, percentage = 0) {
   }
   const positions = source.getAttribute('position'), uv = source.getAttribute('uv');
   const normal = source.getAttribute('normal');
+  const slots = source.getAttribute('surfaceSlot');
   const base = source.userData.baseUVs ?? uv?.array;
   const protectedIndices = new Set(source.userData.protectedMidpointIndices ?? []);
   const vertices = [], lookup = new Map(), faces = [];
@@ -33,10 +36,10 @@ export function reduceMeshGeometry(geometry, percentage = 0) {
     // or when its two sides have identical shading. Protect positions rather
     // than relying on the normals, and cover every duplicated UV corner.
     if (protectedIndices.has(i)) { v.locked = true; v.midpoint = true; }
-    const signature = uv ? `${base[i * 2]},${base[i * 2 + 1]}` : '';
+    const signature = `${slots?.getX(i) ?? 0}:` + (uv ? `${base[i * 2]},${base[i * 2 + 1]}` : '');
     if (v.signature !== null && v.signature !== signature) v.seam = true;
     v.signature = signature;
-    if (i % 3 === 0) faces.push({ ids: [], corners: [], active: true });
+    if (i % 3 === 0) faces.push({ ids: [], corners: [], active: true, slot: slots?.getX(i) ?? 0 });
     faces.at(-1).ids.push(id); faces.at(-1).corners.push(i);
     v.faces.add(faces.length - 1);
   }
@@ -54,6 +57,10 @@ export function reduceMeshGeometry(geometry, percentage = 0) {
   for (const [key, incident] of edges) {
     const [a, b] = key.split(':').map(Number);
     if (incident.length !== 2) { vertices[a].locked = vertices[b].locked = true; continue; }
+    if (faces[incident[0]].slot !== faces[incident[1]].slot) {
+      vertices[a].locked = vertices[b].locked = true;
+      constrainedEdges.add(key);
+    }
     const n = faces[incident[0]].n, m = faces[incident[1]].n;
     const normalSeam = normal && [a, b].some(id => {
       const corners = incident.map(fi => faces[fi].corners[faces[fi].ids.indexOf(id)]);
@@ -125,6 +132,7 @@ export function reduceMeshGeometry(geometry, percentage = 0) {
       let best = -Infinity, bestUV = Infinity, corner = 0;
       const removedCorner = face.corners[face.ids.indexOf(a)];
       for (const f of targetFaces) {
+        if (f.slot !== face.slot) continue;
         const score = dot(face.n, f.n) / (Math.sqrt(dot(f.n, f.n)) || 1);
         const candidate = f.corners[f.ids.indexOf(b)];
         const uvDistance = uv ? (base[candidate * 2] - base[removedCorner * 2]) ** 2 + (base[candidate * 2 + 1] - base[removedCorner * 2 + 1]) ** 2 : 0;
@@ -144,21 +152,26 @@ export function reduceMeshGeometry(geometry, percentage = 0) {
     va.faces.clear(); va.version++; vb.version++;
     for (const fi of vb.faces) for (const id of faces[fi].ids) if (id !== b) offer(id, b);
   }
-  const output = new BufferGeometry(), outP = [], outUV = [], outN = [], outBase = [], keys = [], protectedMidpointIndices = [];
+  const output = new BufferGeometry(), outP = [], outUV = [], outN = [], outBase = [], outSlots = [], keys = [], legacyKeys = [], protectedMidpointIndices = [];
   for (const f of faces) if (f.active) for (let j = 0; j < 3; j++) {
     const id = f.ids[j], corner = f.corners[j];
     if (vertices[id].midpoint) protectedMidpointIndices.push(outP.length / 3);
     outP.push(...vertices[id].p);
+    outSlots.push(f.slot);
     if (uv) { outUV.push(uv.getX(corner), uv.getY(corner)); outBase.push(base[corner * 2], base[corner * 2 + 1]); }
     if (normal) outN.push(normal.getX(corner), normal.getY(corner), normal.getZ(corner));
     keys.push(source.userData.uvKeys?.[corner] ?? `mesh-${corner}`);
+    if (source.userData.legacyUVKeys) legacyKeys.push(source.userData.legacyUVKeys[corner]);
   }
   output.setAttribute('position', new Float32BufferAttribute(outP, 3));
+  output.setAttribute('surfaceSlot', new Float32BufferAttribute(outSlots, 1));
   if (uv) output.setAttribute('uv', new Float32BufferAttribute(outUV, 2));
   if (normal) output.setAttribute('normal', new Float32BufferAttribute(outN, 3)); else output.computeVertexNormals();
   output.userData = { ...geometry.userData, warnings: [...(geometry.userData.warnings ?? [])], baseUVs: new Float64Array(outBase), uvKeys: keys, protectedMidpointIndices, meshOriginalTriangles: faces.length, meshReducedTriangles: remaining };
+  if (legacyKeys.length) output.userData.legacyUVKeys = legacyKeys;
   if (remaining > target) output.userData.warnings.push('穴・尖った角・UV の境界を保護するため、メッシュの削減率を安全な範囲に制限しました。');
   output.computeBoundingBox(); output.computeBoundingSphere();
+  assignSurfaceGroups(output);
   if (source !== geometry) source.dispose();
   return output;
 }

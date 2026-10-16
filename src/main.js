@@ -132,12 +132,15 @@ app.innerHTML = `
     </details>
     <details class="control-section" open>
       <summary>マテリアル <span>MATERIAL</span></summary>
-      <label class="material-select"><span>質感</span><select id="material-type"><option value="standard">標準</option><option value="metal">金属</option></select></label>
+      <label class="material-select"><span>対象</span><select id="material-region"><option value="front">正面・背面・ベベル</option><option value="side">側面</option></select></label>
+      <label class="material-select"><span>質感</span><select id="material-type"><option value="standard">標準</option><option value="metal">金属</option><option value="clay">クレイ</option></select></label>
       <label class="material-select"><span>環境</span><select id="environment-preset"><option value="studio">スタジオ</option><option value="softbox">ソフトボックス</option><option value="outdoor">屋外</option><option value="sunset">夕景</option></select></label>
       <label class="color-row"><input type="color" id="color" value="#b0b0b0"/><span id="color-value">#B0B0B0</span><span class="muted">カラー</span></label>
+      ${field("opacity", "透明度 %", 0, 0, 100, 1)}
     </details>
     <details id="uv-settings" class="control-section" open>
       <summary>UV 設定 <span>UV MAP</span></summary>
+      <label class="material-select"><span>UV 対象</span><select id="uv-region"><option value="front">正面・背面・ベベル</option><option value="side">側面</option></select></label>
       <div class="uv-tools"><label><input type="checkbox" id="uv-edit-mode"/> UV 頂点編集</label><button id="uv-clear" class="subtle">UV 修正をクリア ↺</button><span>頂点をドラッグ · 同じ UV 座標をまとめて編集</span></div>
       <div class="uv-inputs">
         ${field("uvScaleX", "スケール U", 1, 0.01, 20, 0.1, false)}
@@ -229,12 +232,39 @@ const transformTools = createTransformTools({
   onSelect: (index, event) => selectObject(index, event),
 });
 const transformControls = transformTools.controls;
+const uvFields = ["uvScaleX", "uvScaleY", "uvOffsetX", "uvOffsetY", "uvRotation"];
+const materialsOf = mesh => Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+const disposeMaterials = mesh => materialsOf(mesh).forEach(material => material.dispose());
+function surfaceMaterials(object) {
+  if (!object.surfaceMaterials) {
+    const base = {color:object.color || "#b0b0b0",type:object.materialType || "standard",opacity:object.opacity ?? 1};
+    object.surfaceMaterials = {front:{...base},side:{...base}};
+  }
+  object.opacity ??= object.surfaceMaterials.front.opacity;
+  return object.surfaceMaterials;
+}
+function surfaceUV(object, region = $("uv-region").value) {
+  const settings=object.settings, key=region === "side" ? "sideUV" : "frontUV";
+  const base=Object.fromEntries(uvFields.map(field => [field,settings[field] ?? defaults[field]]));
+  settings.frontUV ||= {...base}; settings.sideUV ||= {...base};
+  return settings[key];
+}
+function syncSurfaceControls(object = selectedObject()) {
+  if (!object) return;
+  const material=surfaceMaterials(object)[$("material-region").value];
+  $("material-type").value=material.type;
+  $("color").value=safeColor(material.color); $("color-value").textContent=material.color.toUpperCase();
+  $("opacity").value=(1-material.opacity)*100;
+  document.querySelector('[data-range="opacity"]').value=$("opacity").value;
+  const uv=surfaceUV(object);
+  for(const key of uvFields) $(key).value=uv[key];
+}
 function dispose() {
   group.children.slice().forEach((m) => {
     group.remove(m);
     disposeWireframe(m);
     m.geometry.dispose();
-    m.material.dispose();
+    disposeMaterials(m);
   });
 }
 function disposeWireframe(mesh) {
@@ -256,14 +286,21 @@ function applyDisplayStyle(mesh, object) {
   const hiddenMode = $("wireframe-mode").value === "hidden";
   const overlayMode = $("wireframe-mode").value === "overlay" || hiddenMode;
   mesh.visible = object.visible !== false;
-  mesh.material.metalness = object.materialType === "metal" ? 1 : 0.1;
-  mesh.material.roughness = object.materialType === "metal" ? 0.25 : 0.44;
-  mesh.material.wireframe = enabled && !overlayMode;
-  mesh.material.color.set(mesh.material.wireframe ? "#c4d8ef" : object.color);
-  mesh.material.colorWrite = !(enabled && hiddenMode);
-  mesh.material.polygonOffset = enabled && overlayMode;
-  mesh.material.polygonOffsetFactor = 1;
-  mesh.material.polygonOffsetUnits = 1;
+  const regions=surfaceMaterials(object);
+  materialsOf(mesh).forEach((material,index) => {
+    const setting=regions[index ? "side" : "front"];
+    material.metalness = setting.type === "metal" ? 1 : setting.type === "clay" ? 0 : 0.1;
+    material.roughness = setting.type === "metal" ? 0.25 : setting.type === "clay" ? 1 : 0.44;
+    material.envMapIntensity = setting.type === "clay" ? 0.2 : 1;
+    material.opacity = setting.opacity; material.transparent = setting.opacity < 1;
+    material.depthWrite = setting.opacity >= 1;
+    material.wireframe = enabled && !overlayMode;
+    material.color.set(material.wireframe ? "#c4d8ef" : setting.color);
+    material.colorWrite = !(enabled && hiddenMode);
+    material.polygonOffset = enabled && overlayMode;
+    material.polygonOffsetFactor = 1; material.polygonOffsetUnits = 1;
+    material.needsUpdate = true;
+  });
   let overlay = mesh.userData.wireframeOverlay;
   if (overlay && overlay.userData.sourceGeometry !== mesh.geometry) {
     disposeWireframe(mesh);
@@ -325,7 +362,7 @@ function makeMeshes(entries, display = true) {
         metalness: 0.1,
         side: THREE.DoubleSide,
       });
-      const mesh = new THREE.Mesh(geometry, material);
+      const mesh = new THREE.Mesh(geometry, [material, material.clone()]);
       mesh.userData.objectId = o.id;
       prepareObjectMesh(mesh, o);
       if (display) applyDisplayStyle(mesh, o);
@@ -336,7 +373,7 @@ function makeMeshes(entries, display = true) {
     meshes.forEach((m) => {
       disposeWireframe(m);
       m.geometry.dispose();
-      m.material.dispose();
+      disposeMaterials(m);
     });
     throw e;
   }
@@ -410,7 +447,7 @@ function rebuildObject(object, replacement = null) {
     mesh.scale.copy(replacement.scale);
     mesh.updateMatrix();
     disposeWireframe(replacement);
-    replacement.material.dispose();
+    disposeMaterials(replacement);
     oldGeometry.dispose();
     object.invalid = false;
     syncBevelLimit();
@@ -660,9 +697,7 @@ function sync() {
     const range = document.querySelector(`[data-range="${key}"]`);
     if (range) range.value = o.settings[key];
   });
-  $("material-type").value = o.materialType === "metal" ? "metal" : "standard";
-  $("color").value = safeColor(o.color);
-  $("color-value").textContent = o.color.toUpperCase();
+  syncSurfaceControls(o);
   syncBevelLimit();
   curveDraw();
   updateGeometryInfo();
@@ -918,7 +953,7 @@ async function reloadSourceFile(file, targets = sourceReloadTargets(), handle = 
       objects.forEach(object => group.add(meshMap.get(object.id) || previousMeshById.get(object.id)));
       oldObjects.forEach((object,index) => {
         if (!removedIds.has(object.id) && !replacementMap.has(object.id)) return;
-        const mesh = oldMeshes[index]; disposeWireframe(mesh); mesh.geometry.dispose(); mesh.material.dispose();
+        const mesh = oldMeshes[index]; disposeWireframe(mesh); mesh.geometry.dispose(); disposeMaterials(mesh);
       });
       objectSequence = nextSequence;
       if (handle) sourceFileHandles.set(reference.groupId,handle);
@@ -972,7 +1007,7 @@ $("source-restore").onclick = () => {
       objects[index] = replacement;
       group.remove(previous); group.add(meshes[i]);
       group.children.splice(group.children.indexOf(meshes[i]), 1); group.children.splice(index, 0, meshes[i]);
-      disposeWireframe(previous); previous.geometry.dispose(); previous.material.dispose();
+      disposeWireframe(previous); previous.geometry.dispose(); disposeMaterials(previous);
     });
     uvSelectedKey = null; uvDragKey = null;
     list(); sync(); transformTools.sync(); refreshMeshInfo(); drawUV(); recordHistory(true);
@@ -1007,7 +1042,7 @@ $("edit-path").onclick = async () => {
     objects.forEach(object => group.add(changedById.get(object.id) || previousById.get(object.id)));
     oldObjects.forEach((object,index) => {
       if (!removed.has(object.id) && !replacementMap.has(object.id)) return;
-      const mesh = oldMeshes[index]; disposeWireframe(mesh); mesh.geometry.dispose(); mesh.material.dispose();
+      const mesh = oldMeshes[index]; disposeWireframe(mesh); mesh.geometry.dispose(); disposeMaterials(mesh);
     });
     selectedIds = new Set([...selectedIds].filter(id => objects.some(object => object.id === id)));
     selected = Math.max(0, objects.findIndex(object => object.id === activeId));
@@ -1052,6 +1087,16 @@ Object.keys(defaults).forEach((key) => {
   input.oninput = () => {
     const o = selectedObject();
     if (!o) return;
+    if (uvFields.includes(key)) {
+      const value=Number(input.value); if(!Number.isFinite(value))return;
+      const adjusted=Math.max(Number(input.min),Math.min(Number(input.max),value));
+      for(const target of selectedObjects()) {
+        surfaceUV(target)[key]=adjusted;
+        if($("uv-region").value === "front") target.settings[key]=adjusted;
+        updateUV(target);
+      }
+      recordHistory(); return;
+    }
     if (input.type === "checkbox") o.settings[key] = input.checked;
     else {
       const n = Number(input.value);
@@ -1086,24 +1131,22 @@ Object.keys(defaults).forEach((key) => {
       input.oninput();
     };
 });
-$("color").oninput = () => {
-  for (const object of selectedObjects()) {
-    object.color = $("color").value;
-    const mesh = group.children[objects.indexOf(object)];
-    if (mesh) applyDisplayStyle(mesh, object);
+function changeSurfaceMaterial(key,value) {
+  const region=$("material-region").value;
+  for(const object of selectedObjects()) {
+    surfaceMaterials(object)[region][key]=value;
+    if(region === "front") { object.color=object.surfaceMaterials.front.color; object.materialType=object.surfaceMaterials.front.type; object.opacity=object.surfaceMaterials.front.opacity; }
+    const mesh=group.children[objects.indexOf(object)]; if(mesh)applyDisplayStyle(mesh,object);
   }
-  recordHistory();
-  $("color-value").textContent = $("color").value.toUpperCase();
-  list();
-};
-$("material-type").onchange = () => {
-  for (const object of selectedObjects()) {
-    object.materialType = $("material-type").value;
-    const mesh = group.children[objects.indexOf(object)];
-    if (mesh) applyDisplayStyle(mesh, object);
-  }
-  recordHistory(true);
-};
+  recordHistory(); list();
+}
+$("material-region").onchange=()=>{history.commit();syncSurfaceControls();};
+$("uv-region").onchange=()=>{history.commit();uvSelectedKey=null;uvDragKey=null;syncSurfaceControls();drawUV();};
+$("color").oninput=()=>{changeSurfaceMaterial("color",$("color").value);$("color-value").textContent=$("color").value.toUpperCase();};
+$("material-type").onchange=()=>{changeSurfaceMaterial("type",$("material-type").value);recordHistory(true);};
+$("opacity").oninput=()=>{const value=Math.max(0,Math.min(100,Number($("opacity").value)||0));changeSurfaceMaterial("opacity",1-value/100);document.querySelector('[data-range="opacity"]').value=value;};
+document.querySelector('[data-range="opacity"]').oninput=event=>{$("opacity").value=event.target.value;$("opacity").oninput();};
+$("opacity").onchange=()=>recordHistory(true);
 $("environment-preset").onchange = () => {
   environmentPreset = environmentController.set($("environment-preset").value);
 };
@@ -1138,6 +1181,7 @@ $("export").onclick = async () => {
         {
           name: o.name,
           color: o.color,
+          surfaceMaterials: surfaceMaterials(o),
           geometry: mesh.geometry,
           matrix: mesh.matrix,
         },
@@ -1181,8 +1225,10 @@ function drawUV() {
     minV = 0,
     maxU = 1,
     maxV = 1;
+  const slots=mesh?.geometry.getAttribute("surfaceSlot"), slot=$("uv-region").value === "side" ? 1 : 0;
   if (uv)
     for (let i = 0; i < uv.count; i++) {
+      if(slots && slots.getX(i)!==slot)continue;
       minU = Math.min(minU, uv.getX(i));
       minV = Math.min(minV, uv.getY(i));
       maxU = Math.max(maxU, uv.getX(i));
@@ -1230,6 +1276,7 @@ function drawUV() {
   ctx.strokeStyle = "#b6ee7580";
   ctx.lineWidth = 0.6;
   for (let i = 0; i < count; i += 3) {
+    if(slots && slots.getX(index ? index.getX(i) : i)!==slot)continue;
     ctx.beginPath();
     for (let j = 0; j < 3; j++) {
       const k = index ? index.getX(i + j) : i + j,
@@ -1242,7 +1289,7 @@ function drawUV() {
   const seen = new Set();
   for (let i = 0; i < uv.count; i++) {
     const key = keys?.[i];
-    if (key == null || seen.has(key)) continue;
+    if ((slots && slots.getX(i)!==slot) || key == null || seen.has(key)) continue;
     seen.add(key);
     const p = project(uv.getX(i), uv.getY(i));
     uvPoints.push({ ...p, key });
@@ -1263,11 +1310,17 @@ $("uv-edit-mode").onchange = () => {
 $("uv-clear").onclick = () => {
   const o = selectedObject();
   if (!o) return;
-  delete o.settings.uvEdits;
+  const prefix=$("uv-region").value+":";
+  o.settings.uvEdits=Object.fromEntries(Object.entries(o.settings.uvEdits||{}).filter(([key])=>{
+    if(key.startsWith(prefix))return false;
+    if(key.startsWith("front:")||key.startsWith("side:"))return true;
+    const u=Number(key.split(",")[0]);
+    return Number.isFinite(u) && (u>=2/3 ? "side:" : "front:") !== prefix;
+  }));
   recordHistory(true);
   uvSelectedKey = null;
   updateUV(o);
-  notice("選択オブジェクトの UV 頂点修正をクリアしました。");
+  notice("選択した UV 対象の頂点修正をクリアしました。");
 };
 function uvPointer(e) {
   const rect = $("uv-canvas").getBoundingClientRect();
@@ -1300,14 +1353,14 @@ $("uv-canvas").onpointermove = (e) => {
   const p = uvPointer(e),
     u = (p.x - uvFrame.x) / uvFrame.size,
     v = (uvFrame.y - p.y) / uvFrame.size,
-    s = o.settings,
+    s = surfaceUV(o),
     angle = (s.uvRotation * Math.PI) / 180,
     c = Math.cos(angle),
     sin = Math.sin(angle),
     x = (u - s.uvOffsetX) / s.uvScaleX,
     y = (v - s.uvOffsetY) / s.uvScaleY;
-  s.uvEdits = {
-    ...s.uvEdits,
+  o.settings.uvEdits = {
+    ...o.settings.uvEdits,
     [uvDragKey]: [x * c + y * sin, -x * sin + y * c],
   };
   updateUV(o);
@@ -1432,7 +1485,7 @@ function restoreHistory(snapshot, strict = false) {
     prepared.forEach((mesh) => {
       disposeWireframe(mesh);
       mesh.geometry.dispose();
-      mesh.material.dispose();
+      disposeMaterials(mesh);
     });
     throw failure;
   }
@@ -1491,7 +1544,7 @@ presetPanel = createPresetPanel({
       objects[index] = replacement;
       group.remove(previous); group.add(meshes[i]);
       group.children.splice(group.children.indexOf(meshes[i]), 1); group.children.splice(index, 0, meshes[i]);
-      disposeWireframe(previous); previous.geometry.dispose(); previous.material.dispose();
+      disposeWireframe(previous); previous.geometry.dispose(); disposeMaterials(previous);
     });
     uvSelectedKey = null; uvDragKey = null;
     list(); sync(); transformTools.sync(); refreshMeshInfo(); recordHistory(true);
@@ -1529,9 +1582,12 @@ transformTools.sync();
 refreshMeshInfo();
 
 function captureView() {
-  return {environmentPreset, cameraPosition: camera.position.toArray(), cameraQuaternion: camera.quaternion.toArray(), zoom: camera.zoom, target: controls?.target.toArray() || [0,0,0], wireframe: $("wireframe").checked, wireframeMode: $("wireframe-mode").value, tab: activeView, exportFolder: $("export-folder").checked, uvEditMode: $("uv-edit-mode").checked, sections: [...document.querySelectorAll("aside details")].filter(el => el.id !== "preset-settings").map(el => el.open), sectionLayout: 3, curveSide: $("curve-side").value, transformMode: transformControls?.getMode() || "translate", transformSpace: $("transform-local").checked};
+  return {materialRegion:$("material-region").value,uvRegion:$("uv-region").value,environmentPreset, cameraPosition: camera.position.toArray(), cameraQuaternion: camera.quaternion.toArray(), zoom: camera.zoom, target: controls?.target.toArray() || [0,0,0], wireframe: $("wireframe").checked, wireframeMode: $("wireframe-mode").value, tab: activeView, exportFolder: $("export-folder").checked, uvEditMode: $("uv-edit-mode").checked, sections: [...document.querySelectorAll("aside details")].filter(el => el.id !== "preset-settings").map(el => el.open), sectionLayout: 3, curveSide: $("curve-side").value, transformMode: transformControls?.getMode() || "translate", transformSpace: $("transform-local").checked};
 }
 function restoreView(view) {
+  $("material-region").value=view.materialRegion === "side" ? "side" : "front";
+  $("uv-region").value=view.uvRegion === "side" ? "side" : "front";
+  syncSurfaceControls();
   environmentPreset = environmentController.set(view.environmentPreset || "studio");
   $("environment-preset").value = environmentPreset;
   camera.position.fromArray(view.cameraPosition);
@@ -1568,7 +1624,7 @@ $("delete-object").onclick = () => {
   for (let i = objects.length - 1; i >= 0; i--) if (removed.has(objects[i].id)) {
     pendingObjects.delete(objects[i]); objects.splice(i, 1);
     const mesh = group.children[i]; group.remove(mesh); disposeWireframe(mesh);
-    mesh.geometry.dispose(); mesh.material.dispose();
+    mesh.geometry.dispose(); disposeMaterials(mesh);
   }
   selected = Math.min(selected, Math.max(0, objects.length - 1));
   selectedIds = new Set(objects[selected] ? [objects[selected].id] : []);

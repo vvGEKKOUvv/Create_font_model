@@ -1,19 +1,20 @@
 import { BufferGeometry, Float32BufferAttribute } from 'three';
 import cdt2d from 'cdt2d';
+import { assignSurfaceGroups, surfaceUvKey, transformSurfaceUv } from './surface-geometry.js';
 
 /** Keep the positive half of a symmetric raw 0..depth extrusion. */
 export function positiveExtrusionHalf(source, depth, { cap = true, settings = {} } = {}) {
   const plane = depth / 2, epsilon = Math.max(1, depth) * 1e-7;
-  const positions = [], normals = [], uvs = [], bases = [], protectedIndices = [];
+  const positions = [], normals = [], uvs = [], bases = [], slots = [], protectedIndices = [];
   const p = source.getAttribute('position'), n = source.getAttribute('normal'), uv = source.getAttribute('uv');
   const protectedSource = new Set(source.userData.protectedMidpointIndices || []);
   const base = source.userData.baseUVs || uv.array;
   const index = source.index;
-  const read = i => ({ p:[p.getX(i),p.getY(i),Math.abs(p.getZ(i)-plane)<=epsilon ? plane : p.getZ(i)], n:[n.getX(i),n.getY(i),n.getZ(i)], uv:[uv.getX(i),uv.getY(i)], base:[base[i*2],base[i*2+1]], protected:protectedSource.has(i) });
+  const read = i => ({ p:[p.getX(i),p.getY(i),Math.abs(p.getZ(i)-plane)<=epsilon ? plane : p.getZ(i)], n:[n.getX(i),n.getY(i),n.getZ(i)], uv:[uv.getX(i),uv.getY(i)], base:[base[i*2],base[i*2+1]], slot:source.getAttribute('surfaceSlot')?.getX(i)??0, protected:protectedSource.has(i) });
   const interpolate = (a,b) => {
     const t = (plane-a.p[2])/(b.p[2]-a.p[2]);
     const mix = key => a[key].map((value,i)=>value+(b[key][i]-value)*t);
-    const result = {p:mix('p'),n:mix('n'),uv:mix('uv'),base:mix('base'),protected:a.protected&&b.protected};
+    const result = {p:mix('p'),n:mix('n'),uv:mix('uv'),base:mix('base'),slot:a.slot,protected:a.protected&&b.protected};
     // Adjacent faces traverse their shared edge in opposite directions. Use
     // the same endpoint order for geometric intersections so roundoff cannot
     // create distinct Float32 section vertices (UVs/normals remain per face).
@@ -31,6 +32,7 @@ export function positiveExtrusionHalf(source, depth, { cap = true, settings = {}
       positions.push(Math.fround(vertex.p[0]),Math.fround(vertex.p[1]),Math.fround(Math.max(0,vertex.p[2]-plane)));
       const length=Math.hypot(...vertex.n)||1;
       normals.push(...vertex.n.map(v=>v/length)); uvs.push(...vertex.uv); bases.push(...vertex.base);
+      slots.push(vertex.slot);
       if(vertex.protected) protectedIndices.push(i);
     }
   }
@@ -68,12 +70,10 @@ export function positiveExtrusionHalf(source, depth, { cap = true, settings = {}
       const boundaryEdges=boundary.map(edge=>edge.map(id=>remap.get(id)));
       let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
       for(const [x,y] of capPoints){minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y);}
-      const angle=(Number(settings.uvRotation)||0)*Math.PI/180,cos=Math.cos(angle),sin=Math.sin(angle);
-      const scale=Math.max(.0001,Number(settings.uvScale)||1),sx=Math.max(.0001,Number(settings.uvScaleX)||scale),sy=Math.max(.0001,Number(settings.uvScaleY)||scale);
       const vertex=id=>{
-        const [x,y]=capPoints[id],base=[(.02+.96*(x-minX)/Math.max(1e-7,maxX-minX))/3,.02+.96*(y-minY)/Math.max(1e-7,maxY-minY)];
-        const edited=settings.uvEdits?.[`${base[0].toFixed(6)},${base[1].toFixed(6)}`]||base;
-        return {p:[x,y,plane],n:[0,0,-1],base,uv:[(edited[0]*cos-edited[1]*sin)*sx+(Number(settings.uvOffsetX)||0),(edited[0]*sin+edited[1]*cos)*sy+(Number(settings.uvOffsetY)||0)],protected:false};
+        const [x,y]=capPoints[id],base=[.02+.96*(x-minX)/Math.max(1e-7,maxX-minX),.02+.96*(maxY-y)/Math.max(1e-7,maxY-minY)];
+        const edited=settings.uvEdits?.[surfaceUvKey(0,...base)]||settings.uvEdits?.[`${(base[0]/3).toFixed(6)},${base[1].toFixed(6)}`]||settings.uvEdits?.[`${base[0].toFixed(6)},${base[1].toFixed(6)}`]||base;
+        return {p:[x,y,plane],n:[0,0,-1],base,slot:0,uv:transformSurfaceUv(0,...edited,settings),protected:false};
       };
       for(const cell of cdt2d(capPoints,boundaryEdges,{exterior:false})) {
         const [a,b,c]=cell.map(vertex),cross=(b.p[0]-a.p[0])*(c.p[1]-a.p[1])-(b.p[1]-a.p[1])*(c.p[0]-a.p[0]);
@@ -83,6 +83,9 @@ export function positiveExtrusionHalf(source, depth, { cap = true, settings = {}
   }
   const result=new BufferGeometry();
   result.setAttribute('position',new Float32BufferAttribute(positions,3)); result.setAttribute('normal',new Float32BufferAttribute(normals,3)); result.setAttribute('uv',new Float32BufferAttribute(uvs,2));
-  result.userData={...source.userData,extrusionMirror:false,extrusionCap:cap,protectedMidpointIndices:protectedIndices,baseUVs:new Float64Array(bases),uvKeys:Array.from({length:bases.length/2},(_,i)=>`${bases[i*2].toFixed(6)},${bases[i*2+1].toFixed(6)}`),centralWallDepth:(source.userData.centralWallDepth||0)/2};
+  result.setAttribute('surfaceSlot',new Float32BufferAttribute(slots,1));
+  result.userData={...source.userData,extrusionMirror:false,extrusionCap:cap,protectedMidpointIndices:protectedIndices,baseUVs:new Float64Array(bases),uvKeys:Array.from({length:bases.length/2},(_,i)=>surfaceUvKey(slots[i],bases[i*2],bases[i*2+1])),centralWallDepth:(source.userData.centralWallDepth||0)/2};
+  result.userData.legacyUVKeys=Array.from({length:bases.length/2},(_,i)=>`${((bases[i*2]+(slots[i]===1?2:0))/3).toFixed(6)},${bases[i*2+1].toFixed(6)}`);
+  assignSurfaceGroups(result);
   return result;
 }

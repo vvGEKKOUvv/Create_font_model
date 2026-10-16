@@ -16,7 +16,8 @@
     "test:presets": "node scripts/preset-smoke.mjs",
     "test:reference": "node scripts/reference-smoke.mjs",
     "test:editor-repair": "node scripts/editor-repair-smoke.mjs",
-    "test:vertex-selection": "node scripts/vertex-selection-smoke.mjs"
+    "test:vertex-selection": "node scripts/vertex-selection-smoke.mjs",
+    "test:surface-materials": "node scripts/surface-material-smoke.mjs"
   },
   "dependencies": {
     "cdt2d": "1.0.0",

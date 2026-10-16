@@ -154,3 +154,30 @@ test('project preserves a separate referenced path restoration baseline includin
  raw.state.objects[0].referenceShape.curves[0].type='constructor';
  assert.throws(()=>parseProject(JSON.stringify(raw)),/不正/);
 });
+
+test('independent clay materials, opacity and regional UV transforms roundtrip', () => {
+  const state = fixture(), object = state.objects[0];
+  object.materialType = 'clay'; object.opacity = .8;
+  object.surfaceMaterials = {front:{color:'#aabbcc',type:'clay',opacity:.8},side:{color:'#123456',type:'metal',opacity:.25}};
+  object.settings.frontUV = {uvScaleX:2,uvScaleY:1,uvOffsetX:.3,uvOffsetY:0,uvRotation:45};
+  object.settings.sideUV = {uvScaleX:1,uvScaleY:3,uvOffsetX:0,uvOffsetY:.1,uvRotation:0};
+  object.settings.uvEdits = {'front:0':[.2,.3],'side:0':[.7,.8]};
+  state.view.materialRegion = 'side'; state.view.uvRegion = 'front';
+  const restored = parseProject(serializeProject(state));
+  assert.deepEqual(restored.objects[0].surfaceMaterials,object.surfaceMaterials);
+  assert.deepEqual(restored.objects[0].settings,object.settings);
+  assert.equal(restored.view.materialRegion,'side');
+  for (const change of [
+    d => d.objects[0].surfaceMaterials.side.opacity = 1.1,
+    d => d.objects[0].surfaceMaterials.front.type = 'unknown',
+    d => d.objects[0].surfaceMaterials.front.color = 'red',
+    d => d.objects[0].surfaceMaterials.side = null,
+    d => d.objects[0].opacity = -.1,
+    d => d.objects[0].settings.frontUV.uvScaleX = 0,
+    d => d.objects[0].settings.sideUV.uvOffsetY = '1',
+    d => d.view.uvRegion = 'other',
+  ]) {
+    const raw = JSON.parse(serializeProject(state)); change(raw.state);
+    assert.throws(() => parseProject(JSON.stringify(raw)), /プロジェクト/);
+  }
+});
