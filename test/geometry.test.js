@@ -1282,7 +1282,7 @@ test("continued bevel crosses narrow-stroke collisions to join wider front faces
   );
 });
 
-test("continued bevel rejects returning profiles while ordinary bevel allows them", () => {
+test("returning profiles use safe contour sweeps in continued and ordinary modes", () => {
   const shape = denseRectangle(100, 4);
   const settings = {
     depth: 8,
@@ -1295,10 +1295,10 @@ test("continued bevel rejects returning profiles while ordinary bevel allows the
       { x: 1, y: 1 },
     ],
   };
-  assert.throws(
-    () => buildMesh(shape, { ...settings, bevelContinue: true }),
-    /戻らない/,
-  );
+  const swept = buildMesh(shape, { ...settings, bevelContinue: true });
+  assertClosedFiniteSolid(swept);
+  assert.ok(swept.userData.warnings.some(message => message.includes("折り返す")));
+  assert.equal(swept.userData.effectiveBevelDepth, 4);
   assertClosedFiniteSolid(
     buildMesh(shape, { ...settings, bevelContinue: false }),
   );
@@ -2455,7 +2455,7 @@ test("independent inner and outer curves preserve closed hollow geometry and its
   }
 });
 
-test("independent inner curves reject backtracking rather than producing folds", () => {
+test("independent inner curves preserve returning folds with safe contours", () => {
   const settings = {
     depth: 20, bevelSize: 7, bevelWidth: 2,
     hollow: true, wallThickness: 6, bevelContinue: true,
@@ -2465,7 +2465,10 @@ test("independent inner curves reject backtracking rather than producing folds",
       { x: 0.7, y: 0.2 }, { x: 1, y: 1 },
     ],
   };
-  assert.throws(() => buildMesh(denseRectangle(60, 4), settings), /戻らない/);
+  const geometry = buildMesh(denseRectangle(60, 4), settings);
+  assertClosedFiniteSolid(geometry);
+  assertOpenDepthRay(geometry, 30.13, -30.31, "returning inner curve retains cavity");
+  assert.equal(geometry.userData.effectiveBevelDepth, 7);
 });
 
 test("hollow roof failures preserve cavities with safe bevels across imported path scales", () => {
@@ -2508,10 +2511,13 @@ test("hollow roof failures preserve cavities with safe bevels across imported pa
     assertOpenDepthRay(independent, 150.1 * scale, -95.01 * scale, "independent inner curves retain the fallback cavity");
     assert.notDeepEqual(Array.from(independent.attributes.position.array), Array.from(geometry.attributes.position.array), "fallback keeps the inner curve independently editable");
     assert.equal(independent.userData.effectiveBevelDepth, 28 * scale);
-    assert.throws(() => buildMesh(shape, {
+    const returning = buildMesh(shape, {
       ...settings,
       innerCurvePoints: [{ x: 0, y: 0 }, { x: 0.3, y: 0.8 }, { x: 0.7, y: 0.2 }, { x: 1, y: 1 }],
-    }), /戻らない/);
+    });
+    assertClosedFiniteSolid(returning, 1e-9 * Math.min(1, scale * scale));
+    assertOpenDepthRay(returning, 150.1 * scale, -95.01 * scale, "returning profile retains the cavity");
+    returning.dispose();
     independent.dispose();
     geometry.dispose();
   }

@@ -727,15 +727,12 @@ try {
     { steps: 1 },
   );
   await page.mouse.up();
-  await expect(page.locator("#message")).toHaveClass(/error/);
-  await expect(page.locator("#message")).toContainText("戻らない");
-  assert.deepEqual(
-    await page.evaluate(() =>
-      window.__sceneSnapshot.objects.map((o) => o.geometryId),
-    ),
-    beforeInvalidProfile,
-    "Invalid continued profile preserves previously displayed geometry",
-  );
+  await expect(page.locator("#message")).not.toHaveClass(/error/);
+  await expect(page.locator("#message")).toContainText("折り返す");
+  await expect.poll(() => page.evaluate(() => window.__sceneSnapshot.objects.map(o => o.geometryId))).not.toEqual(beforeInvalidProfile);
+  const foldedExport = await exported();
+  assert.match(foldedExport["model.obj"], /^f /m);
+  assert(!/NaN|Infinity/.test(foldedExport["model.obj"]));
   await page.locator("#curve-point-mode").selectOption("linear");
   await expect(page.locator("#message")).not.toHaveClass(/error/);
   const storedCurve = await page.locator("#curve-path").getAttribute("d");

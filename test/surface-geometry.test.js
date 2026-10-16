@@ -21,11 +21,11 @@ test('region edits and transforms share front/back keys without affecting side U
  let edits=0;for(let i=0;i<uv.count;i++)if(slots.getX(i)===1){assert.equal(uv.getX(i),before[i*2]);assert.equal(uv.getY(i),before[i*2+1]);}else if(g.userData.uvKeys[i]===key){assert.ok(Math.abs(uv.getX(i)-.7)<1e-6);assert.ok(Math.abs(uv.getY(i)-1.2)<1e-6);edits++;}assert.ok(edits>=2);
  g.dispose();
 });
-test('OBJ preserves two slots per object and defines clay and transparent MTL parameters',()=>{
+test('OBJ preserves two slots per object and defines standard and transparent MTL parameters',()=>{
  const g=buildMesh(outline(),{depth:20,bevelSize:3});
- const output=exportObj([{geometry:g,surfaceMaterials:{front:{color:'#888888',type:'clay',opacity:1},side:{color:'#ffffff',type:'transparent',opacity:.25}}}]);
+ const output=exportObj([{geometry:g,surfaceMaterials:{front:{color:'#888888',type:'standard',opacity:1},side:{color:'#ffffff',type:'transparent',opacity:.25}}}]);
  assert.match(output.obj,/usemtl material_1_front/);assert.match(output.obj,/usemtl material_1_side/);
- assert.match(output.mtl,/newmtl material_1_front\n[\s\S]*?Ks 0 0 0/);assert.match(output.mtl,/newmtl material_1_side\n[\s\S]*?d 0.25\nillum 4\nNi 1.45/);g.dispose();
+ assert.match(output.mtl,/newmtl material_1_front\n[\s\S]*?Ks 0\.15 0\.15 0\.15/);assert.match(output.mtl,/newmtl material_1_side\n[\s\S]*?d 0.25\nillum 4\nNi 1.45/);g.dispose();
 });
 
 test('different legacy front and back edits resolve to one shared front island',()=>{

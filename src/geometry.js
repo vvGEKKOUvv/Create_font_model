@@ -614,6 +614,18 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
   const { box, effectiveWallThickness } = variant;
   // Surface ownership must not switch algorithms when equal curves diverge.
   const separateInnerProfile = rings.length > 1;
+  // Roofs invert distance to height and cannot represent several heights at
+  // one inset. Returning curves instead sweep corresponding contour vertices
+  // in axial order. Their conservative width keeps every layer valid.
+  const returns = (controls) => {
+    if (!Array.isArray(controls) || controls.length < 2) return false;
+    try { return !monotonicProfile(normalizeProfile(controls)); }
+    catch { return false; } // The normal profile parser reports invalid input.
+  };
+  const returningProfile = returns(settings.curvePoints) ||
+    (separateInnerProfile && returns(settings.innerCurvePoints));
+  if (returningProfile)
+    warnings.push("折り返すベベルカーブは断面押し出しで再現し、輪郭の交差を避けるため輪郭幅を安全な範囲に制限します。");
   const sourceOrientation = Math.sign(area(rings[0]));
   const narrowDenseConvex = explicitWidth && rings.length === 1 &&
     rings[0].length > 512 && requestedBevelWidth <=
@@ -630,7 +642,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
   let roof = null;
   let roofFailure = null;
   if (settings.hollow && effectiveWallThickness > 0 &&
-      Number(settings.bevelSize) > 0 && !safeHollowFallback) {
+      Number(settings.bevelSize) > 0 && !safeHollowFallback && !returningProfile) {
     try {
       roof = variant.hollowMidpointRoof ?? prepareHollowMidpointRoof(rings[0], effectiveWallThickness);
       if (roof) {
@@ -642,6 +654,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
     Number(settings.bevelSize) > 0 &&
     !roof &&
     !safeHollowFallback &&
+    !returningProfile &&
     !narrowDenseConvex &&
     (settings.bevelContinue === true ||
       (explicitWidth && requestedBevelWidth > variant.maximumBevelWidth + EPS))
@@ -658,6 +671,7 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
     Number(settings.bevelSize) > 0 &&
     !roof &&
     !safeHollowFallback &&
+    !returningProfile &&
     (settings.bevelContinue === true ||
       (explicitWidth && requestedBevelWidth > variant.maximumBevelWidth + EPS))
   ) {
@@ -765,9 +779,6 @@ export function buildMesh(shape, settings = {}, safeHollowFallback = false) {
   const sampling = { height: bevelHeight, width: bevel, straightFallback: curve === 0, cacheKey: curve };
   const samples = sampleBevelProfile(points, profile, segments, sampling);
   const innerSamples = sampleBevelProfile(innerPoints, innerProfile, segments, sampling);
-  if ((roof || (safeHollowFallback && separateInnerProfile)) &&
-      (!monotonicProfile(points) || !monotonicProfile(innerPoints)))
-    throw new Error("内側・外側のベベルカーブは、戻らない形状にしてください。");
   const levels = bevel
     ? samples.map((t) => ({
         z: bevelHeight * t,
@@ -1205,9 +1216,9 @@ export function exportObj(items) {
       const color = new THREE.Color(surface.color || item.color || '#ffffff');
       const type = surface.type || item.materialType || 'standard';
       const opacity = THREE.MathUtils.clamp(Number.isFinite(Number(surface.opacity ?? item.opacity)) ? Number(surface.opacity ?? item.opacity) : type === 'transparent' ? .45 : 1, 0, 1);
-      const specular = type === 'clay' ? 0 : type === 'metal' ? .8 : .15;
+      const specular = type === 'metal' ? .8 : .15;
       mtl.push(`newmtl ${material(slot)}`,`Kd ${color.r} ${color.g} ${color.b}`,'Ka 0 0 0',
-        `Ks ${specular} ${specular} ${specular}`,`Ns ${type === 'metal' ? 200 : type === 'clay' ? 10 : 30}`,
+        `Ks ${specular} ${specular} ${specular}`,`Ns ${type === 'metal' ? 200 : 30}`,
         `d ${opacity}`,`illum ${type === 'transparent' || opacity < 1 ? 4 : 2}`,
         ...(type === 'transparent' ? ['Ni 1.45'] : []),'');
     }

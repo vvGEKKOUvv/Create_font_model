@@ -69,7 +69,7 @@ test("default center and added anchors each delimit independently divided spans"
 });
 
 
-test("low divisions reject hidden returning cubic curves analytically", () => {
+test("low divisions route hidden returning cubic curves through contour sweeps", () => {
   const returning = normalizeProfile([{ x: 0, y: 0 },
     { x: .4, y: .5, mode: "bezier", out: { x: .4001, y: .8 } },
     { x: .4003, y: .5001, mode: "bezier", in: { x: .4002, y: .2 } },
@@ -78,10 +78,13 @@ test("low divisions reject hidden returning cubic curves analytically", () => {
   assert.equal(monotonicProfile(defaultProfile()), true);
   assert.equal(monotonicProfile(normalizeProfile(curved)), true);
   for (const hollow of [false, true]) {
-    assert.throws(() => buildMesh(rectangle(hollow), {
+    const geometry = buildMesh(rectangle(hollow), {
       depth: 30, bevelSize: 5, bevelWidth: 4, bevelContinue: true,
       bevelSegments: 1, curvePoints: returning,
-    }), /戻らない/);
+    });
+    assert.ok(geometry.userData.warnings.some(message => message.includes("折り返す")));
+    assert.ok([...geometry.attributes.position.array].every(Number.isFinite));
+    geometry.dispose();
   }
   assert.equal(monotonicProfile(normalizeProfile([{ x: 0, y: 0 },
     { x: .4, y: .8 }, { x: .6, y: .2 }, { x: 1, y: 1 }])), false);

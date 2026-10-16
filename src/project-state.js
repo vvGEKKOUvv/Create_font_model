@@ -116,6 +116,11 @@ function validateState(state) {
 }
 function removeRetiredSettings(object) {
   const clean = { ...object };
+  // Retired clay projects remain editable without retaining a removed shader.
+  if (clean.materialType === "clay") clean.materialType = "standard";
+  if (object.surfaceMaterials) clean.surfaceMaterials = Object.fromEntries(
+    Object.entries(object.surfaceMaterials).map(([region, material]) => [region,
+      { ...material, type: material?.type === "clay" ? "standard" : material?.type }]));
   for (const key of ["settings", "validSettings"]) if (object[key]) {
     clean[key] = { ...object[key] };
     delete clean[key].hollowCurveSafe;

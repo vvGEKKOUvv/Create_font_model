@@ -61,7 +61,7 @@ function settingsFrom(input) {
 }
 function materialFrom(input) {
   if (!record(input) || typeof input.color !== "string" || !/^#[a-f\d]{6}$/i.test(input.color) || !["standard", "metal", "clay"].includes(input.type) || typeof input.opacity !== "number" || !Number.isFinite(input.opacity) || input.opacity < 0 || input.opacity > 1) fail();
-  return {color:input.color.toLowerCase(),type:input.type,opacity:input.opacity};
+  return {color:input.color.toLowerCase(),type:input.type === "clay" ? "standard" : input.type,opacity:input.opacity};
 }
 export function validatePreset(input) {
   checkJson(input);

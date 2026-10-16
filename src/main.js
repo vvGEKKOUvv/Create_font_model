@@ -133,7 +133,7 @@ app.innerHTML = `
     <details class="control-section" open>
       <summary>マテリアル <span>MATERIAL</span></summary>
       <label class="material-select"><span>対象</span><select id="material-region"><option value="front">正面・背面・ベベル</option><option value="side">側面</option></select></label>
-      <label class="material-select"><span>質感</span><select id="material-type"><option value="standard">標準</option><option value="metal">金属</option><option value="clay">クレイ</option></select></label>
+      <label class="material-select"><span>質感</span><select id="material-type"><option value="standard">標準</option><option value="metal">金属</option></select></label>
       <label class="material-select"><span>環境</span><select id="environment-preset"><option value="studio">スタジオ</option><option value="softbox">ソフトボックス</option><option value="outdoor">屋外</option><option value="sunset">夕景</option></select></label>
       <label class="color-row"><input type="color" id="color" value="#b0b0b0"/><span id="color-value">#B0B0B0</span><span class="muted">カラー</span></label>
       ${field("opacity", "透明度 %", 0, 0, 100, 1)}
@@ -240,6 +240,8 @@ function surfaceMaterials(object) {
     const base = {color:object.color || "#b0b0b0",type:object.materialType || "standard",opacity:object.opacity ?? 1};
     object.surfaceMaterials = {front:{...base},side:{...base}};
   }
+  if (object.materialType === "clay") object.materialType = "standard";
+  for (const material of Object.values(object.surfaceMaterials)) if (material.type === "clay") material.type = "standard";
   object.opacity ??= object.surfaceMaterials.front.opacity;
   return object.surfaceMaterials;
 }
@@ -289,9 +291,9 @@ function applyDisplayStyle(mesh, object) {
   const regions=surfaceMaterials(object);
   materialsOf(mesh).forEach((material,index) => {
     const setting=regions[index ? "side" : "front"];
-    material.metalness = setting.type === "metal" ? 1 : setting.type === "clay" ? 0 : 0.1;
-    material.roughness = setting.type === "metal" ? 0.25 : setting.type === "clay" ? 1 : 0.44;
-    material.envMapIntensity = setting.type === "clay" ? 0.2 : 1;
+    material.metalness = setting.type === "metal" ? 1 : 0.1;
+    material.roughness = setting.type === "metal" ? 0.25 : 0.44;
+    material.envMapIntensity = 1;
     material.opacity = setting.opacity; material.transparent = setting.opacity < 1;
     material.depthWrite = setting.opacity >= 1;
     material.wireframe = enabled && !overlayMode;
