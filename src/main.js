@@ -57,7 +57,7 @@ app.innerHTML = `
       <button id="tab-uv" role="tab" aria-selected="false" aria-controls="view-uv" tabindex="-1">UV MAP</button>
     </div>
     <div id="view-3d" class="workspace-view" role="tabpanel" aria-labelledby="tab-3d">
-      <div class="viewport-heading"><span><i class="live-dot"></i> LIVE PREVIEW</span><label class="wireframe-toggle"><input id="wireframe" type="checkbox"/> ワイヤーフレーム</label><select id="wireframe-mode" aria-label="ワイヤーフレーム表示方式"><option value="lines">線のみ</option><option value="hidden">線のみ（奥の面を隠す）</option><option value="overlay">シェーダーに重ねる</option></select><button id="fit" class="subtle">⊡ 全体表示</button></div>
+      <div class="viewport-heading"><span><i class="live-dot"></i> LIVE PREVIEW</span><label class="wireframe-toggle"><input id="wireframe" type="checkbox"/> ワイヤーフレーム</label><select id="wireframe-mode" aria-label="ワイヤーフレーム表示方式"><option value="lines">線のみ</option><option value="hidden">線のみ（奥の面を隠す）</option><option value="overlay" selected>シェーダーに重ねる</option></select><button id="fit" class="subtle">⊡ 全体表示</button></div>
       <div id="viewport"></div>
       <div class="view-caption"><span id="mesh-info">—</span></div>
     </div>
@@ -141,7 +141,7 @@ app.innerHTML = `
     <details id="uv-settings" class="control-section" open>
       <summary>UV 設定 <span>UV MAP</span></summary>
       <label class="material-select"><span>UV 対象</span><select id="uv-region"><option value="front">正面・背面・ベベル</option><option value="side">側面</option></select></label>
-      <label class="material-select"><span>正面 UV</span><select id="front-uv-fit"><option value="stretch">領域いっぱいに広げる</option><option value="contain">縦横比を保持</option></select></label>
+      <label class="material-select"><span>正面 UV</span><select id="front-uv-fit"><option value="stretch">領域いっぱいに広げる</option><option value="contain" selected>縦横比を保持</option></select></label>
       <div class="uv-tools"><label><input type="checkbox" id="uv-edit-mode"/> UV 頂点編集</label><button id="uv-clear" class="subtle">UV 修正をクリア ↺</button><span>頂点をドラッグ · 同じ UV 座標をまとめて編集</span></div>
       <div class="uv-inputs">
         ${field("uvScaleX", "スケール U", 1, 0.01, 20, 0.1, false)}
@@ -396,6 +396,7 @@ function initialSettings(shape) {
   prepareContours(shape, 0);
   return {
     ...defaults,
+    frontUVFit: "contain",
     reductionTolerance: 0,
     depth,
     bevelSize: Math.min(defaults.bevelSize, span * 0.04, depth * 0.2),

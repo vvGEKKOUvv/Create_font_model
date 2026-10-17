@@ -19,6 +19,7 @@ try {
  const snapshot=async()=>{await page.waitForTimeout(80);return page.evaluate(()=>window.__surfaces);};
  await page.locator('#file').setInputFiles({name:'surfaces.svg',mimeType:'image/svg+xml',buffer:Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0H80V60H0Z"/><path d="M100 0H180V60H100Z"/></svg>')});await expect(page.locator('#object-count')).toHaveText('2');await page.locator('[data-object="0"]').click();
  assert.equal(await page.locator('#material-type option[value="clay"]').count(),0,'retired clay shader is absent');
+ await expect(page.locator('#front-uv-fit')).toHaveValue('contain');await expect(page.locator('#wireframe-mode')).toHaveValue('overlay');
  const before=await saved(),initial=html?null:await snapshot();
  await page.locator('#material-region').selectOption('front');await color('#ff2200');await page.locator('#material-type').selectOption('metal');await field('opacity',35);
  const front=await saved();assert.equal(front.state.objects[0].surfaceMaterials.front.color,'#ff2200');assert.equal(front.state.objects[0].surfaceMaterials.front.type,'metal');assert.equal(front.state.objects[0].surfaceMaterials.front.opacity,.65);assert.deepEqual(front.state.objects[1],before.state.objects[1],'unselected object material remains unchanged');
