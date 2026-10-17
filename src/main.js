@@ -1598,7 +1598,7 @@ transformTools.sync();
 refreshMeshInfo();
 
 function captureView() {
-  return {materialRegion:$("material-region").value,uvRegion:$("uv-region").value,environmentPreset, cameraPosition: camera.position.toArray(), cameraQuaternion: camera.quaternion.toArray(), zoom: camera.zoom, target: controls?.target.toArray() || [0,0,0], wireframe: $("wireframe").checked, wireframeMode: $("wireframe-mode").value, tab: activeView, exportFolder: $("export-folder").checked, uvEditMode: $("uv-edit-mode").checked, sections: [...document.querySelectorAll("aside details")].filter(el => el.id !== "preset-settings").map(el => el.open), sectionLayout: 3, curveSide: $("curve-side").value, transformMode: transformControls?.getMode() || "translate", transformSpace: $("transform-local").checked};
+  return {materialRegion:$("material-region").value,uvRegion:$("uv-region").value,environmentPreset, cameraPosition: camera.position.toArray(), cameraQuaternion: camera.quaternion.toArray(), zoom: camera.zoom, target: controls?.target.toArray() || [0,0,0], wireframe: $("wireframe").checked, wireframeMode: $("wireframe-mode").value, tab: activeView, exportFolder: $("export-folder").checked, uvEditMode: $("uv-edit-mode").checked, sections: [...document.querySelectorAll("aside details")].filter(el => el.id !== "preset-settings").map(el => el.open), sectionLayout: 4, curveSide: $("curve-side").value, transformMode: transformControls?.getMode() || "translate", transformSpace: $("transform-local").checked};
 }
 function restoreView(view) {
   $("material-region").value=view.materialRegion === "side" ? "side" : "front";
@@ -1617,10 +1617,16 @@ function restoreView(view) {
   $("uv-edit-mode").checked = view.uvEditMode;
   $("export-folder").checked = view.exportFolder === true;
   let sectionIndex = 0;
-  document.querySelectorAll("aside details").forEach(el => {
+  const sections = [...document.querySelectorAll("aside details")];
+  if (view.sectionLayout !== 4) {
+    const transform = sections.find(el => el.classList.contains("transform-panel"));
+    sections.splice(sections.indexOf(transform), 1);
+    sections.splice(sections.findIndex(el => el.id === "reduction-settings"), 0, transform);
+  }
+  sections.forEach(el => {
     if (el.id === "preset-settings") return;
-    if (view.sectionLayout !== 3 && el.id === "mesh-reduction-settings") return;
-    if (![2, 3].includes(view.sectionLayout) && el.id === "bevel-curve-settings") return;
+    if (![3, 4].includes(view.sectionLayout) && el.id === "mesh-reduction-settings") return;
+    if (![2, 3, 4].includes(view.sectionLayout) && el.id === "bevel-curve-settings") return;
     const value = view.sections?.[sectionIndex++];
     if (typeof value === "boolean") el.open = value;
   });

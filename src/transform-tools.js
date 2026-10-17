@@ -77,6 +77,7 @@ export function createTransformTools({
       .join("") +
     '<button id="transform-reset" class="subtle">位置・回転・スケールをリセット</button></div>';
   (
+    document.getElementById("reduction-settings") ||
     document.getElementById("objects-details") ||
     document.getElementById("selected-name")
   ).after(panel);
