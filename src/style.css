@@ -1278,6 +1278,7 @@ header { gap: 14px; }
   margin-top: 6px;
   line-height: 1.5;
 }
+.project-actions button,
 .right-panel #duplicate,
 .right-panel #edit-path,
 .right-panel #source-reload,
@@ -1319,6 +1320,7 @@ header { gap: 14px; }
   }
 }
 @media (pointer: coarse) {
+  .project-actions button,
   .right-panel button,
   .right-panel select,
   .right-panel .toggle-row,
